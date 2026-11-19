@@ -5,7 +5,11 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
+- **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
+- **Drone Remote ID**: **Start** listens for standard Remote ID (including DJI's built-in Remote ID)
+  on Wi-Fi beacons, Wi-Fi NaN and Bluetooth 4 until you tap **Stop**. It shows ID, position,
+  altitude, speed, operator location and distance, and has a signal hunt. Wi-Fi is paused while it
+  runs.
 - **Tracker detector**: **Watch** scans every 30 s for AirTag/Find My, Tile, SmartTag and Google
   Find My trackers. One that stays with you for 10+ min turns red and triggers a warning. Tap it to
   hunt it.
@@ -89,7 +93,8 @@ include/lv_conf.h   LVGL config
 src/version.h       firmware version
 src/main.cpp        setup/loop
 src/display.cpp     TFT + touch drivers, rotation, calibration
-src/ble.cpp         BLE scanner, trackers, hunt (NimBLE)
+src/drone.cpp       drone Remote ID: Wi-Fi sniffer, ODID decoder
+src/ble.cpp         BLE scanner, trackers, hunt, Remote ID adverts (NimBLE)
 src/hunt.h          shared RSSI averaging for hunt modes
 src/ota.cpp         over-the-air updates (ArduinoOTA)
 src/led.cpp         rear RGB LED (boot status: red, blinking red, green)

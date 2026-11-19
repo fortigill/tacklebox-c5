@@ -11,7 +11,11 @@
 //   Hunt  - continuous scan tracking a single device's RSSI
 namespace ble {
 
-enum class Mode { Idle, Scan, Hunt };
+enum class Mode { Idle, Scan, Hunt, Rid };
+
+// Receives Open Drone ID messages from BLE legacy adverts (service data
+// 0xFFFA): one 25-byte message (or a message pack) per advert.
+using RidSink = void (*)(const uint8_t *msg, size_t len, const char *addr, int rssi);
 
 // Location trackers recognised from their advertisements
 enum class Tracker : uint8_t { None, AppleFindMy, Tile, SmartTag, GoogleFindMy, Dult };
@@ -57,6 +61,7 @@ const uint32_t FOLLOW_MIN_ROUNDS = 5;
 // Scanning
 bool startScan();            // clears previous results; false if Bluetooth failed
 bool startHunt(const String &addr);
+bool startRid(RidSink sink);  // continuous scan feeding drone Remote ID messages
 void stop();
 Mode mode();
 uint32_t scanRemainingMs();  // during Scan

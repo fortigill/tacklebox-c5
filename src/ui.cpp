@@ -8,6 +8,7 @@
 
 #include "ble.h"
 #include "display.h"
+#include "drone.h"
 #include "net.h"
 #include "ota.h"
 #include "timesvc.h"
@@ -22,7 +23,7 @@ namespace {
 enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
-  WifiAnalyzer, Trackers, Ota
+  WifiAnalyzer, Trackers, Ota, Drones, DroneDetail
 };
 
 const int HEADER_H = 40;
@@ -62,7 +63,7 @@ lv_obj_t *huntBar = nullptr, *huntChart = nullptr;
 lv_chart_series_t *huntSer = nullptr;
 
 // Hunt screen source (shared by BLE devices, trackers and Wi-Fi APs)
-enum class HuntSrc { Ble, Wifi };
+enum class HuntSrc { Ble, Wifi, Drone };
 HuntSrc huntSrc = HuntSrc::Ble;
 String huntTitle;
 String huntBleAddr;
@@ -90,6 +91,14 @@ std::vector<ble::Tracker> trkRowTypes;
 
 // OTA
 lv_obj_t *otaBar = nullptr, *otaPct = nullptr, *otaMsg = nullptr;
+
+// Drone Remote ID
+const uint32_t DRONE_REFRESH_MS = 1000;
+lv_obj_t *drnList = nullptr, *drnStatus = nullptr, *drnToggle = nullptr, *drnDetail = nullptr;
+std::vector<String> drnRowKeys;
+String drnDetailKey;
+String huntDroneKey;
+uint32_t drnLastFill = 0;
 
 // BLE scanner state
 const uint32_t BLE_LIST_REFRESH_MS = 1500;
@@ -140,6 +149,8 @@ void showBleIgnored();
 void showHunt();
 void showWifiAnalyzer();
 void showTrackers();
+void showDrones();
+void showDroneDetail();
 void showDateTime();
 void showTimeZone();
 void showWeather();
@@ -164,6 +175,7 @@ void resetPtrs() {
   wfaList = wfaStatus = wfaScanBtn = nullptr;
   trkList = trkStatus = trkToggle = nullptr;
   otaBar = otaPct = otaMsg = nullptr;
+  drnList = drnStatus = drnToggle = drnDetail = nullptr;
   deskIconState = -1;
 }
 
@@ -237,6 +249,14 @@ void errorBox(const char *title, const char *msg) {
   lv_obj_center(m);
 }
 
+// Radio tools can't run while the drone scanner owns Wi-Fi and Bluetooth
+bool radioBusy() {
+  if (!drone::running()) return false;
+  errorBox("Drone scan running", "Stop the drone Remote ID scanner first. It is using the "
+                                 "Wi-Fi and Bluetooth radios.");
+  return true;
+}
+
 TempW makeTemp(lv_obj_t *parent, const lv_font_t *font, int ring) {
   TempW t;
   lv_obj_t *box = lv_obj_create(parent);
@@ -300,7 +320,8 @@ void refreshDesktop() {
       snprintf(buf, sizeof(buf), "Reconnecting to %s...", net::ssid().c_str());
       break;
     default:
-      snprintf(buf, sizeof(buf), "Wi-Fi not connected");
+      snprintf(buf, sizeof(buf), drone::running() ? "Drone scan running - Wi-Fi paused"
+                                                  : "Wi-Fi not connected");
       break;
   }
   setText(deskWifiLbl, buf);
@@ -390,8 +411,14 @@ void showDesktop() {
   lv_obj_set_style_bg_opa(wb, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(wb, 0, 0);
   lv_obj_set_style_bg_opa(wb, LV_OPA_20, LV_STATE_PRESSED);
-  lv_obj_add_event_cb(wb, [](lv_event_t *) { wifiBack = Screen::Desktop; showWifi(); },
-                      LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      wb,
+      [](lv_event_t *) {
+        if (radioBusy()) return;
+        wifiBack = Screen::Desktop;
+        showWifi();
+      },
+      LV_EVENT_CLICKED, nullptr);
   deskWifiIcon = lv_label_create(wb);
   lv_obj_set_style_text_font(deskWifiIcon, &lv_font_montserrat_20, 0);
   lv_label_set_text(deskWifiIcon, LV_SYMBOL_WIFI);
@@ -425,17 +452,29 @@ void showMenu() {
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
 
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_WIFI, "Network settings");
-  lv_obj_add_event_cb(b, [](lv_event_t *) { wifiBack = Screen::Menu; showWifi(); },
-                      LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (radioBusy()) return;
+        wifiBack = Screen::Menu;
+        showWifi();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_GPS, "Drone Remote ID");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showDrones(); }, LV_EVENT_CLICKED, nullptr);
 
   b = lv_list_add_btn(list, LV_SYMBOL_BLUETOOTH, "Bluetooth scanner");
-  lv_obj_add_event_cb(b, [](lv_event_t *) { showBle(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(b, [](lv_event_t *) { if (!radioBusy()) showBle(); }, LV_EVENT_CLICKED,
+                      nullptr);
 
   b = lv_list_add_btn(list, LV_SYMBOL_WARNING, "Tracker detector");
-  lv_obj_add_event_cb(b, [](lv_event_t *) { showTrackers(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(b, [](lv_event_t *) { if (!radioBusy()) showTrackers(); },
+                      LV_EVENT_CLICKED, nullptr);
 
   b = lv_list_add_btn(list, LV_SYMBOL_BARS, "Wi-Fi analyzer");
-  lv_obj_add_event_cb(b, [](lv_event_t *) { showWifiAnalyzer(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(b, [](lv_event_t *) { if (!radioBusy()) showWifiAnalyzer(); },
+                      LV_EVENT_CLICKED, nullptr);
 
   b = lv_list_add_btn(list, LV_SYMBOL_TINT, "Weather");
   lv_obj_add_event_cb(b, [](lv_event_t *) { wxBack = Screen::Menu; showWeather(); },
@@ -945,7 +984,9 @@ void setHuntArrow(const char *sym, lv_palette_t pal) {
 
 void refreshHunt() {
   if (!huntRssiLbl) return;
-  HuntInfo h = huntSrc == HuntSrc::Ble ? ble::hunt() : net::hunt();
+  HuntInfo h = huntSrc == HuntSrc::Ble    ? ble::hunt()
+               : huntSrc == HuntSrc::Wifi ? net::hunt()
+                                          : drone::hunt();
   uint32_t age = millis() - h.lastSeen;
 
   if (h.samples == 0 || age > HUNT_LOST_MS) {
@@ -988,8 +1029,10 @@ void refreshHunt() {
 
 void huntGoBack() {
   if (huntSrc == HuntSrc::Ble) ble::stop();
-  else net::stopHunt();
+  else if (huntSrc == HuntSrc::Wifi) net::stopHunt();
+  else drone::setHuntTarget("");  // the drone scanner itself keeps running
   switch (huntBack) {
+    case Screen::DroneDetail: showDroneDetail(); break;
     case Screen::Trackers: showTrackers(); break;
     case Screen::WifiAnalyzer: showWifiAnalyzer(); break;
     default: showBleDetail(); break;
@@ -998,7 +1041,9 @@ void huntGoBack() {
 
 void showHunt() {
   lv_obj_t *scr = newScreen();
-  String hdrTitle = String(huntSrc == HuntSrc::Ble ? LV_SYMBOL_BLUETOOTH " " : LV_SYMBOL_WIFI " ") +
+  String hdrTitle = String(huntSrc == HuntSrc::Ble    ? LV_SYMBOL_BLUETOOTH " "
+                           : huntSrc == HuntSrc::Wifi ? LV_SYMBOL_WIFI " "
+                                                      : LV_SYMBOL_GPS " ") +
                     huntTitle;
   makeHeader(scr, hdrTitle.c_str(), [](lv_event_t *) { huntGoBack(); });
 
@@ -1059,9 +1104,238 @@ void showHunt() {
   lv_refr_now(nullptr);
   if (huntSrc == HuntSrc::Ble) {
     if (!ble::startHunt(huntBleAddr)) setText(huntStateLbl, "Bluetooth failed to start");
-  } else {
+  } else if (huntSrc == HuntSrc::Wifi) {
     net::startHunt(huntWifiBssid, huntWifiChannel);
+  } else {
+    drone::setHuntTarget(huntDroneKey);
   }
+}
+
+// ---------- Drone Remote ID ----------
+
+bool useImperial() { return weather::useF(); }  // follow the weather unit setting
+
+String droneTitle(const drone::Drone &d) {
+  String t = d.uasId.length() ? d.uasId : d.key;
+  if (drone::isDji(d)) t = "DJI  " + t;
+  return t;
+}
+
+String fmtAlt(float m) {
+  if (isnan(m)) return "-";
+  char b[16];
+  if (useImperial()) snprintf(b, sizeof(b), "%d ft", (int)lroundf(m * 3.2808f));
+  else snprintf(b, sizeof(b), "%d m", (int)lroundf(m));
+  return b;
+}
+
+String fmtSpeed(float ms) {
+  if (isnan(ms)) return "-";
+  char b[16];
+  if (useImperial()) snprintf(b, sizeof(b), "%.1f mph", ms * 2.23694f);
+  else snprintf(b, sizeof(b), "%.1f km/h", ms * 3.6f);
+  return b;
+}
+
+String fmtDist(float m) {
+  char b[16];
+  if (useImperial()) {
+    float ft = m * 3.2808f;
+    if (ft < 1000) snprintf(b, sizeof(b), "%d ft", (int)lroundf(ft));
+    else snprintf(b, sizeof(b), "%.2f mi", ft / 5280.0f);
+  } else {
+    if (m < 1000) snprintf(b, sizeof(b), "%d m", (int)lroundf(m));
+    else snprintf(b, sizeof(b), "%.2f km", m / 1000.0f);
+  }
+  return b;
+}
+
+void onDroneClicked(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= drnRowKeys.size()) return;
+  drnDetailKey = drnRowKeys[i];
+  showDroneDetail();
+}
+
+void drnUpdateStatus() {
+  if (!drnStatus) return;
+  char buf[96];
+  if (drone::running()) {
+    auto ds = drone::list();
+    size_t live = 0;
+    for (const auto &d : ds)
+      if (millis() - d.lastSeen < drone::STALE_MS) live++;
+    snprintf(buf, sizeof(buf), "Scanning ch %u + BT  -  %u drone%s  -  %lu msgs",
+             drone::currentChannel(), (unsigned)live, live == 1 ? "" : "s",
+             (unsigned long)drone::frames());
+  } else {
+    snprintf(buf, sizeof(buf), "Stopped. Tap Start to scan (pauses Wi-Fi)");
+  }
+  setText(drnStatus, buf);
+  setText(lv_obj_get_child(drnToggle, 0), drone::running() ? "Stop" : "Start");
+}
+
+void drnFill() {
+  if (!drnList) return;
+  lv_indev_t *in = lv_indev_get_next(nullptr);  // don't rebuild under the stylus
+  if (in && in->proc.state == LV_INDEV_STATE_PRESSED) return;
+  drnLastFill = millis();
+
+  auto ds = drone::list();
+  lv_coord_t y = lv_obj_get_scroll_y(drnList);
+  lv_obj_clean(drnList);
+  drnRowKeys.clear();
+  if (ds.empty()) {
+    lv_list_add_text(drnList, drone::running() ? "Listening for Remote ID broadcasts..."
+                                               : "No drones detected");
+  }
+  for (size_t i = 0; i < ds.size(); i++) {
+    const auto &d = ds[i];
+    bool stale = millis() - d.lastSeen >= drone::STALE_MS;
+    lv_obj_t *b = lv_list_add_btn(drnList, d.status == 3 ? LV_SYMBOL_WARNING : LV_SYMBOL_GPS,
+                                  droneTitle(d).c_str());
+    if (stale) lv_obj_set_style_text_opa(b, LV_OPA_50, 0);
+    if (d.status == 3) lv_obj_set_style_text_color(b, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_t *r = lv_label_create(b);
+    lv_label_set_text_fmt(r, "%d dBm  %lus", d.rssi, (unsigned long)((millis() - d.lastSeen) / 1000));
+    lv_obj_set_style_text_opa(r, LV_OPA_70, 0);
+    drnRowKeys.push_back(d.key);
+    lv_obj_add_event_cb(b, onDroneClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  lv_obj_scroll_to_y(drnList, y, LV_ANIM_OFF);
+}
+
+void pollDrones() {
+  drnUpdateStatus();
+  if (millis() - drnLastFill >= DRONE_REFRESH_MS) drnFill();
+}
+
+void showDrones() {
+  lv_obj_t *scr = newScreen();
+  const int btnW = 76;
+  // Back leaves the scanner running: it only stops when you tap Stop
+  lv_obj_t *hdr = makeHeader(scr, "Drone RID", [](lv_event_t *) { showMenu(); }, btnW);
+  drnToggle = flatBtn(hdr, "Start", btnW, 32);
+  lv_obj_align(drnToggle, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_add_event_cb(
+      drnToggle,
+      [](lv_event_t *) {
+        if (drone::running()) {
+          drone::stop();
+        } else {
+          setText(drnStatus, "Starting...");
+          lv_refr_now(nullptr);
+          drone::start();
+        }
+        drnUpdateStatus();
+        drnFill();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  drnStatus = lv_label_create(scr);
+  lv_label_set_long_mode(drnStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(drnStatus, W() - 12);
+  lv_label_set_text(drnStatus, "");
+  lv_obj_align(drnStatus, LV_ALIGN_TOP_LEFT, 6, HEADER_H + 7);
+
+  const int listY = HEADER_H + 28;
+  drnList = lv_list_create(scr);
+  lv_obj_set_size(drnList, W(), H() - listY);
+  lv_obj_align(drnList, LV_ALIGN_TOP_MID, 0, listY);
+
+  load(scr, Screen::Drones);
+  drnUpdateStatus();
+  drnFill();
+}
+
+void refreshDroneDetail() {
+  if (!drnDetail) return;
+  drone::Drone d;
+  if (!drone::find(drnDetailKey, d)) {
+    setText(drnDetail, "Drone no longer in the list.");
+    return;
+  }
+  String loc = "-", op = "-", sep = "-";
+  char b[64];
+  if (d.hasLoc) {
+    snprintf(b, sizeof(b), "%.6f, %.6f", d.lat, d.lon);
+    loc = b;
+  }
+  if (d.hasOp) {
+    snprintf(b, sizeof(b), "%.6f, %.6f", d.opLat, d.opLon);
+    op = b;
+  }
+  if (d.hasLoc && d.hasOp) sep = fmtDist(drone::distanceM(d.lat, d.lon, d.opLat, d.opLon));
+  String hdg = isnan(d.heading) ? String("-") : String((int)d.heading) + " deg";
+  String chan = d.transport == drone::Transport::Ble ? String("") : String(" ch ") + d.channel;
+
+  char buf[700];
+  snprintf(buf, sizeof(buf),
+           "ID: %s\n"
+           "ID type: %s%s\n"
+           "Aircraft: %s\n"
+           "Status: %s\n"
+           "Position: %s\n"
+           "Altitude: %s (baro %s)\n"
+           "Height: %s\n"
+           "Speed: %s  Heading: %s\n"
+           "Climb: %s\n"
+           "Operator at: %s\n"
+           "Operator distance: %s\n"
+           "Operator ID: %s\n"
+           "Description: %s\n"
+           "Signal: %d dBm via %s%s\n"
+           "MAC: %s\n"
+           "Last heard: %lus ago  (%lu msgs)",
+           d.uasId.length() ? d.uasId.c_str() : "-", drone::idTypeName(d.idType),
+           drone::isDji(d) ? " (DJI)" : "", drone::uaTypeName(d.uaType), drone::statusName(d.status),
+           loc.c_str(), fmtAlt(d.altGeo).c_str(), fmtAlt(d.altBaro).c_str(), fmtAlt(d.height).c_str(),
+           fmtSpeed(d.speed).c_str(), hdg.c_str(), fmtSpeed(d.vspeed).c_str(), op.c_str(), sep.c_str(),
+           d.operatorId.length() ? d.operatorId.c_str() : "-",
+           d.selfId.length() ? d.selfId.c_str() : "-", d.rssi, drone::transportName(d.transport),
+           chan.c_str(), d.key.c_str(), (unsigned long)((millis() - d.lastSeen) / 1000),
+           (unsigned long)d.messages);
+  setText(drnDetail, buf);
+}
+
+void showDroneDetail() {
+  lv_obj_t *scr = newScreen();
+  drone::Drone d;
+  String title = drone::find(drnDetailKey, d) ? droneTitle(d) : drnDetailKey;
+  makeHeader(scr, title.c_str(), [](lv_event_t *) { showDrones(); });
+
+  const int btnRowH = 48;
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H - btnRowH);
+  lv_obj_align(box, LV_ALIGN_TOP_MID, 0, HEADER_H);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+  drnDetail = lv_label_create(box);
+  lv_label_set_long_mode(drnDetail, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(drnDetail, LV_PCT(100));
+  lv_label_set_text(drnDetail, "");
+
+  lv_obj_t *hunt = flatBtn(scr, LV_SYMBOL_GPS "  Hunt by signal", W() - 16, 38);
+  lv_obj_align(hunt, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_bg_color(hunt, lv_palette_main(LV_PALETTE_GREEN), 0);
+  lv_obj_add_event_cb(
+      hunt,
+      [](lv_event_t *) {
+        if (!drone::running()) {
+          errorBox("Scanner stopped", "Start the drone scanner to hunt by signal.");
+          return;
+        }
+        drone::Drone d;
+        huntSrc = HuntSrc::Drone;
+        huntDroneKey = drnDetailKey;
+        huntTitle = drone::find(drnDetailKey, d) ? droneTitle(d) : drnDetailKey;
+        huntBack = Screen::DroneDetail;
+        showHunt();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::DroneDetail);
+  refreshDroneDetail();
 }
 
 // ---------- Wi-Fi analyzer ----------
@@ -1910,6 +2184,8 @@ void poll(lv_timer_t *) {
     case Screen::Ble: pollBle(); break;
     case Screen::BleDetail: refreshBleDetail(); break;
     case Screen::Hunt: refreshHunt(); break;
+    case Screen::Drones: pollDrones(); break;
+    case Screen::DroneDetail: refreshDroneDetail(); break;
     case Screen::WifiAnalyzer: pollWifiAnalyzer(); break;
     case Screen::Trackers: pollTrackers(); break;
     case Screen::DateTime: refreshDateTime(); break;

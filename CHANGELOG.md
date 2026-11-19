@@ -3,6 +3,40 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.2.0] - 2026-11-18
+
+### Added
+- **Drone Remote ID scanner** (**Menu > Drone Remote ID**). It decodes standard Open Drone ID
+  (ASTM F3411 / ASD-STAN EN 4709-002) broadcasts, which include DJI's built-in Remote ID:
+  - **Wi-Fi beacons** with the Remote ID vendor IE (OUI FA:0B:BC or 90:3A:E6, type 0x0D). DJI,
+    Skydio, Parrot and most add-on modules use this. Wi-Fi goes into promiscuous mode and hops
+    channels 1-13, with every other stop on channel 6.
+  - **Wi-Fi NaN** service discovery frames for `org.opendroneid.remoteid`.
+  - **Bluetooth 4 legacy** adverts (service data 0xFFFA), through a new NimBLE `Rid` scan mode.
+  - Decodes Basic ID (serial / registration / session ID, aircraft type), Location (position,
+    geodetic and barometric altitude, height, speed, heading, climb rate, status), System (operator
+    position), Operator ID, Self-ID text, and Message Packs. DJI serials (CTA-2063 manufacturer code
+    `1581F`) are labeled.
+  - **Start runs until you tap Stop**, even if you leave the screen. Drones are listed most recent
+    first, greyed out after 30 s of silence, with emergency status in red.
+  - The detail view shows the operator's distance from the drone. Units follow the weather F/C
+    setting (ft and mph vs m and km/h).
+  - **Hunt by signal** reuses the hunt screen. For Wi-Fi drones it stops hopping and stays on the
+    drone's channel.
+  - Rear LED: solid blue while scanning, blinking blue while a drone is being heard, back to green
+    on Stop.
+- `net::suspend()` / `net::resume()`: the station connection is paused while the sniffer owns the
+  radio and reconnects to the saved network afterwards. The desktop shows "Drone scan running - Wi-Fi
+  paused".
+
+### Changed
+- Network settings, the Bluetooth scanner, the tracker detector and the Wi-Fi analyzer are blocked
+  (with an explanation) while the drone scanner is running, since they need the same radios.
+
+### Not supported
+- Bluetooth 5 Long Range Remote ID: the original ESP32 has no coded PHY.
+- DJI's proprietary DroneID / AeroScope signal: it is carried on OcuSync, which needs an SDR.
+
 ## [0.1.1] - 2026-11-18
 
 ### Added

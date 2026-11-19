@@ -3,6 +3,7 @@
 
 #include "ble.h"
 #include "display.h"
+#include "drone.h"
 #include "led.h"
 #include "net.h"
 #include "ota.h"
@@ -44,6 +45,7 @@ void loop() {
   timesvc::loop();
   weather::loop();
   ota::loop();
+  drone::loop();
 
   if (!bootDone && (networkSettled() || millis() > BOOT_LED_MAX_MS)) {
     bootDone = true;

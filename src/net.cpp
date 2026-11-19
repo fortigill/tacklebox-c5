@@ -23,6 +23,7 @@ static uint8_t huntChannel = 0;
 static uint32_t huntNextScan = 0;
 static HuntInfo huntInfo;
 static HuntAccumulator huntAcc;
+static bool isSuspended = false;
 static ScanState scanSt = ScanState::Idle;
 static State st = State::Idle;
 
@@ -93,6 +94,10 @@ void forget() {
 }
 
 void startScan(bool includeHidden) {
+  if (isSuspended) {  // radio is busy sniffing
+    scanSt = ScanState::Failed;
+    return;
+  }
   // A scan can't run while the radio is mid-connect; abort that attempt.
   if (st == State::Connecting) cancel();
   stopHunt();
@@ -135,6 +140,7 @@ static void collectScan(int n) {
 }
 
 void startHunt(const uint8_t bssid[6], uint8_t channel) {
+  if (isSuspended) return;
   if (st == State::Connecting) cancel();
   if (scanSt == ScanState::Running) {  // let a running scan's results be dropped
     WiFi.scanDelete();
@@ -157,6 +163,36 @@ void stopHunt() {
 }
 
 bool hunting() { return huntOn; }
+
+void suspend() {
+  if (isSuspended) return;
+  isSuspended = true;
+  stopHunt();
+  if (scanSt == ScanState::Running) {
+    WiFi.scanDelete();
+    scanSt = ScanState::Idle;
+  }
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  st = State::Idle;
+  Serial.println("[net] suspended for radio sniffing");
+}
+
+void resume() {
+  if (!isSuspended) return;
+  isSuspended = false;
+  WiFi.setAutoReconnect(true);
+  prefs.begin("wifi", false);
+  String s = prefs.isKey("ssid") ? prefs.getString("ssid") : String();
+  String p = prefs.isKey("pass") ? prefs.getString("pass") : String();
+  prefs.end();
+  if (s.length()) {
+    Serial.printf("[net] resuming, reconnecting to '%s'\n", s.c_str());
+    connect(s, p, false);
+  }
+}
+
+bool suspended() { return isSuspended; }
 HuntInfo hunt() { return huntInfo; }
 
 static void huntLoop() {
@@ -186,6 +222,7 @@ static void huntLoop() {
 }
 
 void loop() {
+  if (isSuspended) return;  // radio is in use by the sniffer
   if (huntOn) huntLoop();
   if (scanSt == ScanState::Running) {
     int n = WiFi.scanComplete();

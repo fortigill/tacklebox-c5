@@ -31,6 +31,7 @@ uint32_t scanRound = 0;
 
 String huntAddr;
 HuntInfo huntInfo;
+RidSink ridSink = nullptr;
 HuntAccumulator huntAcc;
 
 Preferences prefs;
@@ -142,6 +143,22 @@ void recordTracker(const String &addr, Tracker t, int rssi, uint32_t now) {  // 
 
 class Callbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice *d) override {
+    if (md == Mode::Rid) {  // drone scanner: only Remote ID service data matters
+      RidSink sink = ridSink;
+      if (!sink) return;
+      NimBLEUUID rid((uint16_t)0xFFFA);  // ASTM Remote ID
+      for (uint8_t i = 0; i < d->getServiceDataCount(); i++) {
+        if (!(d->getServiceDataUUID(i) == rid)) continue;
+        std::string sd = d->getServiceData(i);
+        // [0x0D app code][message counter][25-byte message]
+        if (sd.size() >= 27 && (uint8_t)sd[0] == 0x0D) {
+          std::string a = d->getAddress().toString();
+          sink((const uint8_t *)sd.data() + 2, sd.size() - 2, a.c_str(), d->getRSSI());
+        }
+      }
+      return;
+    }
+
     String addr = d->getAddress().toString().c_str();
     uint32_t now = millis();
     std::lock_guard<std::mutex> lock(mtx);
@@ -229,6 +246,18 @@ bool startHunt(const String &addr) {
     md = Mode::Hunt;
   }
   scan->start(0, false, true);  // 0 = until stopped
+  return true;
+}
+
+bool startRid(RidSink sink) {
+  if (!ensureStarted()) return false;
+  radioStop();
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    ridSink = sink;
+    md = Mode::Rid;
+  }
+  scan->start(0, false, true);  // until stopped
   return true;
 }
 

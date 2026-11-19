@@ -30,6 +30,12 @@ enum class ScanState { Idle, Running, Done, Failed };
 void begin();   // loads saved credentials and auto-connects
 void loop();    // call from loop()
 
+// Drop the station connection so the radio can be used for sniffing, and
+// bring it back afterwards (reconnects to the saved network).
+void suspend();
+void resume();
+bool suspended();
+
 void startScan(bool includeHidden = false);
 ScanState scanState();
 const std::vector<AccessPoint> &results();  // sorted strongest first, deduped

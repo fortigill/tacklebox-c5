@@ -3,6 +3,25 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.0] - 2026-11-19
+
+### Added
+- NOAA buoy data (NDBC):
+  - **Desktop:** "Waves 4' 7"" below the status bar. Tap it for the buoy page. It shows meters
+    in Celsius mode.
+  - **Weather > Buoy data:** a page with the significant wave height, wave direction,
+    dominant/average period, wind and gusts (kt), water and air temperature, pressure, and the
+    observation time (waves are reported about hourly, wind every 10 min, so each value comes
+    from the newest row that has it).
+  - **Choose buoy:** 41009 Canaveral 20 NM E (the default), 41113 Cape Canaveral Nearshore,
+    41010 Canaveral East, 41114 Fort Pierce, 41012 St. Augustine, or any station ID typed in.
+  - The "Show waves on desktop" switch also turns monitoring on and off.
+- How it's fetched: from `www.ndbc.noaa.gov/data/realtime2/<id>.txt`. Plain HTTP is tried
+  first, then HTTPS. Lines are parsed as they arrive with a 200-byte buffer and the read stops
+  after about 8 KB, so the ~600 KB file never sits in RAM. It refreshes every 30 min (retries
+  after 5 min), with the first check 45 s after boot, and never runs at the same time as the
+  forecast or alert downloads. The buoy works without a ZIP code.
+
 ## [0.6.4] - 2026-11-19
 
 ### Changed

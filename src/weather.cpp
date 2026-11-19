@@ -8,6 +8,7 @@
 #include <WiFiClientSecure.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
 
@@ -31,6 +32,12 @@ const uint16_t HTTP_TIMEOUT_MS = 8000;
 const char *ALERTS_TMP = "/nws.json";          // alert download is saved here, then parsed offline
 const size_t ALERTS_MAX_BYTES = 96 * 1024;     // fits the 128 KB SPIFFS partition
 const uint32_t FULLTEXT_MIN_BLOCK = 48 * 1024; // keep the long alert texts only with this much RAM
+// NDBC buoys: waves are reported about hourly, so every 30 min is plenty
+const uint32_t BUOY_REFRESH_MS = 30UL * 60 * 1000;
+const uint32_t BUOY_RETRY_MS = 5UL * 60 * 1000;
+const uint32_t BUOY_BOOT_DELAY_MS = 45000;  // after the first forecast and alert checks
+const size_t BUOY_READ_BYTES = 8192;        // newest rows of a ~600 KB file are enough
+const char *BUOY_DEFAULT = "41009";         // Canaveral, 20 NM east of Cape Canaveral
 
 std::mutex mtx;
 Preferences prefs;
@@ -57,6 +64,13 @@ uint32_t alertsVer = 0;
 uint32_t alertsFetchedMs = 0;
 String alertsErr;
 
+// NDBC buoy (guarded by mtx)
+String buoyId;
+bool buoyOn = true;
+Buoy buoyData;
+String buoyErr;
+uint32_t buoyVer = 0;
+
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
 bool attempted = false;
@@ -66,13 +80,17 @@ uint32_t alLastAttempt = 0;
 bool alAttempted = false;
 bool alLastOk = false;
 bool alForce = false;
+uint32_t byLastAttempt = 0;
+bool byAttempted = false;
+bool byLastOk = false;
+bool byForce = false;
 volatile bool taskRunning = false;
 volatile bool tlsBusy = false;  // an HTTPS session is open (holds ~40 KB of heap)
 struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2 };
+enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4 };
 uint8_t taskFlags = 0;
 volatile bool locDirty = false;  // task resolved a location; save it from loop()
 
@@ -361,6 +379,191 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
   return parseAlerts(out, why);
 }
 
+// ---------- NDBC buoy data ----------
+// https://www.ndbc.noaa.gov/data/realtime2/<station>.txt holds 45 days of
+// observations, newest first, as fixed columns:
+//   #YY  MM DD hh mm WDIR WSPD GST  WVHT   DPD   APD MWD   PRES  ATMP  WTMP  DEWP  VIS PTDY  TIDE
+//   #yr  mo dy hr mn degT m/s  m/s     m   sec   sec degT   hPa  degC  degC  degC  nmi  hPa    ft
+//   (rows of numbers follow, newest first)
+// Only the first few KB are read; "MM" means missing. Waves come in about
+// once an hour while wind comes every 10 minutes, so each value is taken from
+// the newest row that has it.
+
+uint32_t epochUtc(int Y, int M, int D, int h, int m) {
+  Y -= M <= 2;
+  const int era = (Y >= 0 ? Y : Y - 399) / 400;
+  const unsigned yoe = (unsigned)(Y - era * 400);
+  const unsigned doy = (153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const long days = era * 146097L + (long)doe - 719468L;
+  return (uint32_t)(days * 86400L + h * 3600L + m * 60L);
+}
+
+// Incremental parser: fed one line at a time straight off the connection, so
+// only a 200-byte line buffer is needed even while TLS holds most of the heap.
+struct BuoyParse {
+  enum { YY, MO, DY, HH, MN, WDIR, WSPD, GST, WVHT, DPD, APD, MWD, PRES, ATMP, WTMP, NF };
+  int col[NF];
+  int ncols = 0;
+  float val[NF];
+  uint32_t obsTime = 0, waveTime = 0;
+  int rows = 0;
+  bool badFormat = false;
+  BuoyParse() {
+    for (int &c : col) c = -1;
+    for (float &v : val) v = NAN;
+  }
+  bool complete() const {
+    for (int f = WDIR; f < NF; f++)
+      if (col[f] >= 0 && std::isnan(val[f])) return false;
+    return rows > 0;
+  }
+  // Returns true when no more lines are needed
+  bool feed(char *line) {
+    static const char *names[NF] = {"YY",   "MM",  "DD",  "hh",  "mm",   "WDIR", "WSPD", "GST",
+                                    "WVHT", "DPD", "APD", "MWD", "PRES", "ATMP", "WTMP"};
+    char *s2 = nullptr;
+    if (line[0] == '#') {
+      if (ncols) return false;  // the units line
+      int i = 0;
+      for (char *t = strtok_r(line + 1, " \r", &s2); t; t = strtok_r(nullptr, " \r", &s2), i++)
+        for (int f = 0; f < NF; f++)
+          if (col[f] < 0 && strcmp(t, names[f]) == 0) {
+            col[f] = i;
+            break;
+          }
+      ncols = i;
+      return false;
+    }
+    if (!ncols || col[YY] < 0 || col[MN] < 0 || col[WVHT] < 0) {
+      badFormat = true;
+      return true;
+    }
+    char *tok[24];
+    int n = 0;
+    for (char *t = strtok_r(line, " \r", &s2); t && n < 24; t = strtok_r(nullptr, " \r", &s2)) tok[n++] = t;
+    if (n != ncols) return false;  // not a data row (or garbled)
+    uint32_t when = epochUtc(atoi(tok[col[YY]]), atoi(tok[col[MO]]), atoi(tok[col[DY]]), atoi(tok[col[HH]]),
+                             atoi(tok[col[MN]]));
+    if (!rows++) obsTime = when;
+    for (int f = WDIR; f < NF; f++) {
+      if (col[f] < 0 || !std::isnan(val[f]) || strcmp(tok[col[f]], "MM") == 0) continue;
+      val[f] = atof(tok[col[f]]);
+      if (f == WVHT) waveTime = when;
+    }
+    return complete() || rows >= 80;  // ~13 h of 10-minute rows
+  }
+};
+
+// Reads lines off the body into the parser until it has what it needs or
+// BUOY_READ_BYTES were read. Returns the number of bytes read.
+size_t readBuoyLines(HTTPClient &http, BuoyParse &bp) {
+  auto *in = http.getStreamPtr();
+  const int total = http.getSize();  // -1 when chunked
+  bool skipChunkHdr = total < 0;     // first line of a chunked body is its size
+  char line[200];
+  size_t len = 0, read = 0;
+  uint32_t last = millis();
+  while (in && read < BUOY_READ_BYTES && (total < 0 || read < (size_t)total) &&
+         (in->connected() || in->available())) {
+    int c = in->read();
+    if (c < 0) {
+      if (millis() - last > 10000) break;
+      delay(5);
+      continue;
+    }
+    last = millis();
+    read++;
+    if (c == '\n') {
+      line[len] = 0;
+      len = 0;
+      if (skipChunkHdr) {
+        skipChunkHdr = false;
+        continue;
+      }
+      if (bp.feed(line)) break;
+    } else if (len < sizeof(line) - 1) {
+      line[len++] = (char)c;
+    }
+  }
+  return read;
+}
+
+bool fetchBuoy(const String &station, Buoy &out, String &why) {
+  const String path = "www.ndbc.noaa.gov/data/realtime2/" + station + ".txt";
+  BuoyParse bp;
+  bool got = false;
+  for (int secure = 0; secure < 2 && !got; secure++) {  // plain HTTP first: no TLS, far less RAM
+    std::unique_ptr<TlsGuard> guard;                     // declared first, released last
+    if (secure) {
+      if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {
+        why = String("skipped, low memory (") + ESP.getMaxAllocHeap() / 1024 + " KB free block)";
+        return false;
+      }
+      guard.reset(new TlsGuard());
+    }
+    WiFiClient plain;
+    WiFiClientSecure tls;
+    HTTPClient http;  // after the clients, so it is destroyed first
+    http.setTimeout(15000);
+    http.setConnectTimeout(15000);
+    http.setReuse(false);
+    bool ok;
+    if (secure) {
+      tls.setInsecure();  // public, read-only data
+      ok = http.begin(tls, "https://" + path);
+    } else {
+      ok = http.begin(plain, "http://" + path);
+    }
+    if (!ok) {
+      why = "bad URL";
+      return false;
+    }
+    http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
+    int code = http.GET();
+    Serial.printf("[buoy] %s %s -> %d\n", secure ? "https" : "http", station.c_str(), code);
+    if (code == 200) {
+      size_t n = readBuoyLines(http, bp);
+      Serial.printf("[buoy] read %u bytes, %d rows\n", (unsigned)n, bp.rows);
+      got = true;
+    } else if (code == 404) {
+      why = "station " + station + " not found (no recent data)";
+      http.end();
+      return false;
+    } else {
+      why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
+      // 301/302 to https, or plain HTTP blocked: try again over TLS
+    }
+    http.end();
+  }
+  if (!got) return false;
+  if (bp.badFormat) {
+    why = "unexpected data format";
+    return false;
+  }
+  if (!bp.rows) {
+    why = "no observations in the data";
+    return false;
+  }
+  out.station = station;
+  out.obsTime = bp.obsTime;
+  out.waveTime = bp.waveTime;
+  const float *v = bp.val;
+  out.waveM = v[BuoyParse::WVHT];
+  out.domPeriodS = v[BuoyParse::DPD];
+  out.avgPeriodS = v[BuoyParse::APD];
+  out.waveDirDeg = std::isnan(v[BuoyParse::MWD]) ? -1 : (int)v[BuoyParse::MWD];
+  out.windDirDeg = std::isnan(v[BuoyParse::WDIR]) ? -1 : (int)v[BuoyParse::WDIR];
+  out.windMs = v[BuoyParse::WSPD];
+  out.gustMs = v[BuoyParse::GST];
+  out.pressHpa = v[BuoyParse::PRES];
+  out.airC = v[BuoyParse::ATMP];
+  out.waterC = v[BuoyParse::WTMP];
+  out.fetchedMs = millis();
+  out.valid = true;
+  return true;
+}
+
 void saveSnoozed() {  // caller holds mtx
   String s;
   for (const auto &id : snoozedIds) s += id + "\n";
@@ -401,7 +604,38 @@ void applyAlerts(std::vector<Alert> &fresh) {
 // All the fetch work lives here so its locals (Strings, JSON) are destroyed
 // when it returns. vTaskDelete() never returns, so anything still in scope in
 // the task function itself would leak on every fetch.
+void buoyWork() {
+  String id;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    id = buoyId;
+  }
+  Buoy b;
+  String why;
+  bool ok = fetchBuoy(id, b, why);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (id == buoyId) {  // ignore if the station was changed meanwhile
+      if (ok) {
+        buoyData = b;
+        buoyErr = "";
+      } else {
+        buoyErr = why;
+      }
+      buoyVer++;
+    }
+  }
+  if (ok)
+    Serial.printf("[buoy] %s: waves %.2f m, period %.0f s, water %.1f C\n", id.c_str(), b.waveM, b.domPeriodS,
+                  b.waterC);
+  else
+    Serial.printf("[buoy] %s failed: %s\n", id.c_str(), why.c_str());
+  byLastOk = ok;
+}
+
 void fetchWork() {
+  if (taskFlags & DO_BUOY) buoyWork();
+  if (!(taskFlags & (DO_FORECAST | DO_ALERTS))) return;  // buoy-only run
   String zip, place, why;
   float la, lo;
   bool have;
@@ -494,6 +728,10 @@ void startFetch(uint8_t flags) {
     alAttempted = true;
     alLastAttempt = millis();
   }
+  if (flags & DO_BUOY) {
+    byAttempted = true;
+    byLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -505,6 +743,10 @@ void startFetch(uint8_t flags) {
     if (flags & DO_ALERTS) {
       alertsErr = "not enough memory";
       alLastOk = false;
+    }
+    if (flags & DO_BUOY) {
+      buoyErr = "not enough memory";
+      byLastOk = false;
     }
   }
 }
@@ -521,6 +763,8 @@ void begin() {
   unitF = prefs.getBool("unitF", true);
   iconOn = prefs.getBool("icon", true);
   String sn = prefs.isKey("asnz") ? prefs.getString("asnz") : String();
+  buoyId = prefs.isKey("buoy") ? prefs.getString("buoy") : String(BUOY_DEFAULT);
+  buoyOn = prefs.getBool("buoyOn", true);
   prefs.end();
   for (int i = 0; i < (int)sn.length();) {
     int nl = sn.indexOf('\n', i);
@@ -557,14 +801,22 @@ void loop() {
     }
   }
 
-  if (taskRunning || !configured() || net::state() != net::State::Connected) return;
+  if (taskRunning || net::state() != net::State::Connected) return;
   uint8_t flags = 0;
-  if (force || !attempted || millis() - lastAttempt >= (lastOk ? REFRESH_MS : RETRY_MS)) flags |= DO_FORECAST;
-  if (millis() >= ALERTS_BOOT_DELAY_MS &&
-      (alForce || !alAttempted || millis() - alLastAttempt >= (alLastOk ? ALERTS_REFRESH_MS : RETRY_MS)))
-    flags |= DO_ALERTS;
+  if (configured()) {
+    if (force || !attempted || millis() - lastAttempt >= (lastOk ? REFRESH_MS : RETRY_MS)) flags |= DO_FORECAST;
+    if (millis() >= ALERTS_BOOT_DELAY_MS &&
+        (alForce || !alAttempted || millis() - alLastAttempt >= (alLastOk ? ALERTS_REFRESH_MS : RETRY_MS)))
+      flags |= DO_ALERTS;
+  }
+  // The buoy doesn't need a ZIP code. It runs on its own, after the first
+  // forecast and alert checks, so two TLS downloads never overlap.
+  if (buoyOn && buoyId.length() && !flags && (millis() >= BUOY_BOOT_DELAY_MS || byForce) &&
+      (byForce || !byAttempted || millis() - byLastAttempt >= (byLastOk ? BUOY_REFRESH_MS : BUOY_RETRY_MS)))
+    flags |= DO_BUOY;
   if (flags) {
     force = alForce = false;
+    if (flags & DO_BUOY) byForce = false;
     startFetch(flags);
   }
 }
@@ -765,6 +1017,92 @@ String alertsStatus() {
   char b[64];
   snprintf(b, sizeof(b), "NWS checked %lu min ago, every 5 min",
            (unsigned long)((millis() - alertsFetchedMs) / 60000));
+  return b;
+}
+
+// ---------- NDBC buoy API ----------
+
+namespace {
+const BuoyPreset PRESETS[] = {
+    {"41009", "Canaveral, 20 NM E of Cape Canaveral"},
+    {"41113", "Cape Canaveral Nearshore"},
+    {"41010", "Canaveral East, 120 NM E of Cape Canaveral"},
+    {"41114", "Fort Pierce, FL"},
+    {"41012", "St. Augustine, 40 NM ENE"},
+};
+}
+
+const BuoyPreset *buoyPresets(size_t &n) {
+  n = sizeof(PRESETS) / sizeof(PRESETS[0]);
+  return PRESETS;
+}
+
+String buoyName(const String &id) {
+  for (const auto &p : PRESETS)
+    if (id == p.id) return p.name;
+  return "";
+}
+
+String buoyStation() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return buoyId;
+}
+
+void setBuoyStation(const String &id) {
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (id == buoyId && buoyData.valid) return;
+    buoyId = id;
+    buoyData = Buoy();
+    buoyErr = "";
+    buoyVer++;
+  }
+  prefs.begin("wx", false);
+  prefs.putString("buoy", id);
+  prefs.end();
+  byForce = true;
+}
+
+bool showBuoy() { return buoyOn; }
+
+void setShowBuoy(bool on) {
+  buoyOn = on;
+  prefs.begin("wx", false);
+  prefs.putBool("buoyOn", on);
+  prefs.end();
+  if (on) byForce = true;
+}
+
+void refreshBuoy() { byForce = true; }
+
+Buoy buoy() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return buoyData;
+}
+
+uint32_t buoyVersion() { return buoyVer; }
+
+String buoyStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!buoyOn) return "Buoy monitoring is off.";
+  if (buoyErr.length()) return "Buoy update failed: " + buoyErr;
+  if (!buoyData.valid)
+    return millis() < BUOY_BOOT_DELAY_MS ? "First buoy check 45 s after startup..." : "Getting buoy data from NOAA...";
+  char b[64];
+  snprintf(b, sizeof(b), "Checked %lu min ago, every 30 min - NOAA NDBC",
+           (unsigned long)((millis() - buoyData.fetchedMs) / 60000));
+  return b;
+}
+
+String waveText(float m) {
+  if (std::isnan(m)) return "--";
+  char b[16];
+  if (unitF) {
+    long in = lroundf(m * 39.3701f);
+    snprintf(b, sizeof(b), "%ld' %ld\"", in / 12, in % 12);
+  } else {
+    snprintf(b, sizeof(b), "%.1f m", m);
+  }
   return b;
 }
 

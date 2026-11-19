@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <lvgl.h>
 
+#include <cmath>
 #include <vector>
 
 #include "ble.h"
@@ -26,7 +27,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId
 };
 
 const int HEADER_H = 40;
@@ -55,6 +56,10 @@ uint32_t wxaVer = 0;
 int deskWxBlink = -1;               // last opacity state applied to the desktop weather
 lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
+lv_obj_t *deskWave = nullptr;  // desktop wave height (tap for the buoy page)
+lv_obj_t *byWave = nullptr, *byName = nullptr, *byDetail = nullptr, *byStatus = nullptr, *byIdTa = nullptr;
+uint32_t byVer = 0;
+Screen buoyBack = Screen::Weather;
 
 // Temperature readout: number, a drawn degree ring (the built-in fonts have
 // no degree sign) and the unit letter
@@ -175,6 +180,9 @@ void showWeather();
 void showWeatherZip();
 void showWxAlerts();
 void showWxAlertDetail();
+void showBuoy();
+void showBuoyPick();
+void showBuoyId();
 
 // ---------- helpers ----------
 
@@ -184,6 +192,8 @@ void resetPtrs() {
   deskDrone = nullptr;
   deskDroneState = -1;
   wxaList = wxaStatus = nullptr;
+  deskWave = byWave = byName = byDetail = byStatus = byIdTa = nullptr;
+  byVer = 0;
   deskWxBlink = -1;
   deskTemp = TempW();
   wxTemp = TempW();
@@ -428,6 +438,16 @@ void refreshDesktop() {
     }
   }
 
+  if (deskWave) {
+    bool on = weather::showBuoy();
+    setHidden(deskWave, !on);
+    if (on) {
+      weather::Buoy b = weather::buoy();
+      String t = "Waves " + weather::waveText(b.waveM);
+      setText(deskWave, t.c_str());
+    }
+  }
+
   weather::Data wx = weather::data();
   bool wxAlert = weather::unsnoozedAlertCount() > 0;
   setHidden(deskWx, !weather::configured());
@@ -545,6 +565,22 @@ void showDesktop() {
   lv_obj_set_style_text_font(lv_obj_get_child(mb, 0), &lv_font_montserrat_20, 0);
   lv_obj_align(mb, LV_ALIGN_CENTER, 0, 4);
   lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
+
+  // Buoy wave height between the status bar and the menu; tap for the buoy page
+  deskWave = lv_label_create(scr);
+  lv_obj_set_style_text_font(deskWave, &lv_font_montserrat_20, 0);
+  lv_label_set_text(deskWave, "Waves --");
+  lv_obj_align(deskWave, LV_ALIGN_TOP_MID, 0, H() > W() ? 60 : 46);
+  lv_obj_add_flag(deskWave, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(deskWave, 10);
+  lv_obj_add_flag(deskWave, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(
+      deskWave,
+      [](lv_event_t *) {
+        buoyBack = Screen::Desktop;
+        showBuoy();
+      },
+      LV_EVENT_CLICKED, nullptr);
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -2046,6 +2082,21 @@ void showWeather() {
     lv_obj_add_event_cb(ab, [](lv_event_t *) { showWxAlerts(); }, LV_EVENT_CLICKED, nullptr);
   }
 
+  // NOAA buoy sub-page
+  {
+    weather::Buoy by = weather::buoy();
+    String t = "Buoy data (" + weather::buoyStation() + ")";
+    if (weather::showBuoy() && by.valid) t += ": " + weather::waveText(by.waveM);
+    lv_obj_t *bb = lv_list_add_btn(list, LV_SYMBOL_GPS, t.c_str());
+    lv_obj_add_event_cb(
+        bb,
+        [](lv_event_t *) {
+          buoyBack = Screen::Weather;
+          showBuoy();
+        },
+        LV_EVENT_CLICKED, nullptr);
+  }
+
   b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
   lv_obj_add_event_cb(
       b,
@@ -2226,6 +2277,211 @@ void showWxAlertDetail() {
       LV_EVENT_CLICKED, nullptr);
 
   load(scr, Screen::WxAlertDetail);
+}
+
+// ---------- NOAA buoy ----------
+
+const char *compass(int deg) {
+  static const char *pts[] = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                              "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
+  if (deg < 0) return "--";
+  return pts[((deg * 10 + 112) / 225) % 16];
+}
+
+String fmtTemp(float c) {
+  if (std::isnan(c)) return "--";
+  return String(weather::temp(c)) + (weather::useF() ? " F" : " C");
+}
+
+void refreshBuoyScreen() {
+  if (!byStatus) return;
+  setText(byStatus, weather::buoyStatus().c_str());
+  if (weather::buoyVersion() == byVer) return;
+  byVer = weather::buoyVersion();
+
+  weather::Buoy b = weather::buoy();
+  String id = weather::buoyStation();
+  String name = weather::buoyName(id);
+  setText(byName, (name.length() ? name : String("NDBC station ") + id).c_str());
+  setText(byWave, weather::waveText(b.waveM).c_str());
+  if (!b.valid) {
+    setText(byDetail, "");
+    return;
+  }
+  char buf[320];
+  int n = 0;
+  auto add = [&](const char *fmt, auto... args) {
+    if (n < (int)sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, fmt, args...);
+  };
+  add("%s", "Significant wave height");
+  if (b.waveDirDeg >= 0) add(", from %s (%d)", compass(b.waveDirDeg), b.waveDirDeg);
+  if (!std::isnan(b.domPeriodS)) add("\nDominant period %.0f s", b.domPeriodS);
+  if (!std::isnan(b.avgPeriodS)) add(", average %.1f s", b.avgPeriodS);
+  if (!std::isnan(b.windMs)) {
+    add("\nWind %s %.0f kt", compass(b.windDirDeg), b.windMs * 1.94384f);
+    if (!std::isnan(b.gustMs)) add(", gusts %.0f kt", b.gustMs * 1.94384f);
+  }
+  if (!std::isnan(b.waterC) || !std::isnan(b.airC))
+    add("\nWater %s, air %s", fmtTemp(b.waterC).c_str(), fmtTemp(b.airC).c_str());
+  if (!std::isnan(b.pressHpa)) {
+    if (weather::useF()) add("\nPressure %.2f inHg", b.pressHpa * 0.02953f);
+    else add("\nPressure %.0f hPa", b.pressHpa);
+  }
+  char t1[32], t2[32];
+  timesvc::formatEpoch(b.obsTime, t1, sizeof(t1));
+  add("\nObserved %s", t1);
+  if (b.waveTime && b.waveTime != b.obsTime) {
+    timesvc::formatEpoch(b.waveTime, t2, sizeof(t2));
+    add(" (waves %s)", t2);
+  }
+  setText(byDetail, buf);
+}
+
+void showBuoy() {
+  lv_obj_t *scr = newScreen();
+  String title = "Buoy " + weather::buoyStation();
+  makeHeader(scr, title.c_str(), [](lv_event_t *) {
+    if (buoyBack == Screen::Desktop) showDesktop();
+    else showWeather();
+  });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_set_style_pad_row(card, 4, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+  byName = lv_label_create(card);
+  lv_label_set_long_mode(byName, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(byName, LV_PCT(100));
+  lv_label_set_text(byName, "");
+  byWave = lv_label_create(card);
+  lv_obj_set_style_text_font(byWave, &lv_font_montserrat_48, 0);
+  lv_label_set_text(byWave, "--");
+  byDetail = lv_label_create(card);
+  lv_label_set_long_mode(byDetail, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(byDetail, LV_PCT(100));
+  lv_label_set_text(byDetail, "");
+  byStatus = lv_label_create(card);
+  lv_label_set_long_mode(byStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(byStatus, LV_PCT(100));
+  lv_obj_set_style_text_opa(byStatus, LV_OPA_70, 0);
+  lv_label_set_text(byStatus, "");
+
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Choose buoy");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showBuoyPick(); }, LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show waves on desktop");
+  lv_obj_t *sw = lv_switch_create(b);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showBuoy()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *e) {
+        lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showBuoy();
+        weather::setShowBuoy(on);
+        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+        byVer = 0;  // redraw the status line
+      },
+      LV_EVENT_CLICKED, sw);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get buoy data.");
+          return;
+        }
+        if (!weather::showBuoy()) weather::setShowBuoy(true);
+        weather::refreshBuoy();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::Buoy);
+  refreshBuoyScreen();
+}
+
+void onBuoyPicked(lv_event_t *e) {
+  const char *id = (const char *)lv_event_get_user_data(e);
+  weather::setBuoyStation(id);
+  if (!weather::showBuoy()) weather::setShowBuoy(true);
+  showBuoy();
+}
+
+void showBuoyPick() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Choose buoy", [](lv_event_t *) { showBuoy(); });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  String curId = weather::buoyStation();
+  size_t n;
+  const weather::BuoyPreset *p = weather::buoyPresets(n);
+  lv_list_add_text(list, "Nearby NOAA buoys");
+  for (size_t i = 0; i < n; i++) {
+    String t = String(p[i].id) + "  " + p[i].name;
+    lv_obj_t *b = lv_list_add_btn(list, curId == p[i].id ? LV_SYMBOL_OK : LV_SYMBOL_GPS, t.c_str());
+    lv_obj_add_event_cb(b, onBuoyPicked, LV_EVENT_CLICKED, (void *)p[i].id);
+  }
+  lv_obj_t *o = lv_list_add_btn(list, LV_SYMBOL_KEYBOARD, "Other station ID...");
+  lv_obj_add_event_cb(o, [](lv_event_t *) { showBuoyId(); }, LV_EVENT_CLICKED, nullptr);
+  lv_list_add_text(list, "Station IDs: ndbc.noaa.gov map");
+  load(scr, Screen::BuoyPick);
+}
+
+void showBuoyId() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Buoy station ID", [](lv_event_t *) { showBuoyPick(); });
+
+  byIdTa = lv_textarea_create(scr);
+  lv_textarea_set_one_line(byIdTa, true);
+  lv_textarea_set_accepted_chars(byIdTa, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+  lv_textarea_set_max_length(byIdTa, 7);
+  lv_textarea_set_placeholder_text(byIdTa, "e.g. 41009");
+  lv_textarea_set_text(byIdTa, weather::buoyStation().c_str());
+  lv_obj_set_width(byIdTa, W() - 8);
+  lv_obj_align(byIdTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
+  lv_obj_add_state(byIdTa, LV_STATE_FOCUSED);
+
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+  lv_obj_set_size(kb, W(), kbH);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(kb, byIdTa);
+  lv_obj_add_event_cb(
+      kb,
+      [](lv_event_t *e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        if (code == LV_EVENT_CANCEL) {
+          showBuoyPick();
+        } else if (code == LV_EVENT_READY) {
+          String id = lv_textarea_get_text(byIdTa);
+          id.trim();
+          id.toUpperCase();
+          if (id.length() < 4) {
+            errorBox("Invalid ID", "Enter an NDBC station ID, for example 41009.");
+            return;
+          }
+          weather::setBuoyStation(id);
+          if (!weather::showBuoy()) weather::setShowBuoy(true);
+          showBuoy();
+        }
+      },
+      LV_EVENT_ALL, nullptr);
+
+  load(scr, Screen::BuoyId);
 }
 
 // ---------- Date & time ----------
@@ -2702,6 +2958,7 @@ void poll(lv_timer_t *) {
     case Screen::DateTime: refreshDateTime(); break;
     case Screen::Weather: refreshWeather(); break;
     case Screen::WxAlerts: pollWxAlerts(); break;
+    case Screen::Buoy: refreshBuoyScreen(); break;
     default: break;
   }
 }

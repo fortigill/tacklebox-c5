@@ -73,6 +73,38 @@ uint32_t alertsVersion();                // changes whenever the list changes
 String alertsStatus();                   // last update / error, for display
 int severityRank(const String &severity);  // 4 Extreme .. 0 Unknown
 
+// ---- NDBC buoy (www.ndbc.noaa.gov, any station id) ----
+// Latest observation of one buoy, refreshed every 30 minutes. Missing values
+// are NAN (or -1 for directions).
+struct Buoy {
+  bool valid = false;
+  String station;
+  uint32_t obsTime = 0;   // newest row, epoch UTC
+  uint32_t waveTime = 0;  // row the wave values came from
+  float waveM = NAN;      // significant wave height
+  float domPeriodS = NAN, avgPeriodS = NAN;
+  int waveDirDeg = -1;    // direction waves come from
+  int windDirDeg = -1;
+  float windMs = NAN, gustMs = NAN;
+  float pressHpa = NAN, airC = NAN, waterC = NAN;
+  uint32_t fetchedMs = 0;
+};
+struct BuoyPreset {
+  const char *id;
+  const char *name;
+};
+const BuoyPreset *buoyPresets(size_t &n);  // nearby buoys offered in the picker
+String buoyName(const String &id);         // preset name, or "" for other stations
+String buoyStation();                      // default 41009
+void setBuoyStation(const String &id);
+bool showBuoy();                           // monitor + show wave height on the desktop
+void setShowBuoy(bool on);
+void refreshBuoy();
+Buoy buoy();
+uint32_t buoyVersion();                    // changes when buoy data or status changes
+String buoyStatus();
+String waveText(float m);                  // 4' 7" (or 1.4 m in Celsius mode)
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

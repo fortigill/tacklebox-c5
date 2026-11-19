@@ -234,39 +234,59 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
     http.end();
     return false;
   }
-  // Keep only the fields we show; alert texts can be long
+  // Parse one alert at a time straight off the stream: each feature is
+  // deserialized (keeping only the fields we show), copied out and freed
+  // before the next. Holding the whole response at once runs out of RAM while
+  // the TLS session is still using ~40 KB.
   JsonDocument filter;
   for (const char *k : {"id", "event", "headline", "severity", "urgency", "certainty", "areaDesc", "onset",
                         "expires", "ends", "description", "instruction", "senderName", "status"})
-    filter["features"][0]["properties"][k] = true;
-  JsonDocument doc;
-  DeserializationError e = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
-  if (e) {
-    why = String("bad alert data: ") + e.c_str();
+    filter["properties"][k] = true;
+
+  Stream &in = http.getStream();
+  in.setTimeout(10000);
+  if (!in.find("\"features\"") || !in.find("[")) {
+    why = "unexpected alert data";
+    http.end();
     return false;
   }
-  for (JsonObject f : doc["features"].as<JsonArray>()) {
-    JsonObject p = f["properties"];
-    if (strcmp(p["status"] | "Actual", "Actual") != 0) continue;  // skip tests and exercises
-    Alert a;
-    a.id = p["id"] | "";
-    if (a.id.isEmpty()) continue;
-    a.event = p["event"] | "Weather alert";
-    a.headline = clip(p["headline"] | "", 200);
-    a.severity = p["severity"] | "Unknown";
-    a.urgency = p["urgency"] | "";
-    a.certainty = p["certainty"] | "";
-    a.area = clip(p["areaDesc"] | "", 200);
-    a.description = clip(p["description"] | "", MAX_DESC);
-    a.instruction = clip(p["instruction"] | "", MAX_INSTR);
-    a.sender = p["senderName"] | "";
-    a.onset = parseIso(p["onset"] | "");
-    const char *ends = p["ends"] | "";
-    a.until = parseIso(*ends ? ends : (p["expires"] | ""));
-    out.push_back(a);
-    if (out.size() >= MAX_ALERTS) break;
+  bool okAll = true;
+  while (out.size() < MAX_ALERTS) {
+    // Skip whitespace; an empty array ends right here
+    int c;
+    while ((c = in.peek()) == ' ' || c == '\n' || c == '\r' || c == '\t') in.read();
+    if (c == ']') break;
+
+    JsonDocument doc;
+    DeserializationError e = deserializeJson(doc, in, DeserializationOption::Filter(filter));
+    if (e) {
+      why = String("bad alert data: ") + e.c_str() + ", free RAM " + ESP.getFreeHeap() / 1024 + " KB";
+      okAll = false;
+      break;
+    }
+    JsonObject p = doc["properties"];
+    if (strcmp(p["status"] | "Actual", "Actual") == 0 && (p["id"] | "")[0]) {  // skip tests/exercises
+      Alert a;
+      a.id = p["id"] | "";
+      a.event = p["event"] | "Weather alert";
+      a.headline = clip(p["headline"] | "", 200);
+      a.severity = p["severity"] | "Unknown";
+      a.urgency = p["urgency"] | "";
+      a.certainty = p["certainty"] | "";
+      a.area = clip(p["areaDesc"] | "", 200);
+      a.description = clip(p["description"] | "", MAX_DESC);
+      a.instruction = clip(p["instruction"] | "", MAX_INSTR);
+      a.sender = p["senderName"] | "";
+      a.onset = parseIso(p["onset"] | "");
+      const char *ends = p["ends"] | "";
+      a.until = parseIso(*ends ? ends : (p["expires"] | ""));
+      out.push_back(a);
+    }
+    if (!in.findUntil(",", "]")) break;  // next feature, or end of the array
   }
+  http.end();
+  if (!okAll && out.empty()) return false;
+  if (!okAll) Serial.printf("[wx] NWS: kept %u alert(s) before: %s\n", (unsigned)out.size(), why.c_str());
   return true;
 }
 

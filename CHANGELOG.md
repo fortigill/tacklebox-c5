@@ -3,6 +3,15 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.2] - 2026-11-19
+
+### Fixed
+- NWS alerts failed with "bad alert data: NoMemory". The whole filtered response was deserialized
+  at once while the TLS session still held ~40 KB, and alert descriptions are long. Alerts are now
+  stream-parsed **one feature at a time**: each is deserialized with a field filter, copied out and
+  freed before the next, so peak RAM is a single alert. If memory still runs out partway through,
+  the alerts parsed so far are kept, and the error includes free RAM.
+
 ## [0.5.1] - 2026-11-19
 
 ### Fixed

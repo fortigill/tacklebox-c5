@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Generate the weather icons as LVGL 8 image descriptors (src/wx_icons.c).
 
-Icons are drawn at 4x and downsampled for anti-aliasing, then written as
-LV_IMG_CF_TRUE_COLOR_ALPHA (RGB565 little-endian + 8-bit alpha, matching
-LV_COLOR_DEPTH 16 / LV_COLOR_16_SWAP 0).
+Icons are drawn at 4x and downsampled for anti-aliasing, then quantized to a
+16-entry RGBA palette and written as LV_IMG_CF_INDEXED_4BIT (palette of
+lv_color32_t B,G,R,A followed by 4-bit pixels, high nibble first, rows padded
+to whole bytes). That is ~6x smaller than true color + alpha, which matters:
+the firmware has to fit a 1.9 MB OTA slot.
 
 Usage: python3 tools/gen_wx_icons.py   (run from the project root)
 """
@@ -146,15 +148,27 @@ ICONS = [
 ]
 
 
+def quantize(img):
+    """16-colour RGBA palette version of img (keeps anti-aliased edges)."""
+    return img.quantize(colors=16, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
+
+
 def to_lvgl(img):
+    q = quantize(img)
+    pal = q.getpalette("RGBA") or []
+    pal = (pal + [0, 0, 0, 0] * 16)[:64]
     out = bytearray()
-    raw = img.tobytes()  # RGBA
-    for i in range(0, len(raw), 4):
-        r, g, b, a = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
-        if a == 0:
-            r = g = b = 0
-        c = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-        out += bytes((c & 0xFF, c >> 8, a))
+    for i in range(16):  # lv_color32_t in memory: blue, green, red, alpha
+        r, g, b, a = pal[i * 4:i * 4 + 4]
+        out += bytes((b, g, r, a))
+    w, h = q.size
+    px = q.tobytes()
+    for y in range(h):
+        row = px[y * w:(y + 1) * w]
+        for x in range(0, w, 2):
+            hi = row[x] & 0x0F
+            lo = (row[x + 1] & 0x0F) if x + 1 < w else 0
+            out.append((hi << 4) | lo)
     return out
 
 
@@ -175,7 +189,7 @@ def main():
                 lines.append("  " + ", ".join(f"0x{b:02x}" for b in data[i:i + 24]) + ",")
             lines.append("};")
             lines.append(f"const lv_img_dsc_t {sym} = {{")
-            lines.append(f"  .header = {{.cf = LV_IMG_CF_TRUE_COLOR_ALPHA, .always_zero = 0, "
+            lines.append(f"  .header = {{.cf = LV_IMG_CF_INDEXED_4BIT, .always_zero = 0, "
                          f".reserved = 0, .w = {size}, .h = {size}}},")
             lines.append(f"  .data_size = {len(data)},")
             lines.append(f"  .data = {sym}_map,")
@@ -196,6 +210,7 @@ def main():
     for i, (name, fn) in enumerate(ICONS):
         for tag, size in SIZES.items():
             img = fn(size * SS).resize((size, size), Image.LANCZOS)
+            img = quantize(img).convert("RGBA")  # what the device will draw
             pos = (i * 72 + 4, 4) if tag == "l" else (i * 72 + 22, 72)
             sheet.alpha_composite(img, pos)
     sheet.save("tools/wx_icons_preview.png")

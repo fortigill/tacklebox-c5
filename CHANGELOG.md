@@ -3,6 +3,17 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.2.1] - 2026-11-18
+
+### Fixed
+- OTA upload of 0.2.0 failed with "No response from device". `firmware.bin` was 1,974,912 bytes,
+  larger than the 1,966,080-byte OTA slot, so the device refused it. PlatformIO's 99% "Flash" figure
+  counts ELF sections, not the larger image.
+  - Weather icons are now 16-color indexed images (`LV_IMG_CF_INDEXED_4BIT`) instead of true color
+    + alpha, with the same look: 132 KB down to 23 KB.
+  - New post-build check `tools/check_size.py` reports the real `.bin` size against the OTA slot.
+    It fails the build if the image won't fit and warns under 64 KB of headroom.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added

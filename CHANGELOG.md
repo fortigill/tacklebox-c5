@@ -3,6 +3,18 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.14] - 2026-11-19
+
+### Fixed
+- NWS alerts failing with "download failed: too less ram after 0 KB". `HTTPClient::writeToStream()`
+  allocates its copy buffer after the TLS session has fragmented the heap (the largest block was
+  down to about 7 KB). Alerts are now copied to flash by `streamBody()`, which uses a 1 KB buffer
+  reserved at boot and decodes chunked transfer encoding itself, so nothing is allocated mid-download.
+
+### Confirmed
+- 0.7.13's pause: no weather or buoy downloads while Drone Watch runs, and the buoy updates
+  right after Bluetooth is released.
+
 ## [0.7.13] - 2026-11-19
 
 ### Changed

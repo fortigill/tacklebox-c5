@@ -258,6 +258,95 @@ bool fsReady() {
 
 // Step 1: save the NWS response to flash. The TLS session lives only inside this
 // function, so its ~40 KB is free again before any JSON parsing starts.
+// Copy buffer for downloads, reserved at boot: HTTPClient::writeToStream()
+// mallocs its own buffer mid-download, which failed ("too less ram") once the
+// TLS session had fragmented the heap. Only the weather task uses it.
+uint8_t dlBuf[1024];
+
+// Streams an HTTP body into a file, decoding chunked transfer encoding.
+// Returns the number of bytes written, or -1 (with `why` set).
+long streamBody(HTTPClient &http, bool chunked, File &f, size_t maxBytes, String &why) {
+  Client *in = http.getStreamPtr();
+  if (!in) {
+    why = "no connection";
+    return -1;
+  }
+  const int total = http.getSize();
+  size_t written = 0;
+  uint32_t last = millis();
+  auto stalled = [&]() { return millis() - last > 15000; };
+  auto readByte = [&]() -> int {
+    while (true) {
+      int c = in->read();
+      if (c >= 0) {
+        last = millis();
+        return c;
+      }
+      if ((!in->connected() && !in->available()) || stalled()) return -1;
+      delay(2);
+    }
+  };
+  // Copies n bytes, or until the server closes when n == SIZE_MAX
+  auto copy = [&](size_t n) -> bool {
+    while (n) {
+      int avail = in->available();
+      if (avail <= 0) {
+        if (!in->connected()) {
+          if (n == SIZE_MAX) return true;
+          why = "connection closed early";
+          return false;
+        }
+        if (stalled()) {
+          why = "connection stalled";
+          return false;
+        }
+        delay(5);
+        continue;
+      }
+      size_t want = std::min(std::min((size_t)avail, sizeof(dlBuf)), n);
+      int r = in->read(dlBuf, want);
+      if (r <= 0) continue;
+      last = millis();
+      if (written + r > maxBytes) {
+        why = String("too large (over ") + maxBytes / 1024 + " KB)";
+        return false;
+      }
+      if (f.write(dlBuf, r) != (size_t)r) {
+        why = "flash write failed";
+        return false;
+      }
+      written += r;
+      if (n != SIZE_MAX) n -= r;
+    }
+    return true;
+  };
+
+  if (chunked) {
+    while (true) {
+      char line[20];
+      size_t k = 0;
+      while (true) {  // "<hex size>[;ext]\r\n"
+        int c = readByte();
+        if (c < 0) {
+          why = "connection lost in chunk header";
+          return -1;
+        }
+        if (c == '\n') break;
+        if (c != '\r' && k < sizeof(line) - 1) line[k++] = (char)c;
+      }
+      line[k] = 0;
+      unsigned long sz = strtoul(line, nullptr, 16);
+      if (!sz) break;  // last chunk
+      if (!copy(sz)) return -1;
+      readByte();  // CRLF after the chunk data
+      readByte();
+    }
+  } else if (!copy(total > 0 ? (size_t)total : SIZE_MAX)) {
+    return -1;
+  }
+  return (long)written;
+}
+
 bool downloadAlerts(float la, float lo, String &why) {
   TlsGuard guard;        // declared first, so it is released after the TLS session is gone
   WiFiClientSecure tls;  // declared before `http` so it outlives it
@@ -267,7 +356,7 @@ bool downloadAlerts(float la, float lo, String &why) {
   http.setConnectTimeout(15000);
   // HTTP/1.1 like a browser: api.weather.gov's CDN answered HTTP/1.0 requests
   // slowly or not at all ("read Timeout"). Chunked replies are decoded by
-  // writeToStream() below.
+  // streamBody().
   http.setReuse(false);  // ask the server to close when done
   char url[128];
   snprintf(url, sizeof(url), "https://api.weather.gov/alerts/active?point=%.4f,%.4f", la, lo);
@@ -279,6 +368,8 @@ bool downloadAlerts(float la, float lo, String &why) {
   }
   http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
   http.addHeader("Accept", "application/geo+json");
+  const char *hdrs[] = {"Transfer-Encoding"};
+  http.collectHeaders(hdrs, 1);
   const uint32_t t0 = millis();
   int code = http.GET();
   Serial.printf("[wx] NWS replied %d after %lu ms, size %d; free %lu, largest block %lu, min ever %lu\n",
@@ -302,9 +393,9 @@ bool downloadAlerts(float la, float lo, String &why) {
     why = String("alert data too large (") + expected / 1024 + " KB)";
     return false;
   }
-  // Writes the body to flash, handling chunked transfer; each read waits up
-  // to the 15 s timeout set above.
-  const int got = http.writeToStream(&f);
+  const bool chunked = http.header("Transfer-Encoding").equalsIgnoreCase("chunked");
+  String swhy;
+  const long got = streamBody(http, chunked, f, ALERTS_MAX_BYTES, swhy);
   f.close();  // flushes the last buffered KB to flash; size() before this reads short
   http.end();
   tls.stop();
@@ -314,7 +405,7 @@ bool downloadAlerts(float la, float lo, String &why) {
     chk.close();
   }
   if (got < 0) {
-    why = String("download failed: ") + http.errorToString(got) + " after " + total / 1024 + " KB";
+    why = "download failed: " + swhy + " after " + String(total / 1024) + " KB";
     return false;
   }
   if (expected > 0 && total < (size_t)expected) {
@@ -325,7 +416,7 @@ bool downloadAlerts(float la, float lo, String &why) {
     why = "empty response from NWS";
     return false;
   }
-  Serial.printf("[wx] NWS alerts: %u bytes saved (stream reported %d)\n", (unsigned)total, got);
+  Serial.printf("[wx] NWS alerts: %u bytes saved (%s)\n", (unsigned)total, chunked ? "chunked" : "plain");
   return true;
 }
 

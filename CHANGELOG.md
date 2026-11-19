@@ -3,6 +3,14 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.7] - 2026-11-19
+
+### Changed
+- The status bar wraps instead of running off the screen edge. When its items (waves,
+  temperature, weather icon, drone icon, clock, Wi-Fi) don't fit on one line, it grows by just
+  enough for a second row. The desktop widgets and the Menu button move down to match, and they
+  go back when it fits again (for example after Drone Watch stops).
+
 ## [0.7.6] - 2026-11-19
 
 ### Changed

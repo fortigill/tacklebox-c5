@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <lvgl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -59,6 +60,8 @@ lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
 // Desktop widgets: wave height and alert count (tap for their pages), plus
 // the wave height in the status bar
 lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr, *deskWaveName = nullptr;
+lv_obj_t *deskBar = nullptr, *deskRow = nullptr, *deskMenu = nullptr;
+int deskLayoutKey = -1;  // bar + widget-row heights the layout was last done for
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
 int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
@@ -199,6 +202,8 @@ void resetPtrs() {
   deskDroneState = -1;
   wxaList = wxaStatus = nullptr;
   deskWaveName = nullptr;
+  deskBar = deskRow = deskMenu = nullptr;
+  deskLayoutKey = -1;
   deskWave = deskWaveLbl = deskBarWave = deskBarWaveLbl = deskAlerts = deskAlertsLbl = nullptr;
   deskAlertsColor = -1;
   byWave = byName = byDetail = byStatus = byIdTa = nullptr;
@@ -405,6 +410,27 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 
 // ---------- Desktop ----------
 
+// Places the widget row under the (possibly two-row) status bar and the Menu
+// button under the widgets, keeping the Menu at its usual spot when there's room
+void layoutDesktop() {
+  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts) return;
+  lv_obj_update_layout(deskBar);
+  int barH = lv_obj_get_height(deskBar);
+  int rowH = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN)
+                 ? 0
+                 : lv_obj_get_height(deskRow);
+  int key = barH * 1000 + rowH;
+  if (key == deskLayoutKey) return;
+  deskLayoutKey = key;
+  const bool portrait = H() > W();
+  int rowY = barH + (portrait ? 10 : 5);
+  lv_obj_align(deskRow, LV_ALIGN_TOP_MID, 0, rowY);
+  int menuH = lv_obj_get_height(deskMenu);
+  int usual = (H() - menuH) / 2 + (portrait ? 42 : 22);
+  int below = (rowH ? rowY + rowH : barH) + 10;
+  lv_obj_align(deskMenu, LV_ALIGN_TOP_MID, 0, std::max(usual, below));
+}
+
 void refreshDesktop() {
   if (!deskWifiIcon) return;
   char buf[96];
@@ -495,6 +521,8 @@ void refreshDesktop() {
     lv_obj_set_style_text_color(deskWx, wxAlert ? lv_palette_main(LV_PALETTE_RED) : theme::text(), 0);
   }
 
+  layoutDesktop();  // the bar may have wrapped or a widget appeared/disappeared
+
   // Restyle only on change: setting a style invalidates (redraws) the widget
   if (state == deskIconState) return;
   deskIconState = state;
@@ -521,16 +549,21 @@ void showDesktop() {
   bool narrow = W() < 300;
   const lv_font_t *barFont = narrow ? &lv_font_montserrat_14 : &lv_font_montserrat_20;
 
+  // The bar wraps onto a second row when its items don't fit across, and
+  // grows just enough to hold it; layoutDesktop() moves the rest down to match
   lv_obj_t *bar = lv_obj_create(scr);
-  lv_obj_set_size(bar, W(), 36);
+  deskBar = bar;
+  lv_obj_set_size(bar, W(), LV_SIZE_CONTENT);
+  lv_obj_set_style_min_height(bar, 36, 0);
   lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_radius(bar, 0, 0);
   lv_obj_set_style_border_width(bar, 0, 0);
   lv_obj_set_style_pad_hor(bar, 6, 0);
   lv_obj_set_style_pad_ver(bar, 2, 0);
   lv_obj_set_style_pad_column(bar, narrow ? 4 : 10, 0);
+  lv_obj_set_style_pad_row(bar, 2, 0);
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
   if (!narrow) {
@@ -626,6 +659,7 @@ void showDesktop() {
 
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);
+  deskMenu = mb;
   lv_obj_set_style_text_font(lv_obj_get_child(mb, 0), &lv_font_montserrat_20, 0);
   // Portrait stacks the two desktop widgets, so the menu sits lower there
   const bool portrait = H() > W();
@@ -634,6 +668,7 @@ void showDesktop() {
 
   // Widgets between the status bar and the menu: wave height and alert count
   lv_obj_t *wrow = lv_obj_create(scr);
+  deskRow = wrow;
   lv_obj_remove_style_all(wrow);
   lv_obj_set_size(wrow, W(), LV_SIZE_CONTENT);
   // Side by side in landscape (320 px fits both); stacked in portrait, where

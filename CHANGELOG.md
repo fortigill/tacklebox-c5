@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.6] - 2026-11-18
+
+### Added
+- **Brightness** slider under **Menu > Display & touch** (5-100%), saved when you let go. The
+  backlight uses 20 kHz PWM, so dimming doesn't add flicker.
+- NTP time sync in the background. It starts as soon as Wi-Fi connects (at boot, or later) and syncs
+  against `pool.ntp.org` with `1.pool.ntp.org` as fallback. lwIP re-syncs hourly after that.
+- Clock in the desktop status bar, next to the Wi-Fi icon. It shows `--:--` until the first sync,
+  and tapping it opens Date & time.
+- **Menu > Date & time**: large clock with date and sync status, 12/24-hour toggle (default 12-hour),
+  time zone picker (22 zones with automatic daylight saving, default US Eastern), and **Sync now**.
+  Settings are saved in NVS.
+
 ## [0.0.5] - 2026-11-18
 
 ### Changed

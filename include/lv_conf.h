@@ -41,6 +41,8 @@
 #define LV_USE_ARC       1
 #define LV_USE_BAR       1
 #define LV_USE_CHART     1
+#define LV_USE_SLIDER    1
+#define LV_USE_SWITCH    1
 
 #define LV_USE_THEME_DEFAULT   1
 #define LV_THEME_DEFAULT_DARK  1

@@ -9,6 +9,7 @@
 #include "ble.h"
 #include "display.h"
 #include "net.h"
+#include "timesvc.h"
 #include "version.h"
 
 // Note: the built-in Montserrat fonts only contain ASCII + LV_SYMBOL_* icons,
@@ -18,7 +19,7 @@ namespace {
 
 enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
-  Ble, BleDetail, BleIgnored, BleHunt
+  Ble, BleDetail, BleIgnored, BleHunt, DateTime, TimeZone
 };
 
 const int HEADER_H = 40;
@@ -33,6 +34,8 @@ Screen calReturn = Screen::Desktop;
 // Widgets of the current screen (reset whenever the screen changes)
 lv_obj_t *deskWifiIcon = nullptr;
 lv_obj_t *deskWifiLbl = nullptr;
+lv_obj_t *deskClock = nullptr;
+lv_obj_t *dtTime = nullptr, *dtDate = nullptr, *dtStatus = nullptr;
 lv_obj_t *wifiStatusLbl = nullptr;
 lv_obj_t *wifiList = nullptr;
 lv_obj_t *wifiScanBtn = nullptr;
@@ -91,11 +94,14 @@ void showBle();
 void showBleDetail();
 void showBleIgnored();
 void showBleHunt();
+void showDateTime();
+void showTimeZone();
 
 // ---------- helpers ----------
 
 void resetPtrs() {
-  deskWifiIcon = deskWifiLbl = nullptr;
+  deskWifiIcon = deskWifiLbl = deskClock = nullptr;
+  dtTime = dtDate = dtStatus = nullptr;
   wifiStatusLbl = wifiList = wifiScanBtn = wifiForgetBtn = nullptr;
   pwTa = nullptr;
   calH = calV = calRing = calMsg = nullptr;
@@ -198,6 +204,10 @@ void refreshDesktop() {
   }
   setText(deskWifiLbl, buf);
 
+  char clk[16];
+  timesvc::formatTime(clk, sizeof(clk));
+  setText(deskClock, clk);
+
   // Restyle only on change: setting a style invalidates (redraws) the widget
   if (state == deskIconState) return;
   deskIconState = state;
@@ -229,7 +239,7 @@ void showDesktop() {
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t *name = lv_label_create(bar);
-  lv_label_set_text(name, "CYD  v" FW_VERSION);
+  lv_label_set_text(name, "CYD v" FW_VERSION);
   lv_obj_align(name, LV_ALIGN_LEFT_MID, 6, 0);
 
   // Wi-Fi icon: a transparent button so it's an easy stylus target
@@ -245,6 +255,16 @@ void showDesktop() {
   lv_obj_set_style_text_font(deskWifiIcon, &lv_font_montserrat_20, 0);
   lv_label_set_text(deskWifiIcon, LV_SYMBOL_WIFI);
   lv_obj_center(deskWifiIcon);
+
+  // Clock just left of the Wi-Fi icon; tap it for Date & time settings
+  deskClock = lv_label_create(bar);
+  lv_obj_set_style_text_font(deskClock, &lv_font_montserrat_20, 0);
+  lv_label_set_text(deskClock, "--:--");
+  lv_obj_align(deskClock, LV_ALIGN_RIGHT_MID, -56, 0);
+  lv_obj_add_flag(deskClock, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(deskClock, 8);
+  lv_obj_add_event_cb(deskClock, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED,
+                      nullptr);
 
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);
@@ -280,6 +300,9 @@ void showMenu() {
   b = lv_list_add_btn(list, LV_SYMBOL_BLUETOOTH, "Bluetooth scanner");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showBle(); }, LV_EVENT_CLICKED, nullptr);
 
+  b = lv_list_add_btn(list, LV_SYMBOL_BELL, "Date & time");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED, nullptr);
+
   b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Display & touch");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showDisplay(); }, LV_EVENT_CLICKED, nullptr);
 
@@ -305,6 +328,41 @@ void showDisplay() {
   lv_obj_t *list = lv_list_create(scr);
   lv_obj_set_size(list, W(), H() - HEADER_H);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_list_add_text(list, "Brightness");
+  lv_obj_t *row = lv_obj_create(list);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, LV_PCT(100), 48);
+  lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *val = lv_label_create(row);
+  lv_label_set_text_fmt(val, "%d%%", display::brightness());
+  lv_obj_set_width(val, 44);
+  lv_obj_align(val, LV_ALIGN_RIGHT_MID, -8, 0);
+
+  lv_obj_t *sl = lv_slider_create(row);
+  lv_obj_set_width(sl, W() - 90);
+  lv_obj_align(sl, LV_ALIGN_LEFT_MID, 18, 0);
+  lv_slider_set_range(sl, display::MIN_BRIGHTNESS, 100);
+  lv_slider_set_value(sl, display::brightness(), LV_ANIM_OFF);
+  lv_obj_set_style_pad_all(sl, 6, LV_PART_KNOB);  // bigger knob for the stylus
+  lv_obj_add_event_cb(
+      sl,
+      [](lv_event_t *e) {
+        lv_obj_t *s = lv_event_get_target(e);
+        lv_obj_t *v = (lv_obj_t *)lv_event_get_user_data(e);
+        int pct = lv_slider_get_value(s);
+        bool done = lv_event_get_code(e) == LV_EVENT_RELEASED;
+        display::setBrightness(pct, done);  // write flash only when released
+        lv_label_set_text_fmt(v, "%d%%", pct);
+      },
+      LV_EVENT_VALUE_CHANGED, val);
+  lv_obj_add_event_cb(
+      sl,
+      [](lv_event_t *e) {
+        display::setBrightness(lv_slider_get_value(lv_event_get_target(e)), true);
+      },
+      LV_EVENT_RELEASED, nullptr);
 
   lv_list_add_text(list, "Orientation");
   struct Opt { uint8_t rot; const char *name; };
@@ -844,6 +902,121 @@ void showBleHunt() {
   if (!ble::startHunt(bleDetailAddr)) setText(huntStateLbl, "Bluetooth failed to start");
 }
 
+// ---------- Date & time ----------
+
+void refreshDateTime() {
+  if (!dtTime) return;
+  char buf[64];
+  timesvc::formatTime(buf, sizeof(buf));
+  setText(dtTime, buf);
+  timesvc::formatDate(buf, sizeof(buf));
+  setText(dtDate, buf);
+
+  uint32_t last = timesvc::lastSyncMs();
+  if (last) {
+    uint32_t mins = (millis() - last) / 60000;
+    if (mins == 0) snprintf(buf, sizeof(buf), "Synced just now (%s)", timesvc::server());
+    else snprintf(buf, sizeof(buf), "Synced %lu min ago (%s)", (unsigned long)mins,
+                  timesvc::server());
+  } else if (net::state() != net::State::Connected) {
+    snprintf(buf, sizeof(buf), "Waiting for Wi-Fi to sync");
+  } else {
+    snprintf(buf, sizeof(buf), "Syncing with %s...", timesvc::server());
+  }
+  setText(dtStatus, buf);
+}
+
+void showDateTime() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Date & time", [](lv_event_t *) { showMenu(); });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  // Clock card
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_ver(card, 6, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  dtTime = lv_label_create(card);
+  lv_obj_set_style_text_font(dtTime, &lv_font_montserrat_48, 0);
+  lv_label_set_text(dtTime, "");
+  dtDate = lv_label_create(card);
+  lv_label_set_text(dtDate, "");
+  dtStatus = lv_label_create(card);
+  lv_obj_set_style_text_opa(dtStatus, LV_OPA_60, 0);
+  lv_label_set_text(dtStatus, "");
+
+  // 24-hour toggle: the whole row toggles; the switch just shows the state
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_LOOP, "24-hour clock");
+  lv_obj_t *sw = lv_switch_create(b);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (timesvc::use24h()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *e) {
+        lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !timesvc::use24h();
+        timesvc::setUse24h(on);
+        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+        refreshDateTime();
+      },
+      LV_EVENT_CLICKED, sw);
+
+  size_t n;
+  const timesvc::Zone *z = timesvc::zones(&n);
+  String tzText = String("Time zone: ") + z[timesvc::zoneIndex()].name;
+  b = lv_list_add_btn(list, LV_SYMBOL_GPS, tzText.c_str());
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showTimeZone(); }, LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Sync now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi first to sync the clock.");
+          return;
+        }
+        timesvc::syncNow();
+        setText(dtStatus, "Syncing...");
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::DateTime);
+  refreshDateTime();
+}
+
+void onZoneClicked(lv_event_t *e) {
+  timesvc::setZone((size_t)(intptr_t)lv_event_get_user_data(e));
+  showDateTime();
+}
+
+void showTimeZone() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Time zone", [](lv_event_t *) { showDateTime(); });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  size_t n;
+  const timesvc::Zone *z = timesvc::zones(&n);
+  lv_obj_t *selBtn = nullptr;
+  for (size_t i = 0; i < n; i++) {
+    bool sel = i == timesvc::zoneIndex();
+    lv_obj_t *b = lv_list_add_btn(list, sel ? LV_SYMBOL_OK : nullptr, z[i].name);
+    if (sel) selBtn = b;
+    lv_obj_add_event_cb(b, onZoneClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  load(scr, Screen::TimeZone);
+  if (selBtn) lv_obj_scroll_to_view(selBtn, LV_ANIM_OFF);
+}
+
 // ---------- Wi-Fi settings ----------
 
 void onNetworkClicked(lv_event_t *e) {
@@ -1120,6 +1293,7 @@ void poll(lv_timer_t *) {
     case Screen::Ble: pollBle(); break;
     case Screen::BleDetail: refreshBleDetail(); break;
     case Screen::BleHunt: refreshHunt(); break;
+    case Screen::DateTime: refreshDateTime(); break;
     default: break;
   }
 }

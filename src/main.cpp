@@ -4,6 +4,7 @@
 #include "ble.h"
 #include "display.h"
 #include "net.h"
+#include "timesvc.h"
 #include "ui.h"
 #include "version.h"
 
@@ -12,6 +13,7 @@ void setup() {
   Serial.printf("\nCYD UI v%s (built %s %s)\n", FW_VERSION, __DATE__, __TIME__);
   display::begin();
   net::begin();
+  timesvc::begin();
   ui::begin();
 }
 
@@ -19,5 +21,6 @@ void loop() {
   lv_timer_handler();
   net::loop();
   ble::loop();
+  timesvc::loop();
   delay(5);
 }

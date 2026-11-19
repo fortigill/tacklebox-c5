@@ -5,7 +5,9 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Bluetooth scanner, Display & touch, About this device.
+- **Menu**: Network settings, Bluetooth scanner, Date & time, Display & touch, About this device.
+- **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
+  bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,
   credentials saved in NVS with auto-reconnect on boot, **Forget** to clear them. Note: the password
   is stored unencrypted in flash.
@@ -13,7 +15,7 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
   details, **Ignore** it (hidden from future scans, saved), or **Hunt** it. Hunt shows a live signal
   readout, a closer/farther arrow and a history graph to help you find it. Phones that use rotating
   random addresses can't be ignored permanently, and a hunt loses them when the address changes.
-- **Display & touch**: landscape/portrait (plus flipped variants), red/blue swap for panels that show
+- **Display & touch**: brightness, landscape/portrait (plus flipped variants), red/blue swap for panels that show
   blue as orange, and touch calibration.
 
 ## Board
@@ -71,6 +73,7 @@ src/version.h       firmware version
 src/main.cpp        setup/loop
 src/display.cpp     TFT + touch drivers, rotation, calibration
 src/ble.cpp         BLE scanner (device tracking, vendor lookup)
+src/timesvc.cpp     NTP sync, time zone, 12/24 h formatting
 src/net.cpp         Wi-Fi scan/connect/save (non-blocking state machine)
 src/ui.cpp          screens
 ```

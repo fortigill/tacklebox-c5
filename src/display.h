@@ -21,6 +21,12 @@ void begin();
 uint8_t rotation();
 void setRotation(uint8_t r);  // applies immediately and saves to NVS
 
+// Backlight brightness in percent (MIN_BRIGHTNESS..100). save=false applies
+// without writing flash (use while a slider is being dragged).
+const uint8_t MIN_BRIGHTNESS = 5;
+uint8_t brightness();
+void setBrightness(uint8_t pct, bool save);
+
 // Some CYD panels have red and blue swapped (blue shows as orange).
 bool swapRedBlue();
 void setSwapRedBlue(bool on);  // applies immediately and saves to NVS

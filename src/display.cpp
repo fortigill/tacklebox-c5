@@ -19,6 +19,12 @@
 
 namespace {
 
+// Backlight PWM. 20 kHz is far above anything the eye (or a phone camera)
+// can see, so dimming adds no flicker.
+const uint8_t BL_PIN = 21;
+const uint32_t BL_FREQ = 20000;
+const uint8_t BL_BITS = 8;
+
 // Panel's native (rotation 0, portrait) resolution
 const int16_t NATIVE_W = 240;
 const int16_t NATIVE_H = 320;
@@ -50,6 +56,7 @@ lv_indev_drv_t indevDrv;
 
 uint8_t rot = display::LANDSCAPE;
 bool swapRB = false;
+uint8_t blPct = 100;
 Cal cal{};
 bool calValid = false;
 
@@ -70,6 +77,16 @@ void toNative(uint8_t r, float sx, float sy, float &nx, float &ny) {
     case 3:  nx = sy;                ny = NATIVE_H - 1 - sx; break;
     default: nx = sx;                ny = sy;                break;
   }
+}
+
+uint8_t clampBrightness(int pct) {
+  if (pct < display::MIN_BRIGHTNESS) return display::MIN_BRIGHTNESS;
+  if (pct > 100) return 100;
+  return (uint8_t)pct;
+}
+
+void applyBrightness() {
+  ledcWrite(BL_PIN, (uint32_t)blPct * ((1u << BL_BITS) - 1) / 100);
 }
 
 void applyRotation() {
@@ -135,6 +152,7 @@ void display::begin() {
   prefs.begin("disp", true);
   rot = prefs.getUChar("rot", LANDSCAPE) & 3;
   swapRB = prefs.getBool("swaprb", false);
+  blPct = clampBrightness(prefs.getUChar("bl", 100));
   if (prefs.getBytesLength("cal") == sizeof(Cal)) {
     prefs.getBytes("cal", &cal, sizeof(Cal));
     calValid = (cal.magic == CAL_MAGIC);
@@ -148,6 +166,10 @@ void display::begin() {
   tft.writedata(0x00);
   tft.writedata(0x13);
   tft.fillScreen(TFT_BLACK);
+
+  // TFT_eSPI switched the backlight fully on; take the pin over with PWM
+  ledcAttach(BL_PIN, BL_FREQ, BL_BITS);
+  applyBrightness();
 
   touchSpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   ts.begin(touchSpi);
@@ -186,6 +208,18 @@ void display::setRotation(uint8_t r) {
   prefs.begin("disp", false);
   prefs.putUChar("rot", rot);
   prefs.end();
+}
+
+uint8_t display::brightness() { return blPct; }
+
+void display::setBrightness(uint8_t pct, bool save) {
+  blPct = clampBrightness(pct);
+  applyBrightness();
+  if (save) {
+    prefs.begin("disp", false);
+    prefs.putUChar("bl", blPct);
+    prefs.end();
+  }
 }
 
 bool display::swapRedBlue() { return swapRB; }

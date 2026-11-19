@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.3] - 2026-11-19
+
+### Fixed
+- The desktop wave and alert bubbles were cut off at the screen edges in portrait. They now
+  stack on top of each other in portrait (the Menu button moves down to make room) and stay
+  side by side on one line in landscape, with slightly tighter padding.
+
 ## [0.7.2] - 2026-11-19
 
 ### Changed

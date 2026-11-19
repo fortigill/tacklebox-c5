@@ -620,18 +620,23 @@ void showDesktop() {
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);
   lv_obj_set_style_text_font(lv_obj_get_child(mb, 0), &lv_font_montserrat_20, 0);
-  lv_obj_align(mb, LV_ALIGN_CENTER, 0, 4);
+  // Portrait stacks the two desktop widgets, so the menu sits lower there
+  const bool portrait = H() > W();
+  lv_obj_align(mb, LV_ALIGN_CENTER, 0, portrait ? 34 : 4);
   lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
 
   // Widgets between the status bar and the menu: wave height and alert count
   lv_obj_t *wrow = lv_obj_create(scr);
   lv_obj_remove_style_all(wrow);
   lv_obj_set_size(wrow, W(), LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(wrow, LV_FLEX_FLOW_ROW);
+  // Side by side in landscape (320 px fits both); stacked in portrait, where
+  // 240 px is too narrow for two bubbles and they were cut off at the edges
+  lv_obj_set_flex_flow(wrow, portrait ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(wrow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(wrow, narrow ? 10 : 20, 0);
+  lv_obj_set_style_pad_column(wrow, 12, 0);
+  lv_obj_set_style_pad_row(wrow, 8, 0);
   lv_obj_clear_flag(wrow, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, H() > W() ? 54 : 41);
+  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, portrait ? 46 : 41);
 
   // Each widget is a rounded "bubble" (themed panel) that reacts to a press
   auto widget = [&](lv_event_cb_t cb) {
@@ -642,7 +647,7 @@ void showDesktop() {
     lv_obj_set_flex_align(w, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_radius(w, 16, 0);
     lv_obj_set_style_border_width(w, 2, 0);
-    lv_obj_set_style_pad_hor(w, 12, 0);
+    lv_obj_set_style_pad_hor(w, 10, 0);
     lv_obj_set_style_pad_ver(w, 6, 0);
     lv_obj_set_style_pad_column(w, 6, 0);
     lv_obj_set_style_border_color(w, theme::accent(), LV_STATE_PRESSED);

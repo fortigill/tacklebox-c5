@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.6.2] - 2026-11-19
+
+### Fixed
+- `pio run -e cyd-ota` failed with `KeyError: 'tool-espotapy'`. `tools/espota_patch.py` now
+  skips packages the platform doesn't define and uses the framework's `tools/espota.py`.
+
 ## [0.6.1] - 2026-11-19
 
 ### Changed

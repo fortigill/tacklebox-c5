@@ -15,7 +15,10 @@ ACCEPT_TIMEOUT_S = 45  # device-side question times out at 30 s
 platform = env.PioPlatform()  # noqa: F821
 candidates = []
 for pkg in ("framework-arduinoespressif32", "tool-espotapy"):
-    d = platform.get_package_dir(pkg)
+    try:
+        d = platform.get_package_dir(pkg)  # raises KeyError if the platform doesn't list it
+    except Exception:
+        d = None
     if d:
         candidates += [os.path.join(d, "tools", "espota.py"), os.path.join(d, "espota.py")]
 src_path = next((p for p in candidates if os.path.isfile(p)), None)

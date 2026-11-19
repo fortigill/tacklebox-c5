@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.3] - 2026-11-19
+
+### Fixed
+- NWS alerts still failed with "NoMemory, free RAM 2 KB": ArduinoJson had to hold a whole alert
+  (descriptions are several KB) while TLS was using ~40 KB. Alerts are now read by a small streaming
+  JSON reader (`parseAlerts`). It walks the response a character at a time, keeps only the
+  displayed fields and truncates them while reading (description 700, instructions 300 chars), so
+  memory is small and bounded no matter how long the NWS texts are. ArduinoJson is no longer used
+  for alerts.
+- HTTPS isn't attempted when the largest free block is under 32 KB. The status reports the free RAM
+  instead of a confusing failure.
+
+### Changed
+- The LVGL draw buffers were cut from 24 to 16 lines (2 x 10 KB instead of 2 x 15 KB) to leave
+  more heap for TLS.
+
 ## [0.5.2] - 2026-11-19
 
 ### Fixed

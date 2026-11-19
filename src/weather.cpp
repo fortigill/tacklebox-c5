@@ -21,7 +21,8 @@ const uint32_t RETRY_MS = 2UL * 60 * 1000;     // after a failure
 const uint32_t TASK_STACK = 12288;  // room for a TLS handshake (NWS is HTTPS-only)
 const uint32_t ALERTS_REFRESH_MS = 5UL * 60 * 1000;
 const size_t MAX_ALERTS = 8;
-const size_t MAX_DESC = 900, MAX_INSTR = 450;
+const size_t MAX_DESC = 700, MAX_INSTR = 300;
+const uint32_t TLS_MIN_BLOCK = 32 * 1024;  // don't start an HTTPS fetch with less than this
 const size_t MAX_SNOOZED = 16;
 const uint16_t HTTP_TIMEOUT_MS = 8000;
 
@@ -194,14 +195,192 @@ uint32_t parseIso(const char *s) {
   return t > 0 ? (uint32_t)t : 0;
 }
 
-String clip(const char *s, size_t max) {
-  String out(s ? s : "");
-  out.replace("\r", "");
-  if (out.length() > max) out = out.substring(0, max - 3) + "...";
-  return out;
+// ---- Minimal streaming JSON reader for the NWS alert list ----
+// NWS alert texts can be several KB each. Rather than build a JSON document,
+// read the stream character by character, keep only the fields we show and
+// truncate them while reading, so memory stays small and bounded.
+
+int rd(Stream &in) {  // next byte, waiting up to 10 s
+  uint32_t t0 = millis();
+  for (;;) {
+    int c = in.read();
+    if (c >= 0) return c;
+    if (millis() - t0 > 10000) return -1;
+    delay(1);
+  }
+}
+
+int pk(Stream &in) {  // peek, waiting up to 10 s
+  uint32_t t0 = millis();
+  for (;;) {
+    if (in.available()) return in.peek();
+    if (millis() - t0 > 10000) return -1;
+    delay(1);
+  }
+}
+
+bool isWs(int c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
+
+int nextNonWs(Stream &in) {
+  int c;
+  do c = rd(in);
+  while (isWs(c));
+  return c;
+}
+
+int peekNonWs(Stream &in) {
+  int c;
+  while (isWs(c = pk(in))) in.read();
+  return c;
+}
+
+// Reads a JSON string body (opening quote already consumed), keeping at most
+// `limit` characters (0 = discard). Returns false on timeout/EOF.
+bool readStr(Stream &in, String &out, size_t limit, bool *truncated = nullptr) {
+  out = "";
+  if (truncated) *truncated = false;
+  for (;;) {
+    int c = rd(in);
+    if (c < 0) return false;
+    if (c == '"') return true;
+    if (c == '\\') {
+      int e = rd(in);
+      if (e < 0) return false;
+      switch (e) {
+        case 'n': c = '\n'; break;
+        case 't': c = ' '; break;
+        case 'r': c = 0; break;
+        case 'b':
+        case 'f': c = 0; break;
+        case 'u': {
+          char hex[5] = {0};
+          for (int i = 0; i < 4; i++) {
+            int h = rd(in);
+            if (h < 0) return false;
+            hex[i] = (char)h;
+          }
+          long cp = strtol(hex, nullptr, 16);
+          c = cp < 0x80 ? (int)cp : '?';  // the UI fonts are ASCII-only
+          break;
+        }
+        default: c = e; break;  // \" \\ \/
+      }
+    }
+    if (!c) continue;
+    if (out.length() < limit) out += (char)c;
+    else if (limit && truncated) *truncated = true;
+  }
+}
+
+// Skips one JSON value (first character not yet consumed)
+bool skipValue(Stream &in) {
+  int c = peekNonWs(in);
+  if (c < 0) return false;
+  if (c == '"') {
+    in.read();
+    String dummy;
+    return readStr(in, dummy, 0);
+  }
+  if (c == '{' || c == '[') {
+    in.read();
+    int depth = 1;
+    while (depth > 0) {
+      int d = rd(in);
+      if (d < 0) return false;
+      if (d == '"') {
+        String dummy;
+        if (!readStr(in, dummy, 0)) return false;
+      } else if (d == '{' || d == '[') {
+        depth++;
+      } else if (d == '}' || d == ']') {
+        depth--;
+      }
+    }
+    return true;
+  }
+  // number / true / false / null: read up to the next delimiter
+  for (;;) {
+    int d = pk(in);
+    if (d < 0) return false;
+    if (d == ',' || d == '}' || d == ']' || isWs(d)) return true;
+    in.read();
+  }
+}
+
+size_t fieldLimit(const String &k) {
+  if (k == "description") return MAX_DESC;
+  if (k == "instruction") return MAX_INSTR;
+  if (k == "headline" || k == "areaDesc") return 200;
+  if (k == "id") return 120;
+  if (k == "event" || k == "senderName") return 64;
+  if (k == "onset" || k == "expires" || k == "ends") return 40;
+  if (k == "severity" || k == "urgency" || k == "certainty" || k == "status") return 16;
+  return 0;  // not needed
+}
+
+// Reads the alerts out of a /alerts/active response
+bool parseAlerts(Stream &in, std::vector<Alert> &out, String &why) {
+  while (out.size() < MAX_ALERTS && in.find("\"properties\"")) {
+    if (nextNonWs(in) != ':' || nextNonWs(in) != '{') {
+      why = "unexpected alert data";
+      return false;
+    }
+    Alert a;
+    String status = "Actual", onset, expires, ends;
+    for (;;) {
+      int c = nextNonWs(in);
+      if (c == '}') break;
+      if (c == ',') continue;
+      String key;
+      if (c != '"' || !readStr(in, key, 24) || nextNonWs(in) != ':') {
+        why = "unexpected alert data";
+        return false;
+      }
+      size_t lim = fieldLimit(key);
+      if (lim && peekNonWs(in) == '"') {
+        in.read();
+        String v;
+        bool cut = false;
+        if (!readStr(in, v, lim, &cut)) {
+          why = "alert download interrupted";
+          return false;
+        }
+        if (cut) v += "...";
+        if (key == "id") a.id = v;
+        else if (key == "event") a.event = v;
+        else if (key == "headline") a.headline = v;
+        else if (key == "severity") a.severity = v;
+        else if (key == "urgency") a.urgency = v;
+        else if (key == "certainty") a.certainty = v;
+        else if (key == "areaDesc") a.area = v;
+        else if (key == "description") a.description = v;
+        else if (key == "instruction") a.instruction = v;
+        else if (key == "senderName") a.sender = v;
+        else if (key == "status") status = v;
+        else if (key == "onset") onset = v;
+        else if (key == "expires") expires = v;
+        else if (key == "ends") ends = v;
+      } else if (!skipValue(in)) {
+        why = "alert download interrupted";
+        return false;
+      }
+    }
+    if (status != "Actual" || a.id.isEmpty()) continue;  // skip tests and exercises
+    if (a.event.isEmpty()) a.event = "Weather alert";
+    if (a.severity.isEmpty()) a.severity = "Unknown";
+    a.onset = parseIso(onset.c_str());
+    a.until = parseIso(ends.length() ? ends.c_str() : expires.c_str());
+    out.push_back(a);
+  }
+  return true;
 }
 
 bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
+  if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {  // TLS would fail; say why instead
+    why = String("not enough free RAM for HTTPS (largest block ") + ESP.getMaxAllocHeap() / 1024 +
+          " KB, free " + ESP.getFreeHeap() / 1024 + " KB)";
+    return false;
+  }
   // Same declaration order rule as httpGet(): clients must outlive `http`
   WiFiClientSecure tls;
   HTTPClient http;
@@ -234,59 +413,11 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
     http.end();
     return false;
   }
-  // Parse one alert at a time straight off the stream: each feature is
-  // deserialized (keeping only the fields we show), copied out and freed
-  // before the next. Holding the whole response at once runs out of RAM while
-  // the TLS session is still using ~40 KB.
-  JsonDocument filter;
-  for (const char *k : {"id", "event", "headline", "severity", "urgency", "certainty", "areaDesc", "onset",
-                        "expires", "ends", "description", "instruction", "senderName", "status"})
-    filter["properties"][k] = true;
-
   Stream &in = http.getStream();
-  in.setTimeout(10000);
-  if (!in.find("\"features\"") || !in.find("[")) {
-    why = "unexpected alert data";
-    http.end();
-    return false;
-  }
-  bool okAll = true;
-  while (out.size() < MAX_ALERTS) {
-    // Skip whitespace; an empty array ends right here
-    int c;
-    while ((c = in.peek()) == ' ' || c == '\n' || c == '\r' || c == '\t') in.read();
-    if (c == ']') break;
-
-    JsonDocument doc;
-    DeserializationError e = deserializeJson(doc, in, DeserializationOption::Filter(filter));
-    if (e) {
-      why = String("bad alert data: ") + e.c_str() + ", free RAM " + ESP.getFreeHeap() / 1024 + " KB";
-      okAll = false;
-      break;
-    }
-    JsonObject p = doc["properties"];
-    if (strcmp(p["status"] | "Actual", "Actual") == 0 && (p["id"] | "")[0]) {  // skip tests/exercises
-      Alert a;
-      a.id = p["id"] | "";
-      a.event = p["event"] | "Weather alert";
-      a.headline = clip(p["headline"] | "", 200);
-      a.severity = p["severity"] | "Unknown";
-      a.urgency = p["urgency"] | "";
-      a.certainty = p["certainty"] | "";
-      a.area = clip(p["areaDesc"] | "", 200);
-      a.description = clip(p["description"] | "", MAX_DESC);
-      a.instruction = clip(p["instruction"] | "", MAX_INSTR);
-      a.sender = p["senderName"] | "";
-      a.onset = parseIso(p["onset"] | "");
-      const char *ends = p["ends"] | "";
-      a.until = parseIso(*ends ? ends : (p["expires"] | ""));
-      out.push_back(a);
-    }
-    if (!in.findUntil(",", "]")) break;  // next feature, or end of the array
-  }
+  bool ok = parseAlerts(in, out, why);
   http.end();
-  if (!okAll && out.empty()) return false;
-  if (!okAll) Serial.printf("[wx] NWS: kept %u alert(s) before: %s\n", (unsigned)out.size(), why.c_str());
+  if (!ok && out.empty()) return false;
+  if (!ok) Serial.printf("[wx] NWS: kept %u alert(s) before: %s\n", (unsigned)out.size(), why.c_str());
   return true;
 }
 

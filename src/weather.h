@@ -113,6 +113,29 @@ uint32_t buoyVersion();                    // changes when buoy data or status c
 String buoyStatus();
 String waveText(float m);                  // 4' 7" (or 1.4 m in Celsius mode)
 
+// ---- Stock quote (Yahoo Finance chart data, NYSE/NASDAQ and more) ----
+// One ticker, refreshed every 5 min while the US market is open (30 min
+// otherwise), paused like the other downloads while Bluetooth tools run.
+struct Stock {
+  bool valid = false;
+  String symbol, name, exchange, currency;
+  float price = NAN, prevClose = NAN, dayHigh = NAN, dayLow = NAN;
+  uint32_t marketTime = 0;  // epoch of the last trade
+  uint32_t fetchedMs = 0;
+};
+String stockSymbol();                 // default SPY
+void setStockSymbol(const String &sym);
+bool showStockBar();                  // price + day change in the status bar
+void setShowStockBar(bool on);
+bool showStockDesk();                 // desktop widget
+void setShowStockDesk(bool on);
+bool stockActive();                   // either display on, so the quote is polled
+void refreshStock();
+Stock stock();
+uint32_t stockVersion();
+String stockStatus();
+float stockChangePct(const Stock &s);  // day change in %, NAN if unknown
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

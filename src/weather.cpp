@@ -49,6 +49,13 @@ const uint32_t BUOY_RETRY_MS = 5UL * 60 * 1000;
 const uint32_t BUOY_BOOT_DELAY_MS = 45000;  // after the first forecast and alert checks
 const size_t BUOY_READ_BYTES = 8192;        // newest rows of a ~600 KB file are enough
 const char *BUOY_DEFAULT = "41009";         // Canaveral, 20 NM east of Cape Canaveral
+// Stock quote (Yahoo Finance chart data, HTTPS only)
+const uint32_t STOCK_REFRESH_MS = 5UL * 60 * 1000;   // while the US market is open
+const uint32_t STOCK_CLOSED_MS = 30UL * 60 * 1000;   // nights and weekends
+const uint32_t STOCK_RETRY_MS = 2UL * 60 * 1000;
+const uint32_t STOCK_BOOT_DELAY_MS = 60000;          // after forecast, alerts and buoy
+const char *STOCK_TMP = "/stk.json";
+const char *STOCK_DEFAULT = "SPY";
 
 std::mutex mtx;
 Preferences prefs;
@@ -85,6 +92,13 @@ Buoy buoyData;
 String buoyErr;
 uint32_t buoyVer = 0;
 
+// Stock quote (guarded by mtx)
+String stockSym;
+bool stockBar = true, stockDesk = true;
+Stock stockData;
+String stockErr;
+uint32_t stockVer = 0;
+
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
 bool attempted = false;
@@ -98,13 +112,17 @@ uint32_t byLastAttempt = 0;
 bool byAttempted = false;
 bool byLastOk = false;
 bool byForce = false;
+uint32_t stLastAttempt = 0;
+bool stAttempted = false;
+bool stLastOk = false;
+bool stForce = false;
 volatile bool taskRunning = false;
 volatile bool tlsBusy = false;  // an HTTPS session is open (holds ~40 KB of heap)
 struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4 };
+enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -666,6 +684,155 @@ bool fetchBuoy(const String &station, Buoy &out, String &why) {
   return true;
 }
 
+// ---------- Stock quote (Yahoo Finance) ----------
+// https://query1.finance.yahoo.com/v8/finance/chart/<SYM>?range=1d&interval=1d
+// returns chart.result[0].meta with regularMarketPrice and the previous close.
+// Unofficial and free (no key), covers NYSE/NASDAQ stocks, ETFs and indices
+// (^GSPC). HTTPS only, so it goes through the same flash-then-parse path as
+// the NWS alerts.
+
+// US Eastern time: EDT (UTC-4) from the 2nd Sunday of March 02:00 to the 1st
+// Sunday of November 02:00, otherwise EST (UTC-5)
+time_t easternNow() {
+  time_t now = time(nullptr);
+  struct tm u;
+  gmtime_r(&now, &u);
+  int y = u.tm_year + 1900;
+  auto sunday = [&](int month, int n) {  // day of month of the n-th Sunday
+    uint32_t first = epochUtc(y, month, 1, 0, 0);
+    int dow = (int)((first / 86400 + 4) % 7);  // 1970-01-01 was a Thursday (4)
+    return 1 + (7 - dow) % 7 + 7 * (n - 1);
+  };
+  uint32_t dstStart = epochUtc(y, 3, sunday(3, 2), 7, 0);  // 02:00 EST
+  uint32_t dstEnd = epochUtc(y, 11, sunday(11, 1), 6, 0);  // 02:00 EDT
+  bool dst = (uint32_t)now >= dstStart && (uint32_t)now < dstEnd;
+  return now - (dst ? 4 : 5) * 3600;
+}
+
+// Weekday 09:00-16:30 Eastern (a little around the 09:30-16:00 session;
+// holidays aren't known, they just get 5-minute checks too)
+bool usMarketHours() {
+  if (time(nullptr) < 1700000000) return true;  // clock not set yet
+  time_t et = easternNow();
+  struct tm t;
+  gmtime_r(&et, &t);
+  int mins = t.tm_hour * 60 + t.tm_min;
+  return t.tm_wday >= 1 && t.tm_wday <= 5 && mins >= 9 * 60 && mins <= 16 * 60 + 30;
+}
+
+String urlEncodeSymbol(const String &s) {
+  String out;
+  for (unsigned i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (isalnum((unsigned char)c) || c == '.' || c == '-') out += c;
+    else {
+      char b[4];
+      snprintf(b, sizeof(b), "%%%02X", (unsigned char)c);
+      out += b;
+    }
+  }
+  return out;
+}
+
+bool downloadStock(const String &sym, String &why, int &httpCode) {
+  TlsGuard guard;  // declared first, released after the TLS session is gone
+  WiFiClientSecure tls;
+  HTTPClient http;
+  tls.setInsecure();  // public, read-only data
+  http.setTimeout(15000);
+  http.setConnectTimeout(15000);
+  http.setReuse(false);
+  String url = "https://query1.finance.yahoo.com/v8/finance/chart/" + urlEncodeSymbol(sym) + "?range=1d&interval=1d";
+  if (!http.begin(tls, url)) {
+    why = "bad URL";
+    return false;
+  }
+  http.setUserAgent("Mozilla/5.0 (compatible; CYD-UI/" FW_VERSION ")");
+  const char *hdrs[] = {"Transfer-Encoding"};
+  http.collectHeaders(hdrs, 1);
+  httpCode = http.GET();
+  Serial.printf("[stock] %s -> %d (free %lu, largest block %lu)\n", sym.c_str(), httpCode,
+                (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+  if (httpCode != 200 && httpCode != 404) {  // 404 still carries a JSON error message
+    why = httpCode < 0 ? http.errorToString(httpCode) : String("HTTP ") + httpCode;
+    http.end();
+    return false;
+  }
+  File f = SPIFFS.open(STOCK_TMP, FILE_WRITE);
+  if (!f) {
+    why = "can't write to flash";
+    http.end();
+    return false;
+  }
+  const bool chunked = http.header("Transfer-Encoding").equalsIgnoreCase("chunked");
+  String swhy;
+  long got = streamBody(http, chunked, f, 32 * 1024, swhy);
+  f.close();
+  http.end();
+  tls.stop();
+  if (got <= 0) {
+    why = got < 0 ? "download failed: " + swhy : String("empty response");
+    return false;
+  }
+  return true;
+}
+
+bool fetchStock(const String &sym, Stock &out, String &why) {
+  if (!fsReady()) {
+    why = "flash storage unavailable";
+    return false;
+  }
+  if (!tlsFits(why)) return false;
+  int code = 0;
+  bool ok = downloadStock(sym, why, code);  // TLS is closed when this returns
+  if (!ok) {
+    SPIFFS.remove(STOCK_TMP);
+    return false;
+  }
+  File f = SPIFFS.open(STOCK_TMP, FILE_READ);
+  if (!f) {
+    why = "saved quote missing";
+    return false;
+  }
+  JsonDocument filter;
+  JsonObject fm = filter["chart"]["result"][0]["meta"].to<JsonObject>();
+  for (const char *k : {"symbol", "currency", "regularMarketPrice", "chartPreviousClose", "previousClose",
+                        "regularMarketDayHigh", "regularMarketDayLow", "regularMarketTime", "shortName",
+                        "longName", "fullExchangeName"})
+    fm[k] = true;
+  filter["chart"]["error"]["description"] = true;
+  JsonDocument doc;
+  DeserializationError e = deserializeJson(doc, f, DeserializationOption::Filter(filter));
+  f.close();
+  SPIFFS.remove(STOCK_TMP);
+  if (e) {
+    why = String("bad quote data: ") + e.c_str();
+    return false;
+  }
+  const char *err = doc["chart"]["error"]["description"] | "";
+  JsonObject m = doc["chart"]["result"][0]["meta"];
+  if (m.isNull() || !m["regularMarketPrice"].is<float>()) {
+    why = code == 404 || *err ? "ticker " + sym + " not found" : String("no price in the reply");
+    return false;
+  }
+  out.symbol = m["symbol"] | sym.c_str();
+  const char *nm = m["longName"] | "";
+  if (!*nm) nm = m["shortName"] | "";
+  out.name = nm;
+  out.exchange = m["fullExchangeName"] | "";
+  out.currency = m["currency"] | "USD";
+  out.price = m["regularMarketPrice"].as<float>();
+  float pc = m["previousClose"] | 0.0f;
+  if (pc <= 0) pc = m["chartPreviousClose"] | 0.0f;
+  out.prevClose = pc > 0 ? pc : NAN;
+  out.dayHigh = m["regularMarketDayHigh"] | NAN;
+  out.dayLow = m["regularMarketDayLow"] | NAN;
+  out.marketTime = m["regularMarketTime"] | 0;
+  out.fetchedMs = millis();
+  out.valid = true;
+  return true;
+}
+
 void saveSnoozed() {  // caller holds mtx
   String s;
   for (const auto &id : snoozedIds) s += id + "\n";
@@ -735,9 +902,36 @@ void buoyWork() {
   byLastOk = ok;
 }
 
+void stockWork() {
+  String sym;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    sym = stockSym;
+  }
+  Stock s;
+  String why;
+  bool ok = fetchStock(sym, s, why);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (sym == stockSym) {  // ignore if the ticker was changed meanwhile
+      if (ok) {
+        stockData = s;
+        stockErr = "";
+      } else {
+        stockErr = why;
+      }
+      stockVer++;
+    }
+  }
+  if (ok) Serial.printf("[stock] %s %.2f (prev close %.2f)\n", sym.c_str(), s.price, s.prevClose);
+  else Serial.printf("[stock] %s failed: %s\n", sym.c_str(), why.c_str());
+  stLastOk = ok;
+}
+
 void fetchWork() {
   if (taskFlags & DO_BUOY) buoyWork();
-  if (!(taskFlags & (DO_FORECAST | DO_ALERTS))) return;  // buoy-only run
+  if (taskFlags & DO_STOCK) stockWork();
+  if (!(taskFlags & (DO_FORECAST | DO_ALERTS))) return;  // buoy/stock-only run
   String zip, place, why;
   float la, lo;
   bool have;
@@ -834,6 +1028,10 @@ void startFetch(uint8_t flags) {
     byAttempted = true;
     byLastAttempt = millis();
   }
+  if (flags & DO_STOCK) {
+    stAttempted = true;
+    stLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -849,6 +1047,10 @@ void startFetch(uint8_t flags) {
     if (flags & DO_BUOY) {
       buoyErr = "not enough memory";
       byLastOk = false;
+    }
+    if (flags & DO_STOCK) {
+      stockErr = "not enough memory";
+      stLastOk = false;
     }
   }
 }
@@ -870,6 +1072,9 @@ void begin() {
   buoyBar = prefs.getBool("buoyBar", legacyOn);
   buoyDesk = prefs.getBool("buoyDesk", legacyOn);
   alertDesk = prefs.getBool("alertDesk", true);
+  stockSym = prefs.isKey("stkSym") ? prefs.getString("stkSym") : String(STOCK_DEFAULT);
+  stockBar = prefs.getBool("stkBar", true);
+  stockDesk = prefs.getBool("stkDesk", true);
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
     int nl = fv.indexOf('\n', i);
@@ -930,9 +1135,15 @@ void loop() {
   if ((buoyBar || buoyDesk) && buoyId.length() && !flags && (millis() >= BUOY_BOOT_DELAY_MS || byForce) &&
       (byForce || !byAttempted || millis() - byLastAttempt >= (byLastOk ? BUOY_REFRESH_MS : BUOY_RETRY_MS)))
     flags |= DO_BUOY;
+  // Stock quote: on its own, once nothing else is due
+  if (!flags && (stockBar || stockDesk) && stockSym.length() && (millis() >= STOCK_BOOT_DELAY_MS || stForce)) {
+    uint32_t every = !stLastOk ? STOCK_RETRY_MS : usMarketHours() ? STOCK_REFRESH_MS : STOCK_CLOSED_MS;
+    if (stForce || !stAttempted || millis() - stLastAttempt >= every) flags |= DO_STOCK;
+  }
   if (flags) {
     force = alForce = false;
     if (flags & DO_BUOY) byForce = false;
+    if (flags & DO_STOCK) stForce = false;
     startFetch(flags);
   }
 }
@@ -1287,6 +1498,79 @@ String waveText(float m) {
     snprintf(b, sizeof(b), "%.1f m", m);
   }
   return b;
+}
+
+// ---------- Stock quote API ----------
+
+String stockSymbol() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return stockSym;
+}
+
+void setStockSymbol(const String &sym) {
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (sym == stockSym && stockData.valid) return;
+    stockSym = sym;
+    stockData = Stock();
+    stockErr = "";
+    stockVer++;
+  }
+  prefs.begin("wx", false);
+  prefs.putString("stkSym", sym);
+  prefs.end();
+  stForce = true;
+}
+
+bool stockActive() { return stockBar || stockDesk; }
+bool showStockBar() { return stockBar; }
+bool showStockDesk() { return stockDesk; }
+
+void setShowStockBar(bool on) {
+  bool was = stockActive();
+  stockBar = on;
+  prefs.begin("wx", false);
+  prefs.putBool("stkBar", on);
+  prefs.end();
+  if (!was && on) stForce = true;
+  stockVer++;
+}
+
+void setShowStockDesk(bool on) {
+  bool was = stockActive();
+  stockDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("stkDesk", on);
+  prefs.end();
+  if (!was && on) stForce = true;
+  stockVer++;
+}
+
+void refreshStock() { stForce = true; }
+
+Stock stock() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return stockData;
+}
+
+uint32_t stockVersion() { return stockVer; }
+
+String stockStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!stockBar && !stockDesk) return "Stock tracking is off (both stock displays are switched off).";
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (stockErr.length()) return "Quote update failed: " + stockErr;
+  if (!stockData.valid)
+    return millis() < STOCK_BOOT_DELAY_MS ? "First quote 1 min after startup..." : "Getting the quote...";
+  char b[96];
+  snprintf(b, sizeof(b), "Checked %lu min ago, every %s - Yahoo Finance (may be delayed)",
+           (unsigned long)((millis() - stockData.fetchedMs) / 60000), usMarketHours() ? "5 min" : "30 min (market closed)");
+  return b;
+}
+
+float stockChangePct(const Stock &s) {
+  if (!s.valid || std::isnan(s.prevClose) || s.prevClose <= 0) return NAN;
+  return (s.price - s.prevClose) / s.prevClose * 100.0f;
 }
 
 }  // namespace weather

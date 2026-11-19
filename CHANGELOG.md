@@ -3,6 +3,33 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.8.0] - 2026-11-19
+
+### Added
+- Stock tracker:
+  - **Menu > Stocks**: pick a ticker on the on-screen keyboard (any NYSE/NASDAQ stock, ETF or
+    index Yahoo Finance knows: AAPL, TSLA, BRK-B, ^GSPC...). The default is SPY.
+  - **Status bar**: ticker, price and the day's change in %, green when up and red when down,
+    left of the wave reading.
+  - **Desktop**: a one-line bubble (ticker, price, change, ">"). Tap it, or the status bar reading,
+    for the stock page: change in $ and %, previous close, day range, exchange, currency and the
+    last trade time.
+  - Two switches, **Stock in status bar** and **Stock on desktop** (both, either or neither). The
+    quote is only fetched while at least one is on.
+- How it's fetched: Yahoo Finance's chart endpoint
+  (`query1.finance.yahoo.com/v8/finance/chart/<SYM>?range=1d&interval=1d`, no key) over HTTPS.
+  The reply goes to flash, then gets a filtered parse (same path as the NWS alerts). The day
+  change is computed from `regularMarketPrice` against the previous close.
+  - Refreshes every 5 min on weekdays 09:00-16:30 Eastern (DST handled) and every 30 min
+    otherwise; retries after 2 min. The first quote comes 60 s after boot.
+  - Like the weather and buoy, it pauses while Drone Scan, Drone Watch or a Bluetooth tool is in
+    use, and it never runs alongside another download.
+
+### Changed
+- Desktop layout: in landscape the bubbles wrap onto a second line. The Menu button now
+  shrinks (down to 40 px tall) instead of overlapping the Wi-Fi line when the widgets need the
+  room.
+
 ## [0.7.16] - 2026-11-19
 
 ### Added

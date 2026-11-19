@@ -24,12 +24,16 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 - **NWS alerts**: active National Weather Service alerts for the weather ZIP, checked every 5 min.
   New alerts pop up and make the desktop weather icon flash until snoozed. **Weather > Active
   alerts** lists them with full details until they expire.
-- **Buoy data**: the desktop shows the significant wave height (feet and inches, or meters in
-  Celsius mode) from one NOAA NDBC buoy. The default is 41009, 20 NM east of Cape Canaveral. Tap
-  the reading, or **Weather > Buoy data**, for the full observation: wave direction and periods,
+- **Buoy data**: the wave height from one NOAA NDBC buoy (feet and inches, or meters in Celsius
+  mode), shown with a wave icon in the status bar next to the weather and as a larger readout on the
+  desktop. Each has its own switch on the buoy page, so you can have both, either or neither. With
+  both off the buoy isn't polled. The default buoy is 41009, 20 NM east of Cape Canaveral. Tap
+  either reading, or **Weather > Buoy data**, for the full observation: wave direction and periods,
   wind and gusts in knots, water and air temperature, pressure and observation time. **Choose buoy**
-  offers nearby Florida buoys or any NDBC station ID. Data refreshes every 30 min, and only the
-  newest few KB of the station file are read.
+  offers nearby Florida buoys or any NDBC station ID. Data refreshes every 30 min.
+- **Alert count**: a desktop readout next to the wave height shows how many NWS alerts are
+  active (red while any are unsnoozed). Tap it for the alert list. Switch it off under **Weather >
+  Alert count on desktop**.
 - **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
   bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,

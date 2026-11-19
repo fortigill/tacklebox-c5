@@ -71,6 +71,8 @@ size_t unsnoozedAlertCount();            // > 0 = desktop weather icon flashes
 bool nextAlertPopup(String &id);         // each new alert is handed out once
 uint32_t alertsVersion();                // changes whenever the list changes
 String alertsStatus();                   // last update / error, for display
+bool showAlertDesk();                    // active-alert count widget on the desktop
+void setShowAlertDesk(bool on);
 int severityRank(const String &severity);  // 4 Extreme .. 0 Unknown
 
 // ---- NDBC buoy (www.ndbc.noaa.gov, any station id) ----
@@ -97,8 +99,11 @@ const BuoyPreset *buoyPresets(size_t &n);  // nearby buoys offered in the picker
 String buoyName(const String &id);         // preset name, or "" for other stations
 String buoyStation();                      // default 41009
 void setBuoyStation(const String &id);
-bool showBuoy();                           // monitor + show wave height on the desktop
-void setShowBuoy(bool on);
+bool showBuoyBar();                        // wave height in the status bar
+void setShowBuoyBar(bool on);
+bool showBuoyDesk();                       // wave height widget on the desktop
+void setShowBuoyDesk(bool on);
+bool buoyActive();                         // either display is on, so the buoy is polled
 void refreshBuoy();
 Buoy buoy();
 uint32_t buoyVersion();                    // changes when buoy data or status changes

@@ -66,7 +66,9 @@ String alertsErr;
 
 // NDBC buoy (guarded by mtx)
 String buoyId;
-bool buoyOn = true;
+bool buoyBar = true;    // wave height in the status bar
+bool buoyDesk = true;   // wave height widget on the desktop
+bool alertDesk = true;  // active-alert count widget on the desktop
 Buoy buoyData;
 String buoyErr;
 uint32_t buoyVer = 0;
@@ -764,7 +766,10 @@ void begin() {
   iconOn = prefs.getBool("icon", true);
   String sn = prefs.isKey("asnz") ? prefs.getString("asnz") : String();
   buoyId = prefs.isKey("buoy") ? prefs.getString("buoy") : String(BUOY_DEFAULT);
-  buoyOn = prefs.getBool("buoyOn", true);
+  bool legacyOn = prefs.getBool("buoyOn", true);  // 0.7.0 had one switch
+  buoyBar = prefs.getBool("buoyBar", legacyOn);
+  buoyDesk = prefs.getBool("buoyDesk", legacyOn);
+  alertDesk = prefs.getBool("alertDesk", true);
   prefs.end();
   for (int i = 0; i < (int)sn.length();) {
     int nl = sn.indexOf('\n', i);
@@ -811,7 +816,7 @@ void loop() {
   }
   // The buoy doesn't need a ZIP code. It runs on its own, after the first
   // forecast and alert checks, so two TLS downloads never overlap.
-  if (buoyOn && buoyId.length() && !flags && (millis() >= BUOY_BOOT_DELAY_MS || byForce) &&
+  if ((buoyBar || buoyDesk) && buoyId.length() && !flags && (millis() >= BUOY_BOOT_DELAY_MS || byForce) &&
       (byForce || !byAttempted || millis() - byLastAttempt >= (byLastOk ? BUOY_REFRESH_MS : BUOY_RETRY_MS)))
     flags |= DO_BUOY;
   if (flags) {
@@ -1051,7 +1056,7 @@ String buoyStation() {
 void setBuoyStation(const String &id) {
   {
     std::lock_guard<std::mutex> lock(mtx);
-    if (id == buoyId && buoyData.valid) return;
+    if (id == buoyId && buoyData.valid) return;  // same station, data already here
     buoyId = id;
     buoyData = Buoy();
     buoyErr = "";
@@ -1063,14 +1068,37 @@ void setBuoyStation(const String &id) {
   byForce = true;
 }
 
-bool showBuoy() { return buoyOn; }
+bool buoyActive() { return buoyBar || buoyDesk; }
+bool showBuoyBar() { return buoyBar; }
+bool showBuoyDesk() { return buoyDesk; }
 
-void setShowBuoy(bool on) {
-  buoyOn = on;
+void setShowBuoyBar(bool on) {
+  bool wasActive = buoyActive();
+  buoyBar = on;
   prefs.begin("wx", false);
-  prefs.putBool("buoyOn", on);
+  prefs.putBool("buoyBar", on);
   prefs.end();
-  if (on) byForce = true;
+  if (!wasActive && on) byForce = true;
+  buoyVer++;
+}
+
+void setShowBuoyDesk(bool on) {
+  bool wasActive = buoyActive();
+  buoyDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("buoyDesk", on);
+  prefs.end();
+  if (!wasActive && on) byForce = true;
+  buoyVer++;
+}
+
+bool showAlertDesk() { return alertDesk; }
+
+void setShowAlertDesk(bool on) {
+  alertDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("alertDesk", on);
+  prefs.end();
 }
 
 void refreshBuoy() { byForce = true; }
@@ -1084,7 +1112,7 @@ uint32_t buoyVersion() { return buoyVer; }
 
 String buoyStatus() {
   std::lock_guard<std::mutex> lock(mtx);
-  if (!buoyOn) return "Buoy monitoring is off.";
+  if (!buoyBar && !buoyDesk) return "Buoy monitoring is off (both wave displays are switched off).";
   if (buoyErr.length()) return "Buoy update failed: " + buoyErr;
   if (!buoyData.valid)
     return millis() < BUOY_BOOT_DELAY_MS ? "First buoy check 45 s after startup..." : "Getting buoy data from NOAA...";

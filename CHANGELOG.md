@@ -3,6 +3,23 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.1] - 2026-11-19
+
+### Added
+- The wave height in the status bar: a wave icon plus the number, next to the weather. Tap it
+  for the buoy page.
+- A desktop alert-count readout next to the wave height ("5 alerts", red while any are
+  unsnoozed). Tap it for the alert list, and Back returns to the desktop. Switch:
+  **Weather > Alert count on desktop**.
+- A wave icon (`ui_wave`, `ui_wave_s`, from `tools/gen_ui_icons.py`).
+
+### Changed
+- The desktop wave readout shows the wave icon instead of the word "Waves".
+- The buoy page has two switches, **Waves in status bar** and **Waves on desktop**: both,
+  either or neither. The buoy is only polled while at least one is on. The 0.7.0 setting
+  carries over to both.
+- The status bar spacing is a little tighter in portrait to fit the wave reading.
+
 ## [0.7.0] - 2026-11-19
 
 ### Added

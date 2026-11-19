@@ -56,7 +56,13 @@ uint32_t wxaVer = 0;
 int deskWxBlink = -1;               // last opacity state applied to the desktop weather
 lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
-lv_obj_t *deskWave = nullptr;  // desktop wave height (tap for the buoy page)
+// Desktop widgets: wave height and alert count (tap for their pages), plus
+// the wave height in the status bar
+lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr;
+lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
+lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
+int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
+Screen wxaBack = Screen::Weather;
 lv_obj_t *byWave = nullptr, *byName = nullptr, *byDetail = nullptr, *byStatus = nullptr, *byIdTa = nullptr;
 uint32_t byVer = 0;
 Screen buoyBack = Screen::Weather;
@@ -192,7 +198,9 @@ void resetPtrs() {
   deskDrone = nullptr;
   deskDroneState = -1;
   wxaList = wxaStatus = nullptr;
-  deskWave = byWave = byName = byDetail = byStatus = byIdTa = nullptr;
+  deskWave = deskWaveLbl = deskBarWave = deskBarWaveLbl = deskAlerts = deskAlertsLbl = nullptr;
+  deskAlertsColor = -1;
+  byWave = byName = byDetail = byStatus = byIdTa = nullptr;
   byVer = 0;
   deskWxBlink = -1;
   deskTemp = TempW();
@@ -438,13 +446,32 @@ void refreshDesktop() {
     }
   }
 
-  if (deskWave) {
-    bool on = weather::showBuoy();
-    setHidden(deskWave, !on);
+  // Wave height (status bar and/or desktop widget) and the alert count widget
+  bool barWave = weather::showBuoyBar(), deskWaveOn = weather::showBuoyDesk();
+  setHidden(deskBarWave, !barWave);
+  setHidden(deskWave, !deskWaveOn);
+  if (barWave || deskWaveOn) {
+    String wt = weather::waveText(weather::buoy().waveM);
+    if (deskWaveOn) setText(deskWaveLbl, wt.c_str());
+    if (barWave) {
+      if (W() < 300) wt.replace("' ", "'");  // tighter in portrait
+      setText(deskBarWaveLbl, wt.c_str());
+    }
+  }
+  if (deskAlerts) {
+    bool on = weather::showAlertDesk() && weather::configured();
+    setHidden(deskAlerts, !on);
     if (on) {
-      weather::Buoy b = weather::buoy();
-      String t = "Waves " + weather::waveText(b.waveM);
-      setText(deskWave, t.c_str());
+      size_t n = weather::alertCount(), live = weather::unsnoozedAlertCount();
+      char t[24];
+      if (n) snprintf(t, sizeof(t), "%u alert%s", (unsigned)n, n == 1 ? "" : "s");
+      else snprintf(t, sizeof(t), "No alerts");
+      setText(deskAlertsLbl, t);
+      int col = live ? 1 : 0;
+      if (col != deskAlertsColor) {
+        deskAlertsColor = col;
+        lv_obj_set_style_text_color(deskAlerts, live ? lv_palette_main(LV_PALETTE_RED) : theme::text(), 0);
+      }
     }
   }
 
@@ -495,7 +522,7 @@ void showDesktop() {
   lv_obj_set_style_border_width(bar, 0, 0);
   lv_obj_set_style_pad_hor(bar, 6, 0);
   lv_obj_set_style_pad_ver(bar, 2, 0);
-  lv_obj_set_style_pad_column(bar, narrow ? 6 : 10, 0);
+  lv_obj_set_style_pad_column(bar, narrow ? 4 : 10, 0);
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -521,6 +548,34 @@ void showDesktop() {
   deskWxImg = lv_img_create(deskWx);                       // ...then the icon
   lv_obj_clear_flag(deskWxImg, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(deskWxImg, LV_OBJ_FLAG_HIDDEN);
+
+  // Buoy wave height: wave icon + number; tap for the buoy page
+  deskBarWave = lv_obj_create(bar);
+  lv_obj_remove_style_all(deskBarWave);
+  lv_obj_set_size(deskBarWave, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(deskBarWave, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(deskBarWave, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(deskBarWave, 3, 0);
+  lv_obj_add_flag(deskBarWave, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(deskBarWave, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_ext_click_area(deskBarWave, 6);
+  lv_obj_add_event_cb(
+      deskBarWave,
+      [](lv_event_t *) {
+        buoyBack = Screen::Desktop;
+        showBuoy();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  {
+    lv_obj_t *wi = lv_img_create(deskBarWave);
+    lv_img_set_src(wi, narrow ? &ui_wave_s : &ui_wave);
+    lv_obj_set_style_img_recolor_opa(wi, LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(wi, theme::accent(), 0);
+    lv_obj_clear_flag(wi, LV_OBJ_FLAG_CLICKABLE);
+    deskBarWaveLbl = lv_label_create(deskBarWave);
+    lv_obj_set_style_text_font(deskBarWaveLbl, barFont, 0);
+    lv_label_set_text(deskBarWaveLbl, "--");
+  }
 
   // Drone Watch indicator: only shown while Watch runs; tap for Drone RID
   deskDrone = lv_img_create(bar);
@@ -566,21 +621,51 @@ void showDesktop() {
   lv_obj_align(mb, LV_ALIGN_CENTER, 0, 4);
   lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
 
-  // Buoy wave height between the status bar and the menu; tap for the buoy page
-  deskWave = lv_label_create(scr);
-  lv_obj_set_style_text_font(deskWave, &lv_font_montserrat_20, 0);
-  lv_label_set_text(deskWave, "Waves --");
-  lv_obj_align(deskWave, LV_ALIGN_TOP_MID, 0, H() > W() ? 60 : 46);
-  lv_obj_add_flag(deskWave, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_ext_click_area(deskWave, 10);
-  lv_obj_add_flag(deskWave, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_event_cb(
-      deskWave,
-      [](lv_event_t *) {
-        buoyBack = Screen::Desktop;
-        showBuoy();
-      },
-      LV_EVENT_CLICKED, nullptr);
+  // Widgets between the status bar and the menu: wave height and alert count
+  lv_obj_t *wrow = lv_obj_create(scr);
+  lv_obj_remove_style_all(wrow);
+  lv_obj_set_size(wrow, W(), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(wrow, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(wrow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(wrow, narrow ? 18 : 30, 0);
+  lv_obj_clear_flag(wrow, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, H() > W() ? 58 : 46);
+
+  auto widget = [&](lv_event_cb_t cb) {
+    lv_obj_t *w = lv_obj_create(wrow);
+    lv_obj_remove_style_all(w);
+    lv_obj_set_size(w, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(w, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(w, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(w, 6, 0);
+    lv_obj_set_style_text_font(w, &lv_font_montserrat_20, 0);
+    lv_obj_add_flag(w, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(w, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_ext_click_area(w, 10);
+    lv_obj_add_event_cb(w, cb, LV_EVENT_CLICKED, nullptr);
+    return w;
+  };
+
+  deskWave = widget([](lv_event_t *) {
+    buoyBack = Screen::Desktop;
+    showBuoy();
+  });
+  lv_obj_t *wimg = lv_img_create(deskWave);
+  lv_img_set_src(wimg, &ui_wave);
+  lv_obj_set_style_img_recolor_opa(wimg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(wimg, theme::accent(), 0);
+  lv_obj_clear_flag(wimg, LV_OBJ_FLAG_CLICKABLE);
+  deskWaveLbl = lv_label_create(deskWave);
+  lv_label_set_text(deskWaveLbl, "--");
+
+  deskAlerts = widget([](lv_event_t *) {
+    wxaBack = Screen::Desktop;
+    showWxAlerts();
+  });
+  lv_obj_t *aic = lv_label_create(deskAlerts);
+  lv_label_set_text(aic, LV_SYMBOL_WARNING);
+  deskAlertsLbl = lv_label_create(deskAlerts);
+  lv_label_set_text(deskAlertsLbl, "");
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -2079,14 +2164,35 @@ void showWeather() {
     else snprintf(t, sizeof(t), "Active alerts (none)");
     lv_obj_t *ab = lv_list_add_btn(list, LV_SYMBOL_WARNING, t);
     if (live) lv_obj_set_style_text_color(ab, lv_palette_main(LV_PALETTE_RED), 0);
-    lv_obj_add_event_cb(ab, [](lv_event_t *) { showWxAlerts(); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(
+        ab,
+        [](lv_event_t *) {
+          wxaBack = Screen::Weather;
+          showWxAlerts();
+        },
+        LV_EVENT_CLICKED, nullptr);
   }
+
+  b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Alert count on desktop");
+  sw = lv_switch_create(b);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showAlertDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *e) {
+        lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showAlertDesk();
+        weather::setShowAlertDesk(on);
+        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
 
   // NOAA buoy sub-page
   {
     weather::Buoy by = weather::buoy();
     String t = "Buoy data (" + weather::buoyStation() + ")";
-    if (weather::showBuoy() && by.valid) t += ": " + weather::waveText(by.waveM);
+    if (weather::buoyActive() && by.valid) t += ": " + weather::waveText(by.waveM);
     lv_obj_t *bb = lv_list_add_btn(list, LV_SYMBOL_GPS, t.c_str());
     lv_obj_add_event_cb(
         bb,
@@ -2215,7 +2321,10 @@ void pollWxAlerts() {
 
 void showWxAlerts() {
   lv_obj_t *scr = newScreen();
-  makeHeader(scr, "Weather alerts", [](lv_event_t *) { showWeather(); });
+  makeHeader(scr, "Weather alerts", [](lv_event_t *) {
+    if (wxaBack == Screen::Desktop) showDesktop();
+    else showWeather();
+  });
   lv_obj_t *body = makeBody(scr, HEADER_H);
   wxaStatus = bodyLabel(body);
   lv_obj_set_style_text_opa(wxaStatus, LV_OPA_70, 0);
@@ -2377,21 +2486,28 @@ void showBuoy() {
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Choose buoy");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showBuoyPick(); }, LV_EVENT_CLICKED, nullptr);
 
-  b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show waves on desktop");
-  lv_obj_t *sw = lv_switch_create(b);
-  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
-  if (weather::showBuoy()) lv_obj_add_state(sw, LV_STATE_CHECKED);
-  lv_obj_add_event_cb(
-      b,
-      [](lv_event_t *e) {
-        lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
-        bool on = !weather::showBuoy();
-        weather::setShowBuoy(on);
-        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
-        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
-        byVer = 0;  // redraw the status line
-      },
-      LV_EVENT_CLICKED, sw);
+  // Two independent switches: status bar and desktop widget (both, either or neither)
+  auto toggleRow = [&](const char *label, bool on, lv_event_cb_t cb) {
+    lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, label);
+    lv_obj_t *s = lv_switch_create(row);
+    lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, s);
+  };
+  toggleRow("Waves in status bar", weather::showBuoyBar(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showBuoyBar();
+    weather::setShowBuoyBar(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  toggleRow("Waves on desktop", weather::showBuoyDesk(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showBuoyDesk();
+    weather::setShowBuoyDesk(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
 
   b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
   lv_obj_add_event_cb(
@@ -2401,7 +2517,10 @@ void showBuoy() {
           errorBox("No Wi-Fi", "Connect to Wi-Fi to get buoy data.");
           return;
         }
-        if (!weather::showBuoy()) weather::setShowBuoy(true);
+        if (!weather::buoyActive()) {
+          errorBox("Buoy is off", "Turn on the status bar or desktop wave display first.");
+          return;
+        }
         weather::refreshBuoy();
       },
       LV_EVENT_CLICKED, nullptr);
@@ -2413,7 +2532,6 @@ void showBuoy() {
 void onBuoyPicked(lv_event_t *e) {
   const char *id = (const char *)lv_event_get_user_data(e);
   weather::setBuoyStation(id);
-  if (!weather::showBuoy()) weather::setShowBuoy(true);
   showBuoy();
 }
 
@@ -2475,7 +2593,6 @@ void showBuoyId() {
             return;
           }
           weather::setBuoyStation(id);
-          if (!weather::showBuoy()) weather::setShowBuoy(true);
           showBuoy();
         }
       },

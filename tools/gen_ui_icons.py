@@ -33,7 +33,21 @@ def drone(n):
     return img
 
 
-ICONS = [("drone", drone, 22)]
+def wave(n):
+    """Two parallel rows of rolling sea waves."""
+    img = Image.new("L", (n, n), 0)
+    d = ImageDraw.Draw(img)
+    w = max(2, int(n * 0.12))
+    for yc in (n * 0.32, n * 0.70):
+        pts = []
+        for i in range(0, 101):
+            x = n * 0.05 + (n * 0.90) * i / 100
+            pts.append((x, yc - math.sin((i / 100) * 2 * math.pi * 1.5) * n * 0.10))
+        d.line(pts, fill=255, width=w, joint="curve")
+    return img
+
+
+ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16)]
 
 
 def to_alpha4(img):
@@ -75,7 +89,7 @@ def main():
             tile = Image.new("RGB", (size, size), col)
             bg = Image.new("RGB", (size, size), (21, 23, 26))
             bg.paste(tile, (0, 0), img)
-            preview.paste(bg.resize((size * 2 - 14, size * 2 - 14), Image.NEAREST), (8 + j * 32, 14))
+            preview.paste(bg.resize((size * 2 - 14, size * 2 - 14), Image.NEAREST), (8 + i * 64 + j * 32, 14))
     h += ["", "#ifdef __cplusplus", "}", "#endif", ""]
     open("src/ui_icons.c", "w").write("\n".join(c))
     open("src/ui_icons.h", "w").write("\n".join(h))

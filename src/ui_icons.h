@@ -8,6 +8,8 @@ extern "C" {
 #endif
 
 extern const lv_img_dsc_t ui_drone;
+extern const lv_img_dsc_t ui_wave;
+extern const lv_img_dsc_t ui_wave_s;
 
 #ifdef __cplusplus
 }

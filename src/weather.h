@@ -34,6 +34,9 @@ void refresh();
 bool useF();
 void setUseF(bool f);
 
+bool showIcon();            // show the forecast icon in the desktop status bar
+void setShowIcon(bool on);
+
 Data data();
 Status status();
 String lastError();

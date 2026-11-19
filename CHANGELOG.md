@@ -3,6 +3,15 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.9] - 2026-11-18
+
+### Changed
+- Status bar order is now temperature, weather icon, clock, Wi-Fi icon.
+
+### Added
+- **Weather > Show icon on desktop** switch to hide the forecast icon in the status bar (the
+  temperature stays). Saved across reboots; the Weather screen still shows the large icon.
+
 ## [0.0.8] - 2026-11-18
 
 ### Fixed

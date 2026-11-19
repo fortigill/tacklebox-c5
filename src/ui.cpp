@@ -273,7 +273,7 @@ void refreshDesktop() {
   weather::Data wx = weather::data();
   setHidden(deskWx, !weather::configured());
   if (wx.valid) setImg(deskWxImg, weather::icon(wx, false));
-  setHidden(deskWxImg, !wx.valid);
+  setHidden(deskWxImg, !wx.valid || !weather::showIcon());
   setTemp(deskTemp, wx.valid, wx.tempC);
 
   // Restyle only on change: setting a style invalidates (redraws) the widget
@@ -297,7 +297,7 @@ void refreshDesktop() {
 void showDesktop() {
   lv_obj_t *scr = newScreen();
 
-  // Status bar: [CYD] .......... [weather] [clock] [wifi], right-aligned row.
+  // Status bar: [CYD] .......... [temp][icon] [clock] [wifi], right-aligned row.
   // Portrait is only 240 px wide, so it gets the smaller font.
   bool narrow = W() < 300;
   const lv_font_t *barFont = narrow ? &lv_font_montserrat_14 : &lv_font_montserrat_20;
@@ -320,7 +320,7 @@ void showDesktop() {
     lv_obj_set_flex_grow(name, 1);  // pushes everything else to the right
   }
 
-  // Weather: icon + temperature; tap for the weather screen
+  // Weather: temperature + forecast icon; tap for the weather screen
   deskWx = lv_obj_create(bar);
   lv_obj_remove_style_all(deskWx);
   lv_obj_set_size(deskWx, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -331,10 +331,10 @@ void showDesktop() {
   lv_obj_set_ext_click_area(deskWx, 6);
   lv_obj_add_event_cb(deskWx, [](lv_event_t *) { wxBack = Screen::Desktop; showWeather(); },
                       LV_EVENT_CLICKED, nullptr);
-  deskWxImg = lv_img_create(deskWx);
+  deskTemp = makeTemp(deskWx, barFont, narrow ? 5 : 6);  // temperature first...
+  deskWxImg = lv_img_create(deskWx);                       // ...then the icon
   lv_obj_clear_flag(deskWxImg, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(deskWxImg, LV_OBJ_FLAG_HIDDEN);
-  deskTemp = makeTemp(deskWx, barFont, narrow ? 5 : 6);
 
   // Clock; tap it for Date & time settings
   deskClock = lv_label_create(bar);
@@ -1103,6 +1103,22 @@ void showWeather() {
         showWeather();
       },
       LV_EVENT_CLICKED, nullptr);
+
+  // Desktop icon toggle: the whole row toggles; the switch just shows the state
+  b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show icon on desktop");
+  lv_obj_t *sw = lv_switch_create(b);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showIcon()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *e) {
+        lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showIcon();
+        weather::setShowIcon(on);
+        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
 
   b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
   lv_obj_add_event_cb(

@@ -28,6 +28,7 @@ String placeName;
 float lat = 0, lon = 0;
 bool haveLoc = false;
 bool unitF = true;
+bool iconOn = true;
 
 // Results
 Data cur;
@@ -222,6 +223,7 @@ void begin() {
   lon = prefs.getFloat("lon", 0);
   haveLoc = prefs.getBool("loc", false) && zipCode.length();
   unitF = prefs.getBool("unitF", true);
+  iconOn = prefs.getBool("icon", true);
   prefs.end();
 }
 
@@ -284,6 +286,15 @@ void setUseF(bool f) {
   unitF = f;
   prefs.begin("wx", false);
   prefs.putBool("unitF", f);
+  prefs.end();
+}
+
+bool showIcon() { return iconOn; }
+
+void setShowIcon(bool on) {
+  iconOn = on;
+  prefs.begin("wx", false);
+  prefs.putBool("icon", on);
   prefs.end();
 }
 

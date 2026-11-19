@@ -592,8 +592,8 @@ void refreshDesktop() {
     if (on) {
       size_t n = weather::alertCount(), live = weather::unsnoozedAlertCount();
       char t[24];
-      if (n) snprintf(t, sizeof(t), "%u alert%s", (unsigned)n, n == 1 ? "" : "s");
-      else snprintf(t, sizeof(t), "No alerts");
+      if (n) snprintf(t, sizeof(t), "%u NWS alert%s", (unsigned)n, n == 1 ? "" : "s");
+      else snprintf(t, sizeof(t), "No NWS alerts");
       setText(deskAlertsLbl, t);
       int col = live ? 1 : 0;
       if (col != deskAlertsColor) {

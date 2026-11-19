@@ -82,8 +82,11 @@ The project is a git repository.
 ## Troubleshooting
 
 - **Upload fails after "Changing baud rate"**: lower `upload_speed` in `platformio.ini` to 115200.
-- **Colors look wrong or inverted**: some CYDs, including the two-USB-port version, use an ST7789
-  panel and need a different driver flag.
+- **Colors look inverted** (dark looks light, blue looks orange): toggle **Display & touch > Invert
+  colors**. It is on by default because this board's panel needs it.
+- **Red and blue swapped** (but light/dark correct): toggle **Swap red/blue**.
+- **Colors still wrong**: some CYDs, including the two-USB-port version, use an ST7789 panel and need
+  a different driver flag.
 
 ## Layout
 

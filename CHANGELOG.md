@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.3.1] - 2026-11-18
+
+### Fixed
+- All colors were inverted on this board's panel: Dark looked light, Light looked dark, and the
+  connected Wi-Fi icon (blue #2196F3) showed as orange-yellow (#DE690C). The ILI9341 is now put into
+  display-inversion mode (`invertDisplay`). The setting is on by default, saved in NVS, and can be
+  toggled under **Display & touch > Colors > Invert colors (panel fix)** for panels that don't need
+  it.
+
+### Notes
+- "Swap red/blue" (0.0.3) was based on a wrong guess about the yellow icon. Leave it off unless
+  colors are still wrong after the inversion fix.
+
 ## [0.3.0] - 2026-11-18
 
 ### Added

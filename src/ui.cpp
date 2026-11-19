@@ -576,6 +576,15 @@ void showDisplay() {
   }
 
   lv_list_add_text(list, "Colors");
+  lv_obj_t *ib = lv_list_add_btn(list, display::invertColors() ? LV_SYMBOL_OK : nullptr,
+                                 "Invert colors (panel fix)");
+  lv_obj_add_event_cb(
+      ib,
+      [](lv_event_t *) {
+        display::setInvertColors(!display::invertColors());
+        showDisplay();
+      },
+      LV_EVENT_CLICKED, nullptr);
   lv_obj_t *cb = lv_list_add_btn(list, display::swapRedBlue() ? LV_SYMBOL_OK : nullptr,
                                  "Swap red/blue");
   lv_obj_add_event_cb(

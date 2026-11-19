@@ -56,6 +56,7 @@ lv_indev_drv_t indevDrv;
 
 uint8_t rot = display::LANDSCAPE;
 bool swapRB = false;
+bool invert = true;  // see display::invertColors()
 uint8_t blPct = 100;
 Cal cal{};
 bool calValid = false;
@@ -152,6 +153,7 @@ void display::begin() {
   prefs.begin("disp", false);  // read-write: creates the namespace on first boot
   rot = prefs.getUChar("rot", LANDSCAPE) & 3;
   swapRB = prefs.getBool("swaprb", false);
+  invert = prefs.getBool("inv", true);
   blPct = clampBrightness(prefs.getUChar("bl", 100));
   if (prefs.getBytesLength("cal") == sizeof(Cal)) {
     prefs.getBytes("cal", &cal, sizeof(Cal));
@@ -165,6 +167,7 @@ void display::begin() {
   tft.writecommand(0xB1);
   tft.writedata(0x00);
   tft.writedata(0x13);
+  tft.invertDisplay(invert);
   tft.fillScreen(TFT_BLACK);
 
   // TFT_eSPI switched the backlight fully on; take the pin over with PWM
@@ -220,6 +223,16 @@ void display::setBrightness(uint8_t pct, bool save) {
     prefs.putUChar("bl", blPct);
     prefs.end();
   }
+}
+
+bool display::invertColors() { return invert; }
+
+void display::setInvertColors(bool on) {
+  invert = on;
+  tft.invertDisplay(invert);  // the controller inverts in hardware; no redraw needed
+  prefs.begin("disp", false);
+  prefs.putBool("inv", invert);
+  prefs.end();
 }
 
 bool display::swapRedBlue() { return swapRB; }

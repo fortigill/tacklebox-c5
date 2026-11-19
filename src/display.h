@@ -27,7 +27,12 @@ const uint8_t MIN_BRIGHTNESS = 5;
 uint8_t brightness();
 void setBrightness(uint8_t pct, bool save);
 
-// Some CYD panels have red and blue swapped (blue shows as orange).
+// Some CYD panels show every color inverted (dark looks light, blue looks
+// orange). On by default: this board's panel needs it.
+bool invertColors();
+void setInvertColors(bool on);  // applies immediately and saves to NVS
+
+// Some CYD panels have red and blue swapped.
 bool swapRedBlue();
 void setSwapRedBlue(bool on);  // applies immediately and saves to NVS
 

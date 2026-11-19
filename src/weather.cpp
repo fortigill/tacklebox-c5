@@ -12,6 +12,8 @@
 #include <memory>
 #include <mutex>
 
+#include "ble.h"
+#include "drone.h"
 #include "net.h"
 #include "version.h"
 #include "wx_icons.h"
@@ -103,6 +105,9 @@ struct TlsGuard {               // marks the scope of a TLS session for the UI
   ~TlsGuard() { tlsBusy = false; }
 };
 enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4 };
+
+bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
+const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
 uint8_t taskFlags = 0;
 volatile bool locDirty = false;  // task resolved a location; save it from loop()
 
@@ -818,6 +823,10 @@ void loop() {
   }
 
   if (taskRunning || net::state() != net::State::Connected) return;
+  // No downloads while the drone scanner or a Bluetooth tool is in use: they
+  // share the radio and the Bluetooth stack holds memory HTTPS needs. Overdue
+  // updates run as soon as Bluetooth is released (1 min after the tool stops).
+  if (bluetoothBusy()) return;
   uint8_t flags = 0;
   if (configured()) {
     if (force || !attempted || millis() - lastAttempt >= (lastOk ? REFRESH_MS : RETRY_MS)) flags |= DO_FORECAST;
@@ -1026,6 +1035,7 @@ uint32_t alertsVersion() { return alertsVer; }
 String alertsStatus() {
   std::lock_guard<std::mutex> lock(mtx);
   if (zipCode.isEmpty()) return "Set a ZIP code to monitor NWS alerts.";
+  if (bluetoothBusy()) return PAUSED_MSG;
   if (alertsErr.length()) return "NWS update failed: " + alertsErr;
   if (!alertsFetchedMs)
     return millis() < ALERTS_BOOT_DELAY_MS ? "First NWS check 30 s after startup..."
@@ -1166,6 +1176,7 @@ uint32_t buoyVersion() { return buoyVer; }
 String buoyStatus() {
   std::lock_guard<std::mutex> lock(mtx);
   if (!buoyBar && !buoyDesk) return "Buoy monitoring is off (both wave displays are switched off).";
+  if (bluetoothBusy()) return PAUSED_MSG;
   if (buoyErr.length()) return "Buoy update failed: " + buoyErr;
   if (!buoyData.valid)
     return millis() < BUOY_BOOT_DELAY_MS ? "First buoy check 45 s after startup..." : "Getting buoy data from NOAA...";

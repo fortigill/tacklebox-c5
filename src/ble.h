@@ -62,7 +62,10 @@ const uint32_t FOLLOW_MIN_ROUNDS = 5;
 bool startScan();            // clears previous results; false if Bluetooth failed
 bool startHunt(const String &addr);
 bool startRid(RidSink sink);  // continuous scan feeding drone Remote ID messages
-void pauseRid(bool paused);    // time-share the radio with Wi-Fi during a Remote ID scan
+void pauseRid(bool paused);
+// The Bluetooth stack is loaded (a tool is running, or it stopped less than a
+// minute ago). It holds ~20 KB of heap that HTTPS downloads need.
+bool stackActive();    // time-share the radio with Wi-Fi during a Remote ID scan
 void stop();
 Mode mode();
 uint32_t scanRemainingMs();  // during Scan

@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.13] - 2026-11-19
+
+### Changed
+- Weather, NWS alert and buoy downloads pause while Drone Scan, Drone Watch or any Bluetooth tool
+  is in use, and until Bluetooth is released 1 min after the tool stops. Overdue updates run
+  right after that. The alert list and buoy page say "Paused while the drone scanner or a
+  Bluetooth tool is in use" meanwhile. This avoids the failed "low memory" attempts seen when
+  HTTPS and the Bluetooth stack competed for heap.
+
+### Confirmed
+- 0.7.11/0.7.12 Bluetooth release: free heap goes from about 45 KB back to about 95 KB a minute
+  after the tool stops, and the next buoy download succeeds.
+
 ## [0.7.12] - 2026-11-19
 
 ### Fixed

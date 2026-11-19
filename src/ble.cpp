@@ -284,6 +284,7 @@ void stop() {
 }
 
 Mode mode() { return md; }
+bool stackActive() { return inited; }
 bool everScanned() { return scannedOnce; }
 
 uint32_t scanRemainingMs() {

@@ -5,7 +5,12 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Bluetooth scanner, Weather, Date & time, Display & touch, About this device.
+- **Menu**: Network settings, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
+- **Tracker detector**: **Watch** scans every 30 s for AirTag/Find My, Tile, SmartTag and Google
+  Find My trackers. One that stays with you for 10+ min turns red and triggers a warning. Tap it to
+  hunt it.
+- **Wi-Fi analyzer**: networks-per-channel graph, best-channel hint, and every AP with its channel
+  and RSSI. Tap one to hunt it.
 - **Weather**: set a ZIP code under **Menu > Weather**. The status bar then shows today's forecast
   icon and the current temperature (F or C). Data comes from Open-Meteo (no API key) and refreshes
   every 15 min. Regenerate the icons with `python3 tools/gen_wx_icons.py`.
@@ -38,9 +43,18 @@ Confirmed: ESP32-D0WD-V3 rev 3.1, 4 MB flash (Boya), CH340 USB-serial on `/dev/c
 PlatformIO must run on Python 3.10–3.14. Install it with `pipx install --python python3.13 platformio`.
 
 ```bash
+# USB
 pio run -t upload --upload-port /dev/cu.usbserial-3110
 pio device monitor -p /dev/cu.usbserial-3110
+
+# Over Wi-Fi (OTA): the device must be on the network
+pio run -e cyd-ota -t upload
 ```
+
+OTA uploads go to `cyd.local` with the password in the `[ota]` section of `platformio.ini`. Change
+the password, then flash once over USB so the device knows it. If mDNS doesn't resolve, set
+`hostname` in `[ota]` to the device's IP (it's shown on the About screen). A change to the partition
+table (as in 0.1.0) always needs a USB flash.
 
 ## Touch calibration
 
@@ -75,7 +89,9 @@ include/lv_conf.h   LVGL config
 src/version.h       firmware version
 src/main.cpp        setup/loop
 src/display.cpp     TFT + touch drivers, rotation, calibration
-src/ble.cpp         BLE scanner (device tracking, vendor lookup)
+src/ble.cpp         BLE scanner, trackers, hunt (NimBLE)
+src/hunt.h          shared RSSI averaging for hunt modes
+src/ota.cpp         over-the-air updates (ArduinoOTA)
 src/weather.cpp     weather fetch (Open-Meteo), ZIP lookup, icon mapping
 src/wx_icons.c      generated weather icons (tools/gen_wx_icons.py)
 src/timesvc.cpp     NTP sync, time zone, 12/24 h formatting

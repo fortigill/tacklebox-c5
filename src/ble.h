@@ -3,13 +3,18 @@
 #include <Arduino.h>
 #include <vector>
 
-// BLE scanner with three modes:
+#include "hunt.h"
+
+// BLE scanner (NimBLE-Arduino) with three modes:
 //   Idle  - radio not scanning (default; Bluetooth is started on first use)
 //   Scan  - one timed scan; found devices are collected (ignored ones skipped)
-//   Hunt  - track a single device's RSSI with 1 s scan cycles
+//   Hunt  - continuous scan tracking a single device's RSSI
 namespace ble {
 
 enum class Mode { Idle, Scan, Hunt };
+
+// Location trackers recognised from their advertisements
+enum class Tracker : uint8_t { None, AppleFindMy, Tile, SmartTag, GoogleFindMy, Dult };
 
 struct Device {
   String addr;
@@ -21,16 +26,22 @@ struct Device {
   bool hasTx = false;
   int8_t tx = 0;
   String service;
+  Tracker tracker = Tracker::None;
   uint32_t firstSeen = 0;
   uint32_t lastSeen = 0;
   uint32_t seenCount = 0;
 };
 
-struct HuntInfo {
-  uint32_t samples = 0;  // increments with every report from the target
-  int rssi = 0;          // last raw reading
-  float smooth = 0;      // smoothed RSSI (exponential moving average)
+// A tracker seen across scans (kept between scans, unlike Device)
+struct TrackerSighting {
+  String addr;
+  Tracker type = Tracker::None;
+  int rssi = 0;
+  uint32_t firstSeen = 0;
   uint32_t lastSeen = 0;
+  uint32_t rounds = 0;      // number of separate scans it showed up in
+  uint32_t lastRound = 0;
+  bool alerted = false;     // "following" alert already shown
 };
 
 struct IgnoredDevice {
@@ -39,6 +50,9 @@ struct IgnoredDevice {
 };
 
 const uint32_t SCAN_SECS = 8;
+// "Following you": seen for at least this long, in at least this many scans
+const uint32_t FOLLOW_MIN_MS = 10UL * 60 * 1000;
+const uint32_t FOLLOW_MIN_ROUNDS = 5;
 
 // Scanning
 bool startScan();            // clears previous results; false if Bluetooth failed
@@ -54,6 +68,13 @@ size_t count();
 std::vector<Device> snapshot(size_t maxCount, size_t *total);  // strongest first
 bool find(const String &addr, Device &out);
 HuntInfo hunt();
+
+// Trackers
+std::vector<TrackerSighting> trackers();  // most persistent first
+bool isFollowing(const TrackerSighting &t);
+void markAlerted(const String &addr);
+void clearTrackers();
+const char *trackerName(Tracker t);
 
 // Ignore list (saved in NVS)
 void ignore(const String &addr, const String &name);

@@ -11,6 +11,18 @@ static const uint32_t CONNECT_TIMEOUT_MS = 20000;
 
 static Preferences prefs;
 static std::vector<AccessPoint> aps;
+static std::vector<ApInfo> raw;
+
+// Wi-Fi hunt state
+static const uint32_t HUNT_SCAN_GAP_MS = 250;    // pause between scans
+static const uint32_t HUNT_MS_PER_CHAN = 120;    // dwell time of each scan
+static bool huntOn = false;
+static bool huntScanRunning = false;
+static uint8_t huntBssid[6];
+static uint8_t huntChannel = 0;
+static uint32_t huntNextScan = 0;
+static HuntInfo huntInfo;
+static HuntAccumulator huntAcc;
 static ScanState scanSt = ScanState::Idle;
 static State st = State::Idle;
 
@@ -80,21 +92,33 @@ void forget() {
   curSsid = "";
 }
 
-void startScan() {
+void startScan(bool includeHidden) {
   // A scan can't run while the radio is mid-connect; abort that attempt.
   if (st == State::Connecting) cancel();
+  stopHunt();
   WiFi.scanDelete();
-  int r = WiFi.scanNetworks(true /*async*/, false /*show hidden*/);
+  int r = WiFi.scanNetworks(true /*async*/, includeHidden);
   scanSt = (r == WIFI_SCAN_FAILED) ? ScanState::Failed : ScanState::Running;
 }
 
 static void collectScan(int n) {
   aps.clear();
+  raw.clear();
   for (int i = 0; i < n; i++) {
     String s = WiFi.SSID(i);
-    if (s.isEmpty()) continue;  // hidden network
     int32_t r = WiFi.RSSI(i);
     bool sec = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+
+    ApInfo ai;
+    ai.ssid = s;
+    memcpy(ai.bssid, WiFi.BSSID(i), 6);
+    ai.bssidStr = WiFi.BSSIDstr(i);
+    ai.rssi = r;
+    ai.channel = WiFi.channel(i);
+    ai.secure = sec;
+    raw.push_back(ai);
+
+    if (s.isEmpty()) continue;  // hidden network: analyzer only
     auto it = std::find_if(aps.begin(), aps.end(),
                            [&](const AccessPoint &a) { return a.ssid == s; });
     if (it == aps.end()) {
@@ -105,10 +129,64 @@ static void collectScan(int n) {
   }
   std::sort(aps.begin(), aps.end(),
             [](const AccessPoint &a, const AccessPoint &b) { return a.rssi > b.rssi; });
+  std::sort(raw.begin(), raw.end(),
+            [](const ApInfo &a, const ApInfo &b) { return a.rssi > b.rssi; });
   WiFi.scanDelete();
 }
 
+void startHunt(const uint8_t bssid[6], uint8_t channel) {
+  if (st == State::Connecting) cancel();
+  if (scanSt == ScanState::Running) {  // let a running scan's results be dropped
+    WiFi.scanDelete();
+    scanSt = ScanState::Idle;
+  }
+  memcpy(huntBssid, bssid, 6);
+  huntChannel = channel;
+  huntInfo = HuntInfo();
+  huntAcc.reset(millis());
+  huntScanRunning = false;
+  huntNextScan = 0;
+  huntOn = true;
+}
+
+void stopHunt() {
+  if (!huntOn) return;
+  huntOn = false;
+  if (huntScanRunning) WiFi.scanDelete();
+  huntScanRunning = false;
+}
+
+bool hunting() { return huntOn; }
+HuntInfo hunt() { return huntInfo; }
+
+static void huntLoop() {
+  uint32_t now = millis();
+  if (huntScanRunning) {
+    int n = WiFi.scanComplete();
+    if (n >= 0) {
+      for (int i = 0; i < n; i++) {
+        if (memcmp(WiFi.BSSID(i), huntBssid, 6) == 0) huntAcc.add(WiFi.RSSI(i), now);
+      }
+      WiFi.scanDelete();
+      huntScanRunning = false;
+      huntNextScan = now + HUNT_SCAN_GAP_MS;
+    } else if (n == WIFI_SCAN_FAILED) {
+      huntScanRunning = false;
+      huntNextScan = now + HUNT_SCAN_GAP_MS;
+    }
+  } else if ((int32_t)(now - huntNextScan) >= 0) {
+    uint8_t b[6];
+    memcpy(b, huntBssid, 6);
+    // async, include hidden, active, short dwell, one channel, filter by BSSID
+    int r = WiFi.scanNetworks(true, true, false, HUNT_MS_PER_CHAN, huntChannel, nullptr, b);
+    huntScanRunning = (r == WIFI_SCAN_RUNNING);
+    if (!huntScanRunning) huntNextScan = now + HUNT_SCAN_GAP_MS;
+  }
+  huntAcc.tick(huntInfo, now);
+}
+
 void loop() {
+  if (huntOn) huntLoop();
   if (scanSt == ScanState::Running) {
     int n = WiFi.scanComplete();
     if (n == WIFI_SCAN_FAILED) {
@@ -154,6 +232,7 @@ void loop() {
 
 ScanState scanState() { return scanSt; }
 const std::vector<AccessPoint> &results() { return aps; }
+const std::vector<ApInfo> &rawResults() { return raw; }
 State state() { return st; }
 String ssid() { return curSsid; }
 String ip() { return WiFi.localIP().toString(); }

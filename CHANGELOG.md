@@ -3,6 +3,43 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.1.0] - 2026-11-18
+
+### Changed
+- **Bluetooth moved from the Arduino (Bluedroid) BLE library to NimBLE-Arduino 2.x.** It uses far
+  less flash and RAM. NimBLE delivers every advertisement without the duplicate-report leak, so:
+  - scans no longer restart every few seconds;
+  - hunt mode now scans continuously and averages readings over 0.7 s windows, which gives smoother
+    and faster updates.
+- **Partition table changed from `huge_app.csv` to `min_spiffs.csv`** (two 1.9 MB app slots for
+  OTA). NVS is at the same offset, so settings, Wi-Fi credentials and calibration survive. This
+  release must be flashed once over USB.
+
+### Added
+- **Over-the-air updates** (ArduinoOTA):
+  - The device announces itself as `cyd.local` once Wi-Fi is up.
+  - Upload with `pio run -e cyd-ota -t upload`.
+  - Password-protected; set it in `[ota]` in `platformio.ini`.
+  - Shows a full-screen progress view during the update and reboots when done.
+  - The About screen shows the OTA hostname.
+- **Wi-Fi analyzer** (**Menu > Wi-Fi analyzer**):
+  - Bar graph of networks per channel (1-13), colored by congestion; your channel is in blue.
+  - Suggests the best of channels 1/6/11.
+  - Lists every AP, including hidden ones, with channel and RSSI.
+  - Tap an AP to hunt it.
+- **Wi-Fi hunt**: single-channel scans filtered to one BSSID feed the same hunt screen (RSSI,
+  trend arrow, bar, history graph).
+- **Tracker detector** (**Menu > Tracker detector**):
+  - Recognizes Apple Find My offline beacons (AirTags and Find My accessories away from their owner),
+    Tile (0xFEED/0xFEEC), Samsung SmartTag (0xFD5A), Google Find My Device (Eddystone frame
+    0x40/0x41) and DULT (0xFCB2) trackers.
+  - **Watch** mode scans every 30 s and tracks how long and in how many scans each tracker has been
+    seen.
+  - Trackers seen for 10+ min in 5+ scans turn red, and a one-time warning pops up.
+  - Tap a tracker to hunt it.
+  - Ignored devices are excluded. Tracker names also show in the BLE scanner.
+- Shared hunt module (`src/hunt.h`) with windowed averaging for BLE and Wi-Fi.
+
 ## [0.0.9] - 2026-11-18
 
 ### Changed

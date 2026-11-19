@@ -9,6 +9,7 @@
 #include "ble.h"
 #include "display.h"
 #include "net.h"
+#include "ota.h"
 #include "timesvc.h"
 #include "version.h"
 #include "weather.h"
@@ -20,7 +21,8 @@ namespace {
 
 enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
-  Ble, BleDetail, BleIgnored, BleHunt, DateTime, TimeZone, Weather, WeatherZip
+  Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
+  WifiAnalyzer, Trackers, Ota
 };
 
 const int HEADER_H = 40;
@@ -58,6 +60,36 @@ lv_obj_t *bleList = nullptr, *bleStatus = nullptr, *bleToggle = nullptr, *bleDet
 lv_obj_t *huntRssiLbl = nullptr, *huntArrowLbl = nullptr, *huntStateLbl = nullptr;
 lv_obj_t *huntBar = nullptr, *huntChart = nullptr;
 lv_chart_series_t *huntSer = nullptr;
+
+// Hunt screen source (shared by BLE devices, trackers and Wi-Fi APs)
+enum class HuntSrc { Ble, Wifi };
+HuntSrc huntSrc = HuntSrc::Ble;
+String huntTitle;
+String huntBleAddr;
+uint8_t huntWifiBssid[6];
+uint8_t huntWifiChannel = 0;
+Screen huntBack = Screen::BleDetail;
+
+// Wi-Fi analyzer
+const int WFA_CHANNELS = 13;
+const size_t WFA_MAX_ROWS = 40;
+lv_obj_t *wfaBars[WFA_CHANNELS + 1] = {nullptr};
+lv_obj_t *wfaChLbl[WFA_CHANNELS + 1] = {nullptr};
+lv_obj_t *wfaList = nullptr, *wfaStatus = nullptr, *wfaScanBtn = nullptr;
+net::ScanState wfaLastSt = net::ScanState::Idle;
+std::vector<net::ApInfo> wfaRows;
+
+// Tracker detector
+const uint32_t TRK_INTERVAL_MS = 30000;
+lv_obj_t *trkList = nullptr, *trkStatus = nullptr, *trkToggle = nullptr;
+bool trkWatching = false;
+uint32_t trkNextScan = 0;
+ble::Mode trkLastMode = ble::Mode::Idle;
+std::vector<String> trkRowAddrs;
+std::vector<ble::Tracker> trkRowTypes;
+
+// OTA
+lv_obj_t *otaBar = nullptr, *otaPct = nullptr, *otaMsg = nullptr;
 
 // BLE scanner state
 const uint32_t BLE_LIST_REFRESH_MS = 1500;
@@ -105,7 +137,9 @@ void showCalibration(bool firstRun);
 void showBle();
 void showBleDetail();
 void showBleIgnored();
-void showBleHunt();
+void showHunt();
+void showWifiAnalyzer();
+void showTrackers();
 void showDateTime();
 void showTimeZone();
 void showWeather();
@@ -125,6 +159,11 @@ void resetPtrs() {
   bleList = bleStatus = bleToggle = bleDetail = nullptr;
   huntRssiLbl = huntArrowLbl = huntStateLbl = huntBar = huntChart = nullptr;
   huntSer = nullptr;
+  for (auto &b : wfaBars) b = nullptr;
+  for (auto &l : wfaChLbl) l = nullptr;
+  wfaList = wfaStatus = wfaScanBtn = nullptr;
+  trkList = trkStatus = trkToggle = nullptr;
+  otaBar = otaPct = otaMsg = nullptr;
   deskIconState = -1;
 }
 
@@ -392,6 +431,12 @@ void showMenu() {
   b = lv_list_add_btn(list, LV_SYMBOL_BLUETOOTH, "Bluetooth scanner");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showBle(); }, LV_EVENT_CLICKED, nullptr);
 
+  b = lv_list_add_btn(list, LV_SYMBOL_WARNING, "Tracker detector");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showTrackers(); }, LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_BARS, "Wi-Fi analyzer");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showWifiAnalyzer(); }, LV_EVENT_CLICKED, nullptr);
+
   b = lv_list_add_btn(list, LV_SYMBOL_TINT, "Weather");
   lv_obj_add_event_cb(b, [](lv_event_t *) { wxBack = Screen::Menu; showWeather(); },
                       LV_EVENT_CLICKED, nullptr);
@@ -634,6 +679,7 @@ void showCalibration(bool firstRun) {
 
 String bleTitle(const ble::Device &d) {
   if (d.name.length()) return d.name;
+  if (d.tracker != ble::Tracker::None) return ble::trackerName(d.tracker);
   const char *v = d.hasMfg ? ble::vendorName(d.mfgId) : nullptr;
   if (v) return String(v) + " device";
   return d.addr;
@@ -818,7 +864,17 @@ void showBleDetail() {
   lv_obj_t *hunt = flatBtn(scr, LV_SYMBOL_GPS "  Hunt", bw, 38);
   lv_obj_align(hunt, LV_ALIGN_BOTTOM_LEFT, 8, -5);
   lv_obj_set_style_bg_color(hunt, lv_palette_main(LV_PALETTE_GREEN), 0);
-  lv_obj_add_event_cb(hunt, [](lv_event_t *) { showBleHunt(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      hunt,
+      [](lv_event_t *) {
+        ble::Device d;
+        huntSrc = HuntSrc::Ble;
+        huntBleAddr = bleDetailAddr;
+        huntTitle = ble::find(bleDetailAddr, d) ? bleTitle(d) : bleDetailAddr;
+        huntBack = Screen::BleDetail;
+        showHunt();
+      },
+      LV_EVENT_CLICKED, nullptr);
 
   lv_obj_t *ign = flatBtn(scr, LV_SYMBOL_EYE_CLOSE "  Ignore", bw, 38);
   lv_obj_align(ign, LV_ALIGN_BOTTOM_RIGHT, -8, -5);
@@ -889,7 +945,7 @@ void setHuntArrow(const char *sym, lv_palette_t pal) {
 
 void refreshHunt() {
   if (!huntRssiLbl) return;
-  ble::HuntInfo h = ble::hunt();
+  HuntInfo h = huntSrc == HuntSrc::Ble ? ble::hunt() : net::hunt();
   uint32_t age = millis() - h.lastSeen;
 
   if (h.samples == 0 || age > HUNT_LOST_MS) {
@@ -930,15 +986,21 @@ void refreshHunt() {
   lv_chart_set_next_value(huntChart, huntSer, (lv_coord_t)lroundf(h.smooth));
 }
 
-void showBleHunt() {
+void huntGoBack() {
+  if (huntSrc == HuntSrc::Ble) ble::stop();
+  else net::stopHunt();
+  switch (huntBack) {
+    case Screen::Trackers: showTrackers(); break;
+    case Screen::WifiAnalyzer: showWifiAnalyzer(); break;
+    default: showBleDetail(); break;
+  }
+}
+
+void showHunt() {
   lv_obj_t *scr = newScreen();
-  ble::Device d;
-  String title = ble::find(bleDetailAddr, d) ? bleTitle(d) : bleDetailAddr;
-  String hdrTitle = String(LV_SYMBOL_GPS " ") + title;
-  makeHeader(scr, hdrTitle.c_str(), [](lv_event_t *) {
-    ble::stop();
-    showBleDetail();
-  });
+  String hdrTitle = String(huntSrc == HuntSrc::Ble ? LV_SYMBOL_BLUETOOTH " " : LV_SYMBOL_WIFI " ") +
+                    huntTitle;
+  makeHeader(scr, hdrTitle.c_str(), [](lv_event_t *) { huntGoBack(); });
 
   lv_obj_t *col = lv_obj_create(scr);
   lv_obj_remove_style_all(col);
@@ -991,11 +1053,284 @@ void showBleHunt() {
 
   huntHist.clear();
   huntLastSamples = 0;
-  load(scr, Screen::BleHunt);
+  load(scr, Screen::Hunt);
 
   setText(huntStateLbl, "Starting...");
   lv_refr_now(nullptr);
-  if (!ble::startHunt(bleDetailAddr)) setText(huntStateLbl, "Bluetooth failed to start");
+  if (huntSrc == HuntSrc::Ble) {
+    if (!ble::startHunt(huntBleAddr)) setText(huntStateLbl, "Bluetooth failed to start");
+  } else {
+    net::startHunt(huntWifiBssid, huntWifiChannel);
+  }
+}
+
+// ---------- Wi-Fi analyzer ----------
+
+lv_color_t congestionColor(int n) {
+  if (n == 0) return lv_palette_main(LV_PALETTE_GREY);
+  if (n <= 2) return lv_palette_main(LV_PALETTE_GREEN);
+  if (n <= 4) return lv_palette_main(LV_PALETTE_AMBER);
+  return lv_palette_main(LV_PALETTE_RED);
+}
+
+void onApClicked(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= wfaRows.size()) return;
+  const auto &ap = wfaRows[i];
+  huntSrc = HuntSrc::Wifi;
+  memcpy(huntWifiBssid, ap.bssid, 6);
+  huntWifiChannel = ap.channel;
+  huntTitle = ap.ssid.length() ? ap.ssid : ap.bssidStr;
+  huntBack = Screen::WifiAnalyzer;
+  showHunt();
+}
+
+void wfaFill() {
+  if (!wfaList) return;
+  const auto &aps = net::rawResults();
+  wfaRows.assign(aps.begin(), aps.begin() + (aps.size() < WFA_MAX_ROWS ? aps.size() : WFA_MAX_ROWS));
+
+  int cnt[WFA_CHANNELS + 1] = {0};
+  for (const auto &ap : aps)
+    if (ap.channel >= 1 && ap.channel <= WFA_CHANNELS) cnt[ap.channel]++;
+  int mx = 1;
+  for (int c = 1; c <= WFA_CHANNELS; c++) mx = cnt[c] > mx ? cnt[c] : mx;
+
+  int myCh = net::state() == net::State::Connected ? WiFi.channel() : 0;
+  for (int c = 1; c <= WFA_CHANNELS; c++) {
+    lv_bar_set_range(wfaBars[c], 0, mx);
+    lv_bar_set_value(wfaBars[c], cnt[c], LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(wfaBars[c], congestionColor(cnt[c]), LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(wfaChLbl[c], c == myCh ? lv_palette_main(LV_PALETTE_BLUE)
+                                                      : lv_color_white(), 0);
+  }
+
+  // Suggest the least crowded of the non-overlapping 2.4 GHz channels
+  int best = 1;
+  for (int c : {6, 11})
+    if (cnt[c] < cnt[best]) best = c;
+  char buf[96];
+  if (aps.empty()) snprintf(buf, sizeof(buf), "No networks found");
+  else snprintf(buf, sizeof(buf), "%u networks  -  best channel: %d%s", (unsigned)aps.size(), best,
+                myCh ? "  (blue = yours)" : "");
+  setText(wfaStatus, buf);
+
+  lv_obj_clean(wfaList);
+  for (size_t i = 0; i < wfaRows.size(); i++) {
+    const auto &ap = wfaRows[i];
+    lv_obj_t *b = lv_list_add_btn(wfaList, ap.secure ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING,
+                                  ap.ssid.length() ? ap.ssid.c_str() : "(hidden)");
+    lv_obj_t *r = lv_label_create(b);
+    lv_label_set_text_fmt(r, "ch %u  %d dBm", ap.channel, (int)ap.rssi);
+    lv_obj_set_style_text_opa(r, LV_OPA_60, 0);
+    lv_obj_add_event_cb(b, onApClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  if (!wfaRows.empty()) lv_list_add_text(wfaList, "Tap a network to hunt it");
+}
+
+void pollWifiAnalyzer() {
+  net::ScanState s = net::scanState();
+  if (s == net::ScanState::Running) lv_obj_add_state(wfaScanBtn, LV_STATE_DISABLED);
+  else lv_obj_clear_state(wfaScanBtn, LV_STATE_DISABLED);
+  if (s == wfaLastSt) return;
+  wfaLastSt = s;
+  if (s == net::ScanState::Running) setText(wfaStatus, "Scanning all channels...");
+  else if (s == net::ScanState::Failed) setText(wfaStatus, "Scan failed - tap Scan to retry");
+  else if (s == net::ScanState::Done) wfaFill();
+}
+
+void showWifiAnalyzer() {
+  lv_obj_t *scr = newScreen();
+  const int btnW = 76;
+  lv_obj_t *hdr = makeHeader(scr, "Wi-Fi analyzer", [](lv_event_t *) { showMenu(); }, btnW);
+  wfaScanBtn = flatBtn(hdr, LV_SYMBOL_REFRESH " Scan", btnW, 32);
+  lv_obj_align(wfaScanBtn, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_add_event_cb(wfaScanBtn, [](lv_event_t *) { net::startScan(true); }, LV_EVENT_CLICKED,
+                      nullptr);
+
+  // Channel congestion bars (networks per channel)
+  const int graphH = 66;
+  lv_obj_t *graph = lv_obj_create(scr);
+  lv_obj_remove_style_all(graph);
+  lv_obj_set_size(graph, W(), graphH);
+  lv_obj_align(graph, LV_ALIGN_TOP_MID, 0, HEADER_H + 2);
+  lv_obj_set_flex_flow(graph, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(graph, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+  lv_obj_clear_flag(graph, LV_OBJ_FLAG_SCROLLABLE);
+  int colW = (W() - 10) / WFA_CHANNELS;
+  for (int c = 1; c <= WFA_CHANNELS; c++) {
+    lv_obj_t *col = lv_obj_create(graph);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, colW, graphH);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    wfaBars[c] = lv_bar_create(col);
+    lv_obj_set_size(wfaBars[c], colW - 6, graphH - 18);  // taller than wide = vertical bar
+    lv_bar_set_range(wfaBars[c], 0, 1);
+    lv_bar_set_value(wfaBars[c], 0, LV_ANIM_OFF);
+    wfaChLbl[c] = lv_label_create(col);
+    lv_label_set_text_fmt(wfaChLbl[c], "%d", c);
+  }
+
+  wfaStatus = lv_label_create(scr);
+  lv_label_set_long_mode(wfaStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(wfaStatus, W() - 12);
+  lv_label_set_text(wfaStatus, "");
+  lv_obj_align(wfaStatus, LV_ALIGN_TOP_LEFT, 6, HEADER_H + graphH + 6);
+
+  const int listY = HEADER_H + graphH + 26;
+  wfaList = lv_list_create(scr);
+  lv_obj_set_size(wfaList, W(), H() - listY);
+  lv_obj_align(wfaList, LV_ALIGN_TOP_MID, 0, listY);
+
+  load(scr, Screen::WifiAnalyzer);
+  if (net::scanState() == net::ScanState::Done && !net::rawResults().empty()) {
+    wfaLastSt = net::ScanState::Done;  // back from a hunt: show the last results
+    wfaFill();
+  } else {
+    net::startScan(true);
+    wfaLastSt = net::ScanState::Idle;
+  }
+}
+
+// ---------- Tracker detector ----------
+
+void onTrackerClicked(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= trkRowAddrs.size()) return;
+  huntSrc = HuntSrc::Ble;
+  huntBleAddr = trkRowAddrs[i];
+  huntTitle = ble::trackerName(trkRowTypes[i]);
+  huntBack = Screen::Trackers;
+  showHunt();
+}
+
+void trkUpdateStatus() {
+  if (!trkStatus) return;
+  auto ts = ble::trackers();
+  size_t following = 0;
+  for (const auto &t : ts)
+    if (ble::isFollowing(t)) following++;
+  char buf[96];
+  if (!trkWatching) {
+    snprintf(buf, sizeof(buf), "Stopped  -  %u tracker%s", (unsigned)ts.size(),
+             ts.size() == 1 ? "" : "s");
+  } else if (ble::mode() == ble::Mode::Scan) {
+    snprintf(buf, sizeof(buf), "Scanning...  -  %u tracker%s", (unsigned)ts.size(),
+             ts.size() == 1 ? "" : "s");
+  } else {
+    int32_t left = (int32_t)(trkNextScan - millis());
+    snprintf(buf, sizeof(buf), "Next scan in %lds  -  %u found, %u following",
+             (long)(left > 0 ? (left + 999) / 1000 : 0), (unsigned)ts.size(),
+             (unsigned)following);
+  }
+  setText(trkStatus, buf);
+  setText(lv_obj_get_child(trkToggle, 0), trkWatching ? "Stop" : "Watch");
+}
+
+void trkFill() {
+  if (!trkList) return;
+  auto ts = ble::trackers();
+  lv_obj_clean(trkList);
+  trkRowAddrs.clear();
+  trkRowTypes.clear();
+
+  if (ts.empty()) {
+    lv_list_add_text(trkList, trkWatching ? "No trackers seen yet" : "Tap Watch to start");
+  }
+  const ble::TrackerSighting *alert = nullptr;
+  for (size_t i = 0; i < ts.size(); i++) {
+    const auto &t = ts[i];
+    bool fol = ble::isFollowing(t);
+    if (fol && !t.alerted && !alert) alert = &t;
+    lv_obj_t *b = lv_list_add_btn(trkList, fol ? LV_SYMBOL_WARNING : LV_SYMBOL_BLUETOOTH,
+                                  ble::trackerName(t.type));
+    if (fol) lv_obj_set_style_text_color(b, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_t *r = lv_label_create(b);
+    lv_label_set_text_fmt(r, "%dm  x%lu  %d dBm", (int)((t.lastSeen - t.firstSeen) / 60000),
+                          (unsigned long)t.rounds, t.rssi);
+    lv_obj_set_style_text_opa(r, LV_OPA_70, 0);
+    trkRowAddrs.push_back(t.addr);
+    trkRowTypes.push_back(t.type);
+    lv_obj_add_event_cb(b, onTrackerClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  char note[120];
+  snprintf(note, sizeof(note), "Red = seen for %lu+ min in %lu+ scans. Tap one to hunt it.",
+           (unsigned long)(ble::FOLLOW_MIN_MS / 60000), (unsigned long)ble::FOLLOW_MIN_ROUNDS);
+  lv_list_add_text(trkList, note);
+  if (!ts.empty()) {
+    lv_obj_t *c = lv_list_add_btn(trkList, LV_SYMBOL_TRASH, "Clear list");
+    lv_obj_add_event_cb(c, [](lv_event_t *) { ble::clearTrackers(); trkFill(); },
+                        LV_EVENT_CLICKED, nullptr);
+  }
+  trkUpdateStatus();
+
+  if (alert) {
+    ble::markAlerted(alert->addr);
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "A %s has been near you for %d min (seen in %lu scans). If it isn't yours, "
+             "tap it in the list to hunt it down.",
+             ble::trackerName(alert->type), (int)((alert->lastSeen - alert->firstSeen) / 60000),
+             (unsigned long)alert->rounds);
+    errorBox(LV_SYMBOL_WARNING " Possible tracker", msg);
+  }
+}
+
+void pollTrackers() {
+  ble::Mode m = ble::mode();
+  if (trkWatching && m == ble::Mode::Idle && (int32_t)(millis() - trkNextScan) >= 0) {
+    if (ble::startScan()) trkNextScan = millis() + TRK_INTERVAL_MS;
+    else trkWatching = false;
+  }
+  if (m != trkLastMode && m == ble::Mode::Idle) trkFill();  // a scan just finished
+  trkLastMode = ble::mode();
+  trkUpdateStatus();
+}
+
+void showTrackers() {
+  lv_obj_t *scr = newScreen();
+  const int btnW = 76;
+  lv_obj_t *hdr = makeHeader(
+      scr, "Trackers",
+      [](lv_event_t *) {
+        trkWatching = false;
+        ble::stop();
+        showMenu();
+      },
+      btnW);
+  trkToggle = flatBtn(hdr, "Watch", btnW, 32);
+  lv_obj_align(trkToggle, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_add_event_cb(
+      trkToggle,
+      [](lv_event_t *) {
+        trkWatching = !trkWatching;
+        if (trkWatching) {
+          setText(trkStatus, "Starting Bluetooth...");
+          lv_refr_now(nullptr);
+          trkNextScan = millis();  // scan right away
+        } else {
+          ble::stop();
+        }
+        trkFill();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  trkStatus = lv_label_create(scr);
+  lv_label_set_long_mode(trkStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(trkStatus, W() - 12);
+  lv_label_set_text(trkStatus, "");
+  lv_obj_align(trkStatus, LV_ALIGN_TOP_LEFT, 6, HEADER_H + 7);
+
+  const int listY = HEADER_H + 28;
+  trkList = lv_list_create(scr);
+  lv_obj_set_size(trkList, W(), H() - listY);
+  lv_obj_align(trkList, LV_ALIGN_TOP_MID, 0, listY);
+
+  load(scr, Screen::Trackers);
+  trkLastMode = ble::mode();
+  trkFill();
 }
 
 // ---------- Weather ----------
@@ -1549,11 +1884,13 @@ void showAbout() {
            "Free heap: %lu KB\n"
            "MAC: %s\n"
            "Wi-Fi: %s\n"
-           "IP: %s",
+           "IP: %s\n"
+           "OTA: %s",
            FW_VERSION, __DATE__, ESP.getChipModel(), rev / 100, rev % 100, ESP.getChipCores(),
            (unsigned long)ESP.getCpuFreqMHz(), (unsigned long)(ESP.getFlashChipSize() / 1024),
            (unsigned long)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
-           up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-");
+           up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-",
+           ota::ready() ? (String(ota::hostname()) + ".local").c_str() : "waiting for Wi-Fi");
 
   lv_obj_t *l = lv_label_create(box);
   lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
@@ -1572,7 +1909,9 @@ void poll(lv_timer_t *) {
     case Screen::Connecting: pollConnecting(); break;
     case Screen::Ble: pollBle(); break;
     case Screen::BleDetail: refreshBleDetail(); break;
-    case Screen::BleHunt: refreshHunt(); break;
+    case Screen::Hunt: refreshHunt(); break;
+    case Screen::WifiAnalyzer: pollWifiAnalyzer(); break;
+    case Screen::Trackers: pollTrackers(); break;
     case Screen::DateTime: refreshDateTime(); break;
     case Screen::Weather: refreshWeather(); break;
     default: break;
@@ -1601,5 +1940,53 @@ void ui::begin() {
     showCalibration(!display::hasCalibration());
   } else {
     showDesktop();
+  }
+}
+
+// ---------- OTA progress (called from ArduinoOTA hooks) ----------
+
+void ui::otaStart() {
+  lv_obj_t *scr = newScreen();
+  lv_obj_t *col = lv_obj_create(scr);
+  lv_obj_remove_style_all(col);
+  lv_obj_set_size(col, W(), H());
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(col, 12, 0);
+
+  lv_obj_t *t = lv_label_create(col);
+  lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);
+  lv_label_set_text(t, LV_SYMBOL_DOWNLOAD "  Updating firmware");
+  otaBar = lv_bar_create(col);
+  lv_obj_set_size(otaBar, W() - 60, 16);
+  lv_bar_set_range(otaBar, 0, 100);
+  otaPct = lv_label_create(col);
+  lv_obj_set_style_text_font(otaPct, &lv_font_montserrat_48, 0);
+  lv_label_set_text(otaPct, "0%");
+  otaMsg = lv_label_create(col);
+  lv_label_set_text(otaMsg, "Don't power off the device");
+
+  load(scr, Screen::Ota);
+  lv_timer_handler();   // finish the screen switch; we're outside the normal loop
+  lv_refr_now(nullptr);
+}
+
+void ui::otaProgress(int pct) {
+  if (!otaBar) return;
+  lv_bar_set_value(otaBar, pct, LV_ANIM_OFF);
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%d%%", pct);
+  setText(otaPct, buf);
+  lv_refr_now(nullptr);
+}
+
+void ui::otaFinished(bool ok, const char *msg) {
+  if (!otaMsg) return;
+  setText(otaMsg, msg);
+  lv_obj_set_style_text_color(otaMsg, lv_palette_main(ok ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
+  lv_refr_now(nullptr);
+  if (!ok) {  // stay on the error briefly, then go home
+    lv_timer_t *t = lv_timer_create([](lv_timer_t *) { showDesktop(); }, 3000, nullptr);
+    lv_timer_set_repeat_count(t, 1);
   }
 }

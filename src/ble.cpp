@@ -1,11 +1,9 @@
 #include "ble.h"
 
-#include <BLEAdvertisedDevice.h>
-#include <BLEDevice.h>
-#include <BLEScan.h>
+#include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <esp_bt.h>
+#include <esp32-hal-bt.h>
 
 #include <algorithm>
 #include <mutex>
@@ -13,25 +11,27 @@
 namespace ble {
 namespace {
 
-const uint32_t HUNT_CYCLE_SECS = 1;  // one RSSI report per cycle (duplicates are off)
 const size_t MAX_DEVICES = 80;
 const size_t MAX_IGNORED = 60;
-const float HUNT_ALPHA = 0.4f;       // smoothing: higher reacts faster, noisier
+const size_t MAX_TRACKERS = 30;
+const uint32_t TRACKER_FORGET_MS = 30UL * 60 * 1000;
 
-std::mutex mtx;                      // callbacks run on the Bluetooth task
+std::mutex mtx;                      // callbacks run on the NimBLE host task
 std::vector<Device> devices;
 std::vector<IgnoredDevice> ignored;
+std::vector<TrackerSighting> trackerList;
 bool ignoredLoaded = false;
 
-BLEScan *scan = nullptr;
+NimBLEScan *scan = nullptr;
 bool inited = false;
 bool scannedOnce = false;
 Mode md = Mode::Idle;
 uint32_t scanEnd = 0;
-uint32_t cycleEnd = 0;
+uint32_t scanRound = 0;
 
 String huntAddr;
 HuntInfo huntInfo;
+HuntAccumulator huntAcc;
 
 Preferences prefs;
 
@@ -67,47 +67,91 @@ bool isIgnoredLocked(const String &addr) {
   return false;
 }
 
-void updateDevice(Device &dv, BLEAdvertisedDevice &d, uint32_t now) {
-  dv.rssi = d.getRSSI();
-  dv.lastSeen = now;
-  dv.seenCount++;
-  dv.randomAddr = d.getAddressType() != BLE_ADDR_TYPE_PUBLIC;
-  if (d.haveName() && d.getName().length()) dv.name = d.getName().c_str();
-  if (d.haveManufacturerData()) {
-    auto m = d.getManufacturerData();
-    if (m.length() >= 2) {
-      const uint8_t *p = (const uint8_t *)m.c_str();
-      dv.hasMfg = true;
-      dv.mfgId = p[0] | (p[1] << 8);  // company ID, little-endian
-    }
-  }
-  if (d.haveTXPower()) {
-    dv.hasTx = true;
-    dv.tx = d.getTXPower();
-  }
-  if (d.haveServiceUUID()) dv.service = d.getServiceUUID().toString().c_str();
+bool hasUuid(const NimBLEAdvertisedDevice *d, uint16_t uuid16) {
+  NimBLEUUID u(uuid16);
+  if (d->isAdvertisingService(u)) return true;
+  for (uint8_t i = 0; i < d->getServiceDataCount(); i++)
+    if (d->getServiceDataUUID(i) == u) return true;
+  return false;
 }
 
-class Callbacks : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice d) override {
-    String addr = d.getAddress().toString().c_str();
+Tracker classify(const NimBLEAdvertisedDevice *d) {
+  if (d->haveManufacturerData()) {
+    std::string m = d->getManufacturerData();
+    // Apple (0x004C) "offline finding" payload type 0x12: AirTags and other
+    // Find My accessories broadcast this when away from their owner
+    if (m.size() >= 3 && (uint8_t)m[0] == 0x4C && (uint8_t)m[1] == 0x00 && (uint8_t)m[2] == 0x12)
+      return Tracker::AppleFindMy;
+  }
+  if (hasUuid(d, 0xFEED) || hasUuid(d, 0xFEEC)) return Tracker::Tile;
+  if (hasUuid(d, 0xFD5A)) return Tracker::SmartTag;
+  if (hasUuid(d, 0xFCB2)) return Tracker::Dult;  // cross-platform unwanted-tracker standard
+  // Google Find My Device network: Eddystone service data, frame type 0x40/0x41
+  NimBLEUUID eddystone((uint16_t)0xFEAA);
+  for (uint8_t i = 0; i < d->getServiceDataCount(); i++) {
+    if (d->getServiceDataUUID(i) == eddystone) {
+      std::string sd = d->getServiceData(i);
+      if (!sd.empty() && ((uint8_t)sd[0] == 0x40 || (uint8_t)sd[0] == 0x41))
+        return Tracker::GoogleFindMy;
+    }
+  }
+  return Tracker::None;
+}
+
+void updateDevice(Device &dv, const NimBLEAdvertisedDevice *d, uint32_t now) {
+  dv.rssi = d->getRSSI();
+  dv.lastSeen = now;
+  dv.seenCount++;
+  dv.randomAddr = d->getAddressType() != BLE_ADDR_PUBLIC;
+  if (d->haveName() && !d->getName().empty()) dv.name = d->getName().c_str();
+  if (d->haveManufacturerData()) {
+    std::string m = d->getManufacturerData();
+    if (m.size() >= 2) {
+      dv.hasMfg = true;
+      dv.mfgId = (uint8_t)m[0] | ((uint8_t)m[1] << 8);  // company ID, little-endian
+    }
+  }
+  if (d->haveTXPower()) {
+    dv.hasTx = true;
+    dv.tx = d->getTXPower();
+  }
+  if (d->haveServiceUUID()) dv.service = d->getServiceUUID().toString().c_str();
+  Tracker t = classify(d);
+  if (t != Tracker::None) dv.tracker = t;
+}
+
+void recordTracker(const String &addr, Tracker t, int rssi, uint32_t now) {  // holds mtx
+  auto it = std::find_if(trackerList.begin(), trackerList.end(),
+                         [&](const TrackerSighting &x) { return x.addr == addr; });
+  if (it == trackerList.end()) {
+    if (trackerList.size() >= MAX_TRACKERS) return;
+    TrackerSighting s;
+    s.addr = addr;
+    s.type = t;
+    s.firstSeen = now;
+    trackerList.push_back(s);
+    it = trackerList.end() - 1;
+  }
+  it->rssi = rssi;
+  it->lastSeen = now;
+  if (it->lastRound != scanRound) {
+    it->lastRound = scanRound;
+    it->rounds++;
+  }
+}
+
+class Callbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice *d) override {
+    String addr = d->getAddress().toString().c_str();
     uint32_t now = millis();
     std::lock_guard<std::mutex> lock(mtx);
 
     if (md == Mode::Hunt) {
-      if (addr != huntAddr) return;
-      int r = d.getRSSI();
-      huntInfo.smooth = huntInfo.samples ? huntInfo.smooth + HUNT_ALPHA * (r - huntInfo.smooth)
-                                         : (float)r;
-      huntInfo.rssi = r;
-      huntInfo.lastSeen = now;
-      huntInfo.samples++;
-      for (auto &dv : devices)
-        if (dv.addr == addr) updateDevice(dv, d, now);
+      if (addr == huntAddr) huntAcc.add(d->getRSSI(), now);
       return;
     }
-
     if (md != Mode::Scan || isIgnoredLocked(addr)) return;
+
     auto it = std::find_if(devices.begin(), devices.end(),
                            [&](const Device &x) { return x.addr == addr; });
     if (it == devices.end()) {
@@ -119,41 +163,31 @@ class Callbacks : public BLEAdvertisedDeviceCallbacks {
       it = devices.end() - 1;
     }
     updateDevice(*it, d, now);
+    if (it->tracker != Tracker::None) recordTracker(addr, it->tracker, it->rssi, now);
   }
 };
 Callbacks callbacks;
 
 bool ensureStarted() {
   if (inited) return true;
-  Serial.printf("[ble] starting Bluetooth, free heap %lu\n", (unsigned long)ESP.getFreeHeap());
+  Serial.printf("[ble] starting NimBLE, free heap %lu\n", (unsigned long)ESP.getFreeHeap());
   // The ESP32 refuses to run Bluetooth alongside Wi-Fi unless Wi-Fi modem
   // sleep is on, so re-enable it (it stays on until reboot).
   WiFi.setSleep(true);
+  // Reference esp32-hal-bt so the linker keeps Arduino's btInUse() override;
+  // otherwise Arduino frees the controller's memory at boot.
+  (void)btStarted();
 
-  // We only need BLE: hand Classic Bluetooth's reserved RAM back to the heap
-  // and bring the controller up in BLE-only mode. BLEDevice::init() sees the
-  // controller already running and skips its own (dual-mode) start.
-  if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
-    esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-    esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    cfg.mode = ESP_BT_MODE_BLE;
-    if (esp_bt_controller_init(&cfg) != ESP_OK ||
-        esp_bt_controller_enable(ESP_BT_MODE_BLE) != ESP_OK) {
-      Serial.println("[ble] BLE-only controller start failed, using default");
-    }
-  }
-  Serial.printf("[ble] controller up, free heap %lu\n", (unsigned long)ESP.getFreeHeap());
-
-  BLEDevice::init("");
-  scan = BLEDevice::getScan();
+  NimBLEDevice::init("");
+  scan = NimBLEDevice::getScan();
   if (!scan) {
     Serial.println("[ble] init failed");
     return false;
   }
-  // wantDuplicates must stay false: with it on, the Arduino BLE library
-  // allocates a new BLEAdvertisedDevice for every repeat advert and never
-  // frees it (std::map::insert of an existing key), exhausting the heap.
-  scan->setAdvertisedDeviceCallbacks(&callbacks, false);
+  // NimBLE delivers every advert without leaking (unlike the Bluedroid
+  // library), and we keep our own device list, so store no results.
+  scan->setScanCallbacks(&callbacks, true /*want duplicates: live RSSI*/);
+  scan->setMaxResults(0);
   scan->setActiveScan(true);  // request scan responses, which often carry the name
   scan->setInterval(100);
   scan->setWindow(99);
@@ -163,8 +197,7 @@ bool ensureStarted() {
 }
 
 void radioStop() {
-  if (scan && md != Mode::Idle) scan->stop();
-  if (scan) scan->clearResults();
+  if (scan && scan->isScanning()) scan->stop();
 }
 
 }  // namespace
@@ -176,10 +209,11 @@ bool startScan() {
   {
     std::lock_guard<std::mutex> lock(mtx);
     devices.clear();
+    scanRound++;
     md = Mode::Scan;
   }
   scannedOnce = true;
-  scan->start(SCAN_SECS, nullptr, false);  // non-blocking
+  scan->start(SCAN_SECS * 1000, false, true);  // non-blocking, milliseconds
   scanEnd = millis() + SCAN_SECS * 1000 + 200;
   return true;
 }
@@ -187,11 +221,14 @@ bool startScan() {
 bool startHunt(const String &addr) {
   if (!ensureStarted()) return false;
   radioStop();
-  std::lock_guard<std::mutex> lock(mtx);
-  huntAddr = addr;
-  huntInfo = HuntInfo();
-  md = Mode::Hunt;
-  cycleEnd = 0;  // loop() starts the first cycle
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    huntAddr = addr;
+    huntInfo = HuntInfo();
+    huntAcc.reset(millis());
+    md = Mode::Hunt;
+  }
+  scan->start(0, false, true);  // 0 = until stopped
   return true;
 }
 
@@ -213,14 +250,25 @@ uint32_t scanRemainingMs() {
 void loop() {
   uint32_t now = millis();
   if (md == Mode::Scan && (int32_t)(now - scanEnd) >= 0) {
-    scan->clearResults();  // library's copy; ours stays
+    radioStop();
     std::lock_guard<std::mutex> lock(mtx);
     md = Mode::Idle;
-    Serial.printf("[ble] scan done, %u devices\n", (unsigned)devices.size());
-  } else if (md == Mode::Hunt && (int32_t)(now - cycleEnd) >= 0) {
-    scan->clearResults();  // forget the target so the next cycle reports it again
-    bool ok = scan->start(HUNT_CYCLE_SECS, nullptr, false);
-    cycleEnd = now + (ok ? HUNT_CYCLE_SECS * 1000 + 150 : 100);
+    Serial.printf("[ble] scan done, %u devices, %u trackers\n", (unsigned)devices.size(),
+                  (unsigned)trackerList.size());
+  } else if (md == Mode::Hunt) {
+    std::lock_guard<std::mutex> lock(mtx);
+    huntAcc.tick(huntInfo, now);
+  }
+
+  static uint32_t lastPrune = 0;
+  if (now - lastPrune > 10000) {
+    lastPrune = now;
+    std::lock_guard<std::mutex> lock(mtx);
+    trackerList.erase(std::remove_if(trackerList.begin(), trackerList.end(),
+                                     [&](const TrackerSighting &t) {
+                                       return now - t.lastSeen > TRACKER_FORGET_MS;
+                                     }),
+                      trackerList.end());
   }
 }
 
@@ -231,7 +279,7 @@ size_t count() {
 
 std::vector<Device> snapshot(size_t maxCount, size_t *total) {
   // Sort indices under the lock and copy only the top entries: copying the
-  // whole list (Strings and all) every refresh costs heap we don't have.
+  // whole list (Strings and all) every refresh costs heap.
   std::vector<Device> out;
   std::lock_guard<std::mutex> lock(mtx);
   if (total) *total = devices.size();
@@ -261,6 +309,44 @@ HuntInfo hunt() {
   return huntInfo;
 }
 
+std::vector<TrackerSighting> trackers() {
+  std::vector<TrackerSighting> out;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    out = trackerList;
+  }
+  std::sort(out.begin(), out.end(), [](const TrackerSighting &a, const TrackerSighting &b) {
+    return (a.lastSeen - a.firstSeen) > (b.lastSeen - b.firstSeen);
+  });
+  return out;
+}
+
+bool isFollowing(const TrackerSighting &t) {
+  return t.lastSeen - t.firstSeen >= FOLLOW_MIN_MS && t.rounds >= FOLLOW_MIN_ROUNDS;
+}
+
+void markAlerted(const String &addr) {
+  std::lock_guard<std::mutex> lock(mtx);
+  for (auto &t : trackerList)
+    if (t.addr == addr) t.alerted = true;
+}
+
+void clearTrackers() {
+  std::lock_guard<std::mutex> lock(mtx);
+  trackerList.clear();
+}
+
+const char *trackerName(Tracker t) {
+  switch (t) {
+    case Tracker::AppleFindMy: return "Apple Find My";
+    case Tracker::Tile: return "Tile";
+    case Tracker::SmartTag: return "Samsung SmartTag";
+    case Tracker::GoogleFindMy: return "Google Find My";
+    case Tracker::Dult: return "Tracker (DULT)";
+    default: return "";
+  }
+}
+
 void ignore(const String &addr, const String &name) {
   loadIgnored();
   String clean = name;
@@ -275,6 +361,9 @@ void ignore(const String &addr, const String &name) {
   devices.erase(std::remove_if(devices.begin(), devices.end(),
                                [&](const Device &d) { return d.addr == addr; }),
                 devices.end());
+  trackerList.erase(std::remove_if(trackerList.begin(), trackerList.end(),
+                                   [&](const TrackerSighting &t) { return t.addr == addr; }),
+                    trackerList.end());
 }
 
 void unignore(const String &addr) {

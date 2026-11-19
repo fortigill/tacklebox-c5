@@ -4,6 +4,7 @@
 #include "ble.h"
 #include "display.h"
 #include "net.h"
+#include "ota.h"
 #include "timesvc.h"
 #include "ui.h"
 #include "version.h"
@@ -25,5 +26,6 @@ void loop() {
   ble::loop();
   timesvc::loop();
   weather::loop();
+  ota::loop();
   delay(5);
 }

@@ -264,25 +264,11 @@ String logNewTitle;
 
 // Watch alerts (guarded by mtx)
 std::vector<String> alertQueue;
-struct Snooze {
-  String id;
-  uint32_t until;
-};
-std::vector<Snooze> snoozes;
 struct Ack {
   String id;
   uint32_t lastHeard;
 };
 std::vector<Ack> acks;
-
-bool snoozedLocked(const String &id, uint32_t now) {
-  snoozes.erase(std::remove_if(snoozes.begin(), snoozes.end(),
-                               [&](const Snooze &z) { return (int32_t)(now - z.until) >= 0; }),
-                snoozes.end());
-  for (const auto &z : snoozes)
-    if (z.id == id) return true;
-  return false;
-}
 
 // True if alerts for `id` are acknowledged; refreshes the "still around" time
 bool ackedLocked(const String &id, uint32_t now, bool heardNow) {
@@ -299,16 +285,12 @@ bool ackedLocked(const String &id, uint32_t now, bool heardNow) {
 }
 
 void forgetAlertStateLocked(const String &id) {
-  snoozes.erase(std::remove_if(snoozes.begin(), snoozes.end(), [&](const Snooze &z) { return z.id == id; }),
-                snoozes.end());
   acks.erase(std::remove_if(acks.begin(), acks.end(), [&](const Ack &a) { return a.id == id; }), acks.end());
   alertQueue.erase(std::remove(alertQueue.begin(), alertQueue.end(), id), alertQueue.end());
 }
 
 void queueAlertLocked(const String &id) {
-  uint32_t now = millis();
-  if (snoozedLocked(id, now)) return;
-  if (ackedLocked(id, now, true)) return;
+  if (ackedLocked(id, millis(), true)) return;
   if (std::find(alertQueue.begin(), alertQueue.end(), id) != alertQueue.end()) return;
   alertQueue.push_back(id);
 }
@@ -586,7 +568,7 @@ bool logFind(const String &key, LogEntry &out) {
 
 void logDelete(const String &key) {
   std::lock_guard<std::mutex> lock(mtx);
-  for (const auto &e : logv) {  // forget snooze/ack for this drone (by ID and MAC)
+  for (const auto &e : logv) {  // forget alert state for this drone (by ID and MAC)
     if (key == e.key || (e.id[0] && key == e.id)) {
       if (e.id[0]) forgetAlertStateLocked(e.id);
       forgetAlertStateLocked(e.key);
@@ -602,7 +584,6 @@ void logDelete(const String &key) {
 void logClear() {
   std::lock_guard<std::mutex> lock(mtx);
   logv.clear();
-  snoozes.clear();
   acks.clear();
   alertQueue.clear();
   logSave();
@@ -620,24 +601,9 @@ bool nextAlert(String &id) {
   while (!alertQueue.empty()) {
     id = alertQueue.front();
     alertQueue.erase(alertQueue.begin());
-    uint32_t now = millis();  // may have been snoozed or acknowledged while queued
-    if (!snoozedLocked(id, now) && !ackedLocked(id, now, false)) return true;
+    if (!ackedLocked(id, millis(), false)) return true;  // may have been acknowledged while queued
   }
   return false;
-}
-
-void snooze(const String &id, uint32_t ms) {
-  std::lock_guard<std::mutex> lock(mtx);
-  uint32_t now = millis();
-  snoozedLocked(id, now);  // prunes expired entries
-  for (auto &z : snoozes) {
-    if (z.id == id) {
-      z.until = now + ms;
-      return;
-    }
-  }
-  snoozes.push_back({id, now + ms});
-  Serial.printf("[rid] alerts for %s snoozed for %lu min\n", id.c_str(), (unsigned long)(ms / 60000));
 }
 
 void acknowledge(const String &id) {

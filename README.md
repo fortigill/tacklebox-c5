@@ -12,8 +12,7 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
     location/distance and a signal hunt. Wi-Fi is paused while it runs.
   - **Watch** scans 5 s every 30 s, with Wi-Fi back in between, and keeps a **log** of every drone
     seen (saved until you delete it). While it runs, a drone icon sits in the status bar and flashes
-    blue/red when a drone is near. Each drone triggers a pop-up you can **Ignore for 30 min** or
-    **View**.
+    blue/red when a drone is near. Each drone triggers a pop-up with **Close** or **View**.
 - **Tracker detector**: **Watch** scans every 30 s for AirTag/Find My, Tile, SmartTag and Google
   Find My trackers. One that stays with you for 10+ min turns red and triggers a warning. Tap it to
   hunt it.

@@ -3,6 +3,14 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.8] - 2026-11-19
+
+### Changed
+- The clock and Wi-Fi icon always stay on the top row of the status bar. Only the other items
+  (waves, temperature and weather icon, drone icon) move to the second row when space runs out.
+  The bar's left part wraps on its own, and a 32 px strut keeps its first line aligned with the
+  clock and the Wi-Fi button.
+
 ## [0.7.7] - 2026-11-19
 
 ### Changed

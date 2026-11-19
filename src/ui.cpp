@@ -561,19 +561,37 @@ void showDesktop() {
   lv_obj_set_style_pad_hor(bar, 6, 0);
   lv_obj_set_style_pad_ver(bar, 2, 0);
   lv_obj_set_style_pad_column(bar, narrow ? 4 : 10, 0);
-  lv_obj_set_style_pad_row(bar, 2, 0);
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW_WRAP);
-  lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+  // Left part: everything except the clock and Wi-Fi. It wraps onto a second
+  // line when it runs out of room, so the clock and Wi-Fi always stay on top.
+  lv_obj_t *ext = lv_obj_create(bar);
+  lv_obj_remove_style_all(ext);
+  lv_obj_set_height(ext, LV_SIZE_CONTENT);
+  lv_obj_set_flex_grow(ext, 1);
+  lv_obj_set_flex_flow(ext, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_align(ext, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(ext, narrow ? 4 : 10, 0);
+  lv_obj_set_style_pad_row(ext, 2, 0);
+  lv_obj_clear_flag(ext, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(ext, LV_OBJ_FLAG_CLICKABLE);
+  // Zero-width strut: makes the first line as tall as the Wi-Fi button (32 px)
+  // so its items line up with the clock
+  lv_obj_t *strut = lv_obj_create(ext);
+  lv_obj_remove_style_all(strut);
+  lv_obj_set_size(strut, 0, 32);
+  lv_obj_clear_flag(strut, LV_OBJ_FLAG_CLICKABLE);
 
   if (!narrow) {
-    lv_obj_t *name = lv_label_create(bar);
+    lv_obj_t *name = lv_label_create(ext);
     lv_label_set_text(name, "CYD");
     lv_obj_set_flex_grow(name, 1);  // pushes everything else to the right
   }
 
   // Weather: temperature + forecast icon; tap for the weather screen
-  deskWx = lv_obj_create(bar);
+  deskWx = lv_obj_create(ext);
   lv_obj_remove_style_all(deskWx);
   lv_obj_set_size(deskWx, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(deskWx, LV_FLEX_FLOW_ROW);
@@ -589,7 +607,7 @@ void showDesktop() {
   lv_obj_add_flag(deskWxImg, LV_OBJ_FLAG_HIDDEN);
 
   // Buoy wave height: wave icon + number; tap for the buoy page
-  deskBarWave = lv_obj_create(bar);
+  deskBarWave = lv_obj_create(ext);
   lv_obj_remove_style_all(deskBarWave);
   lv_obj_set_size(deskBarWave, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(deskBarWave, LV_FLEX_FLOW_ROW);
@@ -620,7 +638,7 @@ void showDesktop() {
   lv_obj_move_to_index(deskBarWave, lv_obj_get_index(deskWx));
 
   // Drone Watch indicator: only shown while Watch runs; tap for Drone RID
-  deskDrone = lv_img_create(bar);
+  deskDrone = lv_img_create(ext);
   lv_img_set_src(deskDrone, &ui_drone);
   lv_obj_add_flag(deskDrone, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(deskDrone, LV_OBJ_FLAG_CLICKABLE);
@@ -630,9 +648,11 @@ void showDesktop() {
   lv_obj_add_event_cb(deskDrone, [](lv_event_t *) { showDrones(); }, LV_EVENT_CLICKED, nullptr);
 
   // Clock; tap it for Date & time settings
-  deskClock = lv_label_create(bar);
+  deskClock = lv_label_create(bar);  // stays on the top line
   lv_obj_set_style_text_font(deskClock, barFont, 0);
   lv_label_set_text(deskClock, "--:--");
+  // Centered on the 32 px top line (the bar aligns its children to the top)
+  lv_obj_set_style_translate_y(deskClock, (32 - lv_font_get_line_height(barFont)) / 2, 0);
   lv_obj_add_flag(deskClock, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_ext_click_area(deskClock, 8);
   lv_obj_add_event_cb(deskClock, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED,

@@ -270,10 +270,14 @@ bool downloadAlerts(float la, float lo, String &why) {
   // Writes the body to flash, handling chunked transfer; each read waits up
   // to the 15 s timeout set above.
   const int got = http.writeToStream(&f);
-  const size_t total = f.size();
-  f.close();
+  f.close();  // flushes the last buffered KB to flash; size() before this reads short
   http.end();
   tls.stop();
+  size_t total = 0;
+  if (File chk = SPIFFS.open(ALERTS_TMP, FILE_READ)) {
+    total = chk.size();
+    chk.close();
+  }
   if (got < 0) {
     why = String("download failed: ") + http.errorToString(got) + " after " + total / 1024 + " KB";
     return false;
@@ -286,7 +290,7 @@ bool downloadAlerts(float la, float lo, String &why) {
     why = "empty response from NWS";
     return false;
   }
-  Serial.printf("[wx] NWS alerts: %u bytes saved\n", (unsigned)total);
+  Serial.printf("[wx] NWS alerts: %u bytes saved (stream reported %d)\n", (unsigned)total, got);
   return true;
 }
 

@@ -3,6 +3,18 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.9] - 2026-11-19
+
+### Fixed
+- "download cut off (28 of 31 KB)" when the download was actually complete. The file size was
+  read before the last buffered KB had been flushed to SPIFFS. The size is now checked after the
+  file is closed.
+
+### Notes
+- 0.5.8 confirmed low heap as the cause of the "read Timeout". With 15 KB more free, NWS replied
+  in 2.5 s. The TLS session uses about 56 KB at peak, leaving about 11 KB free during the
+  download.
+
 ## [0.5.8] - 2026-11-19
 
 ### Changed

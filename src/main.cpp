@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_system.h>
 #include <lvgl.h>
 
 #include "ble.h"
@@ -32,6 +33,18 @@ void setup() {
 
   Serial.begin(115200);
   Serial.printf("\nCYD UI v%s (built %s %s)\n", FW_VERSION, __DATE__, __TIME__);
+  // Why did we (re)start? Helps tell crashes and watchdog resets from power-ons.
+  const esp_reset_reason_t rr = esp_reset_reason();
+  const char *why = rr == ESP_RST_POWERON  ? "power on"
+                    : rr == ESP_RST_SW     ? "software restart (OTA or reboot)"
+                    : rr == ESP_RST_PANIC  ? "CRASH (panic)"
+                    : rr == ESP_RST_INT_WDT ? "CRASH (interrupt watchdog)"
+                    : rr == ESP_RST_TASK_WDT ? "CRASH (task watchdog)"
+                    : rr == ESP_RST_WDT    ? "CRASH (watchdog)"
+                    : rr == ESP_RST_BROWNOUT ? "brownout (power dipped)"
+                    : rr == ESP_RST_EXT    ? "reset button"
+                                           : "other";
+  Serial.printf("[boot] reset reason: %s (%d)\n", why, (int)rr);
   display::begin();
   theme::begin();
   net::begin();

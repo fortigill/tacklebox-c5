@@ -3,6 +3,25 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.9] - 2026-11-19
+
+### Fixed
+- Reboots and NWS alerts stopping since 0.7.x. The new desktop widgets and buoy data use more
+  heap, which left even less free while an HTTPS download (NWS alerts, or NDBC if it redirects
+  to HTTPS) was running:
+  - The 300 ms UI poll now pauses while a TLS session is open. Label updates and pop-ups
+    allocate from the same heap, and a failed LVGL allocation during the download could crash
+    the board. Taps are still handled, and updates resume when the download ends (a few seconds).
+  - The desktop rebuilds the wave texts only when the buoy data, station or unit changes, instead
+    of copying Strings every 300 ms (heap churn and fragmentation, which made alert checks get
+    skipped with "low memory").
+  - The LVGL draw buffer is 16 lines instead of 24, which frees 5 KB of heap.
+
+### Added
+- The boot log prints the reset reason (power on, OTA/software restart, crash/panic,
+  watchdog, brownout), so a reboot can be diagnosed.
+- The buoy log shows free heap and the largest block for each request.
+
 ## [0.7.8] - 2026-11-19
 
 ### Changed

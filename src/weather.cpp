@@ -524,7 +524,8 @@ bool fetchBuoy(const String &station, Buoy &out, String &why) {
     }
     http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
     int code = http.GET();
-    Serial.printf("[buoy] %s %s -> %d\n", secure ? "https" : "http", station.c_str(), code);
+    Serial.printf("[buoy] %s %s -> %d (free %lu, largest block %lu)\n", secure ? "https" : "http", station.c_str(),
+                  code, (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
     if (code == 200) {
       size_t n = readBuoyLines(http, bp);
       Serial.printf("[buoy] read %u bytes, %d rows\n", (unsigned)n, bp.rows);

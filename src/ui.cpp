@@ -62,6 +62,7 @@ lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
 lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr, *deskWaveName = nullptr;
 lv_obj_t *deskBar = nullptr, *deskRow = nullptr, *deskMenu = nullptr;
 int deskLayoutKey = -1;  // bar + widget-row heights the layout was last done for
+int deskWaveKey = -1;    // buoy data version the wave texts were built from
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
 int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
@@ -204,6 +205,7 @@ void resetPtrs() {
   deskWaveName = nullptr;
   deskBar = deskRow = deskMenu = nullptr;
   deskLayoutKey = -1;
+  deskWaveKey = -1;
   deskWave = deskWaveLbl = deskBarWave = deskBarWaveLbl = deskAlerts = deskAlertsLbl = nullptr;
   deskAlertsColor = -1;
   byWave = byName = byDetail = byStatus = byIdTa = nullptr;
@@ -477,7 +479,11 @@ void refreshDesktop() {
   bool barWave = weather::showBuoyBar(), deskWaveOn = weather::showBuoyDesk();
   setHidden(deskBarWave, !barWave);
   setHidden(deskWave, !deskWaveOn);
-  if (barWave || deskWaveOn) {
+  // Rebuild the wave texts only when the buoy data, station or unit changed:
+  // doing it every 300 ms churned the heap with String copies
+  int waveKey = (int)(weather::buoyVersion() * 2 + (weather::useF() ? 1 : 0));
+  if ((barWave || deskWaveOn) && waveKey != deskWaveKey) {
+    deskWaveKey = waveKey;
     String wt = weather::waveText(weather::buoy().waveM);
     if (deskWaveOn) {
       setText(deskWaveLbl, wt.c_str());
@@ -3192,6 +3198,12 @@ void showNextWxAlert() {
 }
 
 void poll(lv_timer_t *) {
+  // While an HTTPS download runs, only a few KB of heap are free. Label
+  // updates and pop-ups allocate from that same heap, and a failed LVGL
+  // allocation crashes the board, so hold all screen updates until it ends
+  // (a few seconds). Taps are still handled.
+  if (weather::tlsActive()) return;
+
   // Drone Watch alerts, one at a time, on whatever screen is showing
   if (!droneAlertBox && !wxAlertBox) showNextDroneAlert();
   if (!droneAlertBox && !wxAlertBox) showNextWxAlert();

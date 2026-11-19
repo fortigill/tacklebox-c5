@@ -67,8 +67,10 @@ the password, then flash once over USB so the device knows it. If mDNS doesn't r
 table (as in 0.1.0) always needs a USB flash.
 
 Every OTA push has to be approved on the device. A "Firmware update" pop-up offers **Accept update**
-or **Do not allow**, with an 8-second countdown. If nobody taps Accept, the update is blocked, the
+or **Do not allow**, with a 30-second countdown. If nobody taps Accept, the update is blocked, the
 upload fails on the computer, and the current firmware keeps running. USB flashing isn't affected.
+Stock espota.py gives up after 10 s, so `pio run -e cyd-ota` uses a copy with a 45 s wait.
+`tools/espota_patch.py` generates it in `.pio/` at build time.
 
 ## Touch calibration
 

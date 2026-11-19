@@ -3,6 +3,14 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.6.1] - 2026-11-19
+
+### Changed
+- The OTA approval countdown is now 30 s (was 8 s). Stock espota.py waits a hard-coded 10 s for
+  the device to connect back (its `--timeout` option covers only the invitation).
+  `tools/espota_patch.py` generates `.pio/espota_cyd.py` with a 45 s wait, and the cyd-ota env
+  uploads through it (`upload_protocol = custom`). The framework's file isn't modified.
+
 ## [0.6.0] - 2026-11-19
 
 ### Added

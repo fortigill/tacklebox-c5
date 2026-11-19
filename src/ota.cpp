@@ -21,9 +21,9 @@ const char *HOSTNAME = "cyd";
 bool started = false;
 int lastPct = -1;
 bool refused = false;
-// espota.py waits about 10 s for the device to connect back after the
-// invitation, so the question has to be answered within that window.
-const uint32_t ASK_TIMEOUT_MS = 8000;
+// Stock espota.py waits only 10 s for the device to connect back after the
+// invitation; the cyd-ota env uses a copy patched to 45 s (tools/espota_patch.py).
+const uint32_t ASK_TIMEOUT_MS = 30000;
 
 void begin() {
   ArduinoOTA.setHostname(HOSTNAME);

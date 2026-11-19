@@ -3,6 +3,20 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.4] - 2026-11-18
+
+### Fixed
+- Crash and reboot loop a few seconds after opening the Bluetooth scanner (out of memory):
+  - The Arduino BLE library leaks a `BLEAdvertisedDevice` for every repeat advert when
+    `wantDuplicates` is on. Duplicates are now off, and the scan restarts every 3 s, so signal
+    strength still refreshes.
+  - The Bluetooth controller starts in BLE-only mode after Classic Bluetooth's reserved RAM is
+    released back to the heap.
+  - The scanner copies only the 30 strongest devices per refresh (was the whole list), shows at most
+    30 rows (was 60), tracks at most 80 devices (was 150), and frees old rows before building new ones.
+  - The list stops adding rows below 20 KB free heap instead of letting LVGL crash on a failed
+    allocation.
+
 ## [0.0.3] - 2026-11-18
 
 ### Added

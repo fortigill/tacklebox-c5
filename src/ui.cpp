@@ -42,7 +42,8 @@ lv_obj_t *bleList = nullptr, *bleStatus = nullptr, *bleToggle = nullptr, *bleDet
 
 // BLE scanner state
 const uint32_t BLE_LIST_REFRESH_MS = 2000;
-const size_t BLE_MAX_ROWS = 60;
+const size_t BLE_MAX_ROWS = 30;
+const uint32_t BLE_MIN_FREE_HEAP = 20000;  // stop adding rows below this
 std::vector<String> bleRowAddrs;
 String bleDetailAddr;
 uint32_t bleLastFill = 0;
@@ -490,19 +491,26 @@ void bleFill() {
   if (in && in->proc.state == LV_INDEV_STATE_PRESSED) return;
   bleLastFill = millis();
 
-  auto devs = ble::snapshot();
-  bleUpdateStatus(devs.size());
-
   lv_coord_t y = lv_obj_get_scroll_y(bleList);
-  lv_obj_clean(bleList);
+  lv_obj_clean(bleList);  // free the old rows before allocating anything
   bleRowAddrs.clear();
+
+  size_t total = 0;
+  auto devs = ble::snapshot(BLE_MAX_ROWS, &total);
+  bleUpdateStatus(total);
 
   if (devs.empty()) {
     lv_list_add_text(bleList, ble::scanning() ? "Listening for devices..." : "No devices");
     return;
   }
-  size_t n = devs.size() < BLE_MAX_ROWS ? devs.size() : BLE_MAX_ROWS;
-  for (size_t i = 0; i < n; i++) {
+  for (size_t i = 0; i < devs.size(); i++) {
+    // LVGL crashes if an allocation fails, so stop while there's headroom
+    if (ESP.getFreeHeap() < BLE_MIN_FREE_HEAP) {
+      lv_list_add_text(bleList, "(more devices hidden: low memory)");
+      Serial.printf("[ui] BLE list truncated at %u rows, free heap %lu\n", (unsigned)i,
+                    (unsigned long)ESP.getFreeHeap());
+      break;
+    }
     const auto &d = devs[i];
     lv_obj_t *b = lv_list_add_btn(bleList, LV_SYMBOL_BLUETOOTH, bleTitle(d).c_str());
     lv_obj_t *r = lv_label_create(b);

@@ -4,6 +4,7 @@
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <WiFi.h>
+#include <esp_bt.h>
 
 #include <algorithm>
 #include <mutex>
@@ -11,9 +12,12 @@
 namespace ble {
 namespace {
 
-const uint32_t CYCLE_SECS = 5;      // restart the scan every 5 s to free its result cache
+// Each cycle reports every device once (duplicates off, see start()), so a
+// short cycle doubles as the RSSI refresh rate. Restarting also frees the
+// library's own result cache.
+const uint32_t CYCLE_SECS = 3;
 const uint32_t FORGET_MS = 60000;   // drop devices not heard from for 60 s
-const size_t MAX_DEVICES = 150;
+const size_t MAX_DEVICES = 80;
 
 std::mutex mtx;                     // onResult runs on the Bluetooth task
 std::vector<Device> devices;
@@ -79,13 +83,31 @@ bool start() {
     // The ESP32 refuses to run Bluetooth alongside Wi-Fi unless Wi-Fi modem
     // sleep is on, so re-enable it (it stays on until reboot).
     WiFi.setSleep(true);
+
+    // We only need BLE: hand Classic Bluetooth's reserved RAM back to the heap
+    // and bring the controller up in BLE-only mode. BLEDevice::init() sees the
+    // controller already running and skips its own (dual-mode) start.
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+      esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+      esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+      cfg.mode = ESP_BT_MODE_BLE;
+      if (esp_bt_controller_init(&cfg) != ESP_OK ||
+          esp_bt_controller_enable(ESP_BT_MODE_BLE) != ESP_OK) {
+        Serial.println("[ble] BLE-only controller start failed, using default");
+      }
+    }
+    Serial.printf("[ble] controller up, free heap %lu\n", (unsigned long)ESP.getFreeHeap());
+
     BLEDevice::init("");
     scan = BLEDevice::getScan();
     if (!scan) {
       Serial.println("[ble] init failed");
       return false;
     }
-    scan->setAdvertisedDeviceCallbacks(&callbacks, true /*duplicates: live RSSI*/);
+    // wantDuplicates must stay false: with it on, the Arduino BLE library
+    // allocates a new BLEAdvertisedDevice for every repeat advert and never
+    // frees it (std::map::insert of an existing key), exhausting the heap.
+    scan->setAdvertisedDeviceCallbacks(&callbacks, false);
     scan->setActiveScan(true);  // request scan responses, which often carry the name
     scan->setInterval(100);
     scan->setWindow(99);
@@ -122,13 +144,19 @@ void loop() {
   }
 }
 
-std::vector<Device> snapshot() {
+std::vector<Device> snapshot(size_t maxCount, size_t *total) {
+  // Sort indices under the lock and copy only the top entries: copying the
+  // whole list (Strings and all) every refresh costs heap we don't have.
   std::vector<Device> out;
-  {
-    std::lock_guard<std::mutex> lock(mtx);
-    out = devices;
-  }
-  std::sort(out.begin(), out.end(), [](const Device &a, const Device &b) { return a.rssi > b.rssi; });
+  std::lock_guard<std::mutex> lock(mtx);
+  if (total) *total = devices.size();
+  std::vector<uint8_t> idx(devices.size());
+  for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
+  std::sort(idx.begin(), idx.end(),
+            [](uint8_t a, uint8_t b) { return devices[a].rssi > devices[b].rssi; });
+  size_t n = idx.size() < maxCount ? idx.size() : maxCount;
+  out.reserve(n);
+  for (size_t i = 0; i < n; i++) out.push_back(devices[idx[i]]);
   return out;
 }
 

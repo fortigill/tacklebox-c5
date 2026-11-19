@@ -27,7 +27,8 @@ void stop();
 bool scanning();
 void loop();       // call from loop()
 
-std::vector<Device> snapshot();  // sorted strongest first
+// Strongest maxCount devices, strongest first; total receives the full count.
+std::vector<Device> snapshot(size_t maxCount, size_t *total);
 bool find(const String &addr, Device &out);
 const char *vendorName(uint16_t mfgId);  // nullptr if unknown
 

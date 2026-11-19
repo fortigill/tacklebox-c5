@@ -267,6 +267,17 @@ void stop() {
   md = Mode::Idle;
 }
 
+void release() {
+  stop();
+  if (!inited) return;
+  uint32_t before = ESP.getFreeHeap();
+  NimBLEDevice::deinit(true);  // also deletes the scan object
+  scan = nullptr;
+  inited = false;
+  Serial.printf("[ble] released, free heap %lu -> %lu\n", (unsigned long)before,
+                (unsigned long)ESP.getFreeHeap());
+}
+
 Mode mode() { return md; }
 bool everScanned() { return scannedOnce; }
 

@@ -436,7 +436,7 @@ void radioOff() {
     active = false;
   }
   esp_wifi_set_promiscuous(false);
-  ble::stop();
+  ble::release();  // free its RAM while resting so HTTPS (NWS alerts) can run
   net::resume();
 }
 

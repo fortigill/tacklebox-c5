@@ -3,6 +3,21 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.1] - 2026-11-19
+
+### Fixed
+- NWS alerts failed with "connection refused". That message is HTTPClient's catch-all for any
+  failed connect, including a TLS handshake. NWS is HTTPS-only, and TLS needs ~40 KB of RAM. Once
+  Bluetooth had been started (BLE scanner, tracker detector or Drone Watch), NimBLE kept ~50 KB until
+  reboot, leaving too little.
+  - New `ble::release()` stops scanning and fully unloads NimBLE (`NimBLEDevice::deinit(true)`). It
+    restarts automatically on next use.
+  - Bluetooth is released at the end of every Drone Watch scan (so the 25 s rests have the RAM for
+    alert checks, weather and OTA), when Drone RID scanning stops, and when leaving the Bluetooth
+    scanner or tracker detector.
+- A failed NWS fetch now reports the TLS library's own error text plus free RAM and the largest free
+  block, instead of just "connection refused".
+
 ## [0.5.0] - 2026-11-19
 
 ### Added

@@ -3,6 +3,26 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.4.5] - 2026-11-19
+
+### Changed
+- **Drone Watch keeps scanning while a drone is in range.** A watch scan runs at least 5 s and then
+  continues for as long as Remote ID is heard. It rests only after 8 s of silence
+  (`WATCH_LINGER_MS`), which gives weak or distant drones time to deliver every message type.
+  - During an extended scan the log is updated every 5 s, so alerts aren't held back until the drone
+    leaves. Sightings now count these 5 s checks ("heard in N watch checks").
+  - The status line shows "drone in range, scanning until it's gone". Wi-Fi stays paused for as long
+    as a drone is around.
+
+### Added
+- The watch log stores the drone's **Operator ID** and **Self-ID description** and shows them in the
+  log detail. "- (not broadcast)" means the drone didn't send one. The Operator ID message is optional
+  under US (FAA) rules and many US-market drones omit it.
+
+### Notes
+- The log record grew, so it uses a new NVS key (`log2`). Entries logged by 0.4.0-0.4.4 are dropped
+  on upgrade.
+
 ## [0.4.4] - 2026-11-19
 
 ### Changed

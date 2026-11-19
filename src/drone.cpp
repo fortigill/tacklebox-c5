@@ -36,6 +36,7 @@ std::mutex mtx;  // fed from the Wi-Fi task and the NimBLE host task
 std::vector<Drone> drones;
 volatile bool active = false;
 uint32_t frameCount = 0;  // written under mtx
+volatile uint32_t lastHeardMs = 0;  // millis() of the last Remote ID message of any drone
 size_t hopIdx = 0;
 uint32_t nextHop = 0;
 uint8_t channel = 6;
@@ -170,6 +171,7 @@ void withDrone(const uint8_t *mac, const char *macStr, Transport t, uint8_t ch, 
   it->lastSeen = now;
   it->messages++;
   frameCount++;
+  lastHeardMs = now;
   apply(*it);
   if (huntKey.length() && it->key == huntKey) huntAcc.add(rssi, now);
 }
@@ -303,10 +305,13 @@ uint32_t epochNow() {
 
 void logLoad() {
   logPrefs.begin("drone", false);
-  size_t n = logPrefs.isKey("log") ? logPrefs.getBytesLength("log") : 0;
+  // "log2": LogEntry gained Operator ID / Self-ID in 0.4.5; the old "log"
+  // blob has a different record size and is dropped.
+  if (logPrefs.isKey("log")) logPrefs.remove("log");
+  size_t n = logPrefs.isKey("log2") ? logPrefs.getBytesLength("log2") : 0;
   if (n && n % sizeof(LogEntry) == 0 && n / sizeof(LogEntry) <= LOG_MAX) {
     logv.resize(n / sizeof(LogEntry));
-    logPrefs.getBytes("log", logv.data(), n);
+    logPrefs.getBytes("log2", logv.data(), n);
   }
   logPrefs.end();
   Serial.printf("[rid] watch log: %u drones\n", (unsigned)logv.size());
@@ -314,8 +319,8 @@ void logLoad() {
 
 void logSave() {  // caller holds mtx
   logPrefs.begin("drone", false);
-  if (logv.empty()) logPrefs.remove("log");
-  else logPrefs.putBytes("log", logv.data(), logv.size() * sizeof(LogEntry));
+  if (logv.empty()) logPrefs.remove("log2");
+  else logPrefs.putBytes("log2", logv.data(), logv.size() * sizeof(LogEntry));
   logPrefs.end();
   logDirty = false;
   logLastSave = millis();
@@ -370,6 +375,8 @@ void logMerge(uint32_t since) {
       it->lon = (int32_t)lround(d.lon * 1e7);
       it->alt = isnan(d.altGeo) ? INT16_MIN : (int16_t)lroundf(d.altGeo);
     }
+    if (d.operatorId.length()) copyStr(it->opId, sizeof(it->opId), d.operatorId);
+    if (d.selfId.length()) copyStr(it->selfId, sizeof(it->selfId), d.selfId);
     if (d.hasOp) {
       it->flags |= LOG_HAS_OP;
       it->opLat = (int32_t)lround(d.opLat * 1e7);
@@ -384,8 +391,8 @@ void logMerge(uint32_t since) {
 
 Mode md = Mode::Off;
 bool burst = false;             // watch: currently in the scanning part of the cycle
-uint32_t phaseEnd = 0;
-uint32_t burstStart = 0;
+uint32_t phaseEnd = 0;          // earliest end of the current scan / end of the rest
+uint32_t mergeSince = 0;        // watch: drones heard since this time not yet logged
 
 void updateLed() {
   uint32_t now = millis();
@@ -465,8 +472,8 @@ bool startWatch() {
   md = Mode::Watch;
   ledState = -1;
   burst = true;
-  burstStart = millis();
-  phaseEnd = burstStart + WATCH_SCAN_MS;
+  mergeSince = millis();
+  phaseEnd = mergeSince + WATCH_SCAN_MS;
   radioOn();
   Serial.println("[rid] drone watch started");
   return true;
@@ -476,7 +483,7 @@ void stop() {
   if (md == Mode::Off) return;
   if (md == Mode::Watch && active) {  // keep what the interrupted burst heard
     std::lock_guard<std::mutex> lock(mtx);
-    logMerge(burstStart);
+    logMerge(mergeSince);
   }
   radioOff();
   {
@@ -496,6 +503,10 @@ Mode mode() { return md; }
 bool running() { return md != Mode::Off; }
 bool radioActive() { return active; }
 
+bool watchExtended() {
+  return md == Mode::Watch && burst && (int32_t)(millis() - phaseEnd) >= 0;
+}
+
 uint32_t phaseRemainingMs() {
   if (md != Mode::Watch) return 0;
   int32_t left = (int32_t)(phaseEnd - millis());
@@ -506,18 +517,29 @@ void loop() {
   if (md == Mode::Off) return;
   uint32_t now = millis();
 
-  if (md == Mode::Watch && (int32_t)(now - phaseEnd) >= 0) {
-    if (burst) {  // scan finished: log what we heard, rest with Wi-Fi back on
-      {
+  if (md == Mode::Watch) {
+    bool due = (int32_t)(now - phaseEnd) >= 0;
+    if (burst) {
+      bool hearing = now - lastHeardMs < WATCH_LINGER_MS;
+      if (due && hearing && now - mergeSince >= WATCH_SCAN_MS) {
+        // Extended scan (drone in range): log every 5 s so alerts and the log
+        // don't wait for the drone to leave
         std::lock_guard<std::mutex> lock(mtx);
-        logMerge(burstStart);
+        logMerge(mergeSince);
+        mergeSince = now;
       }
-      radioOff();
-      burst = false;
-      phaseEnd = now + WATCH_REST_MS;
-    } else {      // rest finished: next scan
+      if (due && !hearing) {  // nothing heard for a while: log, rest with Wi-Fi back on
+        {
+          std::lock_guard<std::mutex> lock(mtx);
+          logMerge(mergeSince);
+        }
+        radioOff();
+        burst = false;
+        phaseEnd = now + WATCH_REST_MS;
+      }
+    } else if (due) {  // rest finished: next scan
       burst = true;
-      burstStart = now;
+      mergeSince = now;
       phaseEnd = now + WATCH_SCAN_MS;
       radioOn();
     }

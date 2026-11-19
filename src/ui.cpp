@@ -1270,9 +1270,13 @@ void drnUpdateStatus() {
              drone::currentChannel(), (unsigned)live, live == 1 ? "" : "s",
              (unsigned long)drone::frames());
   } else if (m == drone::Mode::Watch) {
-    snprintf(buf, sizeof(buf), drone::radioActive() ? "Watch: scanning (%us left)  -  %u logged"
-                                                    : "Watch: next scan in %us  -  %u logged",
-             secs, (unsigned)drone::logCount());
+    if (drone::watchExtended())
+      snprintf(buf, sizeof(buf), "Watch: drone in range, scanning until it's gone  -  %u logged",
+               (unsigned)drone::logCount());
+    else
+      snprintf(buf, sizeof(buf), drone::radioActive() ? "Watch: scanning (%us left)  -  %u logged"
+                                                      : "Watch: next scan in %us  -  %u logged",
+               secs, (unsigned)drone::logCount());
   } else {
     snprintf(buf, sizeof(buf), "Scan = nonstop.  Watch = 5 s every 30 s, logged.");
   }
@@ -1419,7 +1423,7 @@ void refreshDroneDetail() {
            drone::isDji(d) ? " (DJI)" : "", drone::uaTypeName(d.uaType), drone::statusName(d.status),
            loc.c_str(), fmtAlt(d.altGeo).c_str(), fmtAlt(d.altBaro).c_str(), fmtAlt(d.height).c_str(),
            fmtSpeed(d.speed).c_str(), hdg.c_str(), fmtSpeed(d.vspeed).c_str(), op.c_str(), sep.c_str(),
-           d.operatorId.length() ? d.operatorId.c_str() : "-",
+           d.operatorId.length() ? d.operatorId.c_str() : "- (not broadcast)",
            d.selfId.length() ? d.selfId.c_str() : "-", d.rssi, drone::transportName(d.transport),
            chan.c_str(), d.key.c_str(), (unsigned long)((millis() - d.lastSeen) / 1000),
            (unsigned long)d.messages);
@@ -1571,24 +1575,27 @@ void showDroneLogDetail() {
              fmtDist(drone::distanceM(e.lat * 1e-7, e.lon * 1e-7, e.opLat * 1e-7, e.opLon * 1e-7)).c_str());
   String alt = e.alt == INT16_MIN ? String("-") : fmtAlt(e.alt);
 
-  char buf[640];
+  char buf[800];
   snprintf(buf, sizeof(buf),
            "ID: %s\n"
            "ID type: %s%s\n"
            "Aircraft: %s\n"
            "First seen: %s\n"
            "Last seen: %s\n"
-           "Seen in: %u watch scan%s\n"
+           "Heard in: %u watch check%s\n"
            "Last position: %s\n"
            "Last altitude: %s\n"
            "Operator at: %s\n"
            "Operator distance: %s\n"
+           "Operator ID: %s\n"
+           "Description: %s\n"
            "Signal: last %d dBm, best %d dBm\n"
            "Via: %s\n"
            "MAC: %s%s",
            e.id[0] ? e.id : "-", drone::idTypeName(e.idType), (e.flags & drone::LOG_DJI) ? " (DJI)" : "",
            drone::uaTypeName(e.uaType), first, last, e.sightings, e.sightings == 1 ? "" : "s", pos,
-           alt.c_str(), op, sep, e.rssiLast, e.rssiMax, drone::transportName((drone::Transport)e.transport),
+           alt.c_str(), op, sep, e.opId[0] ? e.opId : "- (not broadcast)",
+           e.selfId[0] ? e.selfId : "-", e.rssiLast, e.rssiMax, drone::transportName((drone::Transport)e.transport),
            e.key, (e.flags & drone::LOG_EMERGENCY) ? "\nReported an EMERGENCY status" : "");
   lv_obj_t *l = lv_label_create(box);
   lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
@@ -2450,7 +2457,7 @@ void showNextDroneAlert() {
   if (drone::logFind(id, e)) {
     char when[32];
     timesvc::formatEpoch(e.first, when, sizeof(when));
-    snprintf(msg, sizeof(msg), "%s%s\n%s, signal %d dBm\nSeen in %u watch scan%s, first %s",
+    snprintf(msg, sizeof(msg), "%s%s\n%s, signal %d dBm\nHeard in %u watch check%s, first %s",
              (e.flags & drone::LOG_DJI) ? "DJI  " : "", e.id[0] ? e.id : e.key,
              drone::uaTypeName(e.uaType), e.rssiLast, e.sightings, e.sightings == 1 ? "" : "s",
              e.first ? when : "this session");

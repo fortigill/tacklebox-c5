@@ -52,6 +52,10 @@ struct Drone {
 enum class Mode { Off, Scan, Watch };
 const uint32_t WATCH_SCAN_MS = 5000;
 const uint32_t WATCH_REST_MS = 25000;
+// A watch scan keeps going while Remote ID is being heard, and only rests once
+// nothing has been heard for this long (gives slow/weak drones time to deliver
+// every message type).
+const uint32_t WATCH_LINGER_MS = 8000;
 
 void begin();          // loads the watch log from NVS
 bool startScan();      // pauses Wi-Fi, starts sniffing
@@ -61,6 +65,7 @@ Mode mode();
 bool running();        // any mode active (radio tools stay blocked)
 bool radioActive();    // radios currently sniffing (false while Watch rests)
 uint32_t phaseRemainingMs();  // Watch: time left in the current scan/rest phase
+bool watchExtended();         // Watch scan running past 5 s because a drone is in range
 void loop();           // call from loop(): watch cycle, channel hopping, hunt, LED
 
 // Watch log: one entry per drone ever heard in Watch mode, kept in NVS until
@@ -76,6 +81,8 @@ struct LogEntry {
   int32_t lat, lon;      // last drone position, 1e-7 degrees
   int32_t opLat, opLon;  // last operator position
   int16_t alt;           // last geodetic altitude, meters (INT16_MIN = unknown)
+  char opId[21];         // Operator ID, if the drone broadcasts one
+  char selfId[24];       // pilot's description text (Self-ID), if any
 };
 
 std::vector<LogEntry> watchLog();  // most recently heard first

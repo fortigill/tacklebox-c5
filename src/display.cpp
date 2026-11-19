@@ -29,7 +29,7 @@ const uint8_t BL_BITS = 8;
 const int16_t NATIVE_W = 240;
 const int16_t NATIVE_H = 320;
 
-const uint32_t BUF_PX = 320 * 16;  // two of these; 16 lines keeps RAM free for TLS
+const uint32_t BUF_PX = 320 * 24;
 const uint16_t TS_MIN_PRESSURE = 200;
 const float CAL_MAX_ERR_PX = 20.0f;
 const uint32_t CAL_MAGIC = 0xCA1B0001;

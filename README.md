@@ -21,6 +21,9 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 - **Weather**: set a ZIP code under **Menu > Weather**. The status bar then shows today's forecast
   icon and the current temperature (F or C). Data comes from Open-Meteo (no API key) and refreshes
   every 15 min. Regenerate the icons with `python3 tools/gen_wx_icons.py`.
+- **NWS alerts**: active National Weather Service alerts for the weather ZIP, checked every 5 min.
+  New alerts pop up and make the desktop weather icon flash until snoozed. **Weather > Active
+  alerts** lists them with full details until they expire.
 - **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
   bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,

@@ -3,6 +3,31 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.0] - 2026-11-19
+
+### Added
+- **NWS weather alerts** for the weather ZIP code, from the National Weather Service API
+  (`api.weather.gov/alerts/active?point=lat,lon`):
+  - Covers the city/county/zone alerts for that location. Checked every 5 min while Wi-Fi is up
+    (2 min after a failure). Test and exercise messages are skipped. US locations only.
+  - A **new alert pops up** on any screen (Close / View). View opens the alert's details.
+  - The **desktop weather icon flashes** (red temperature) while any active alert isn't snoozed. It
+    is shown even if "Show icon on desktop" is off.
+  - **Weather > Active alerts (n)** below the desktop-icon switch lists alerts until they expire,
+    colored by severity (red Extreme/Severe, orange Moderate, amber Minor).
+  - Alert detail shows the headline, severity/urgency/certainty, onset and end time, areas, full
+    description, "What to do" instructions and the issuing office.
+  - **Snooze alert** / **Unsnooze** per alert. Snoozed alerts stop the flashing and don't pop up.
+    Snoozes are saved across reboots and forgotten once the alert is gone.
+  - Alerts drop off at their end time (`ends`, or `expires`), even between fetches.
+  - Parsed with an ArduinoJson field filter straight from the HTTP stream (HTTP/1.0, so no chunked
+    encoding). Descriptions are capped at 900 chars and instructions at 450; max 8 alerts.
+
+### Fixed
+- Every weather fetch leaked a little heap. The background task's local Strings were never
+  destroyed because `vTaskDelete()` doesn't return. The work now runs in a function that returns
+  before the task deletes itself. This mattered more now that alerts are fetched every 5 min.
+
 ## [0.4.5] - 2026-11-19
 
 ### Changed

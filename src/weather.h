@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
+#include <vector>
+
 // Weather from Open-Meteo (free, no API key). The ZIP code is resolved to
 // coordinates once (Zippopotam.us, falling back to Open-Meteo geocoding) and
 // cached. Fetches run in a short-lived background task so the UI never blocks.
@@ -40,6 +42,35 @@ void setShowIcon(bool on);
 Data data();
 Status status();
 String lastError();
+
+// ---- NWS alerts (api.weather.gov, US only) ----
+// Active watches/warnings/advisories covering the ZIP code's location,
+// refreshed every 5 minutes while Wi-Fi is up. Alerts drop off when they
+// expire. A new alert pops up once and makes the desktop weather icon flash
+// until it is snoozed.
+struct Alert {
+  String id;
+  String event;        // e.g. "Winter Storm Warning"
+  String headline;
+  String severity;     // Extreme / Severe / Moderate / Minor / Unknown
+  String urgency, certainty;
+  String area;         // counties / zones covered
+  String description;  // truncated to keep RAM in check
+  String instruction;
+  String sender;
+  uint32_t onset = 0, until = 0;  // epoch seconds (0 = not given)
+  bool snoozed = false;
+};
+
+std::vector<Alert> alerts();             // active alerts, most severe first
+bool findAlert(const String &id, Alert &out);
+void snoozeAlert(const String &id, bool on);  // saved across reboots
+size_t alertCount();
+size_t unsnoozedAlertCount();            // > 0 = desktop weather icon flashes
+bool nextAlertPopup(String &id);         // each new alert is handed out once
+uint32_t alertsVersion();                // changes whenever the list changes
+String alertsStatus();                   // last update / error, for display
+int severityRank(const String &severity);  // 4 Extreme .. 0 Unknown
 
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);

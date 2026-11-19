@@ -25,7 +25,8 @@ namespace {
 enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
-  WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail
+  WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
+  WxAlerts, WxAlertDetail
 };
 
 const int HEADER_H = 40;
@@ -46,6 +47,12 @@ lv_obj_t *deskDrone = nullptr;  // status-bar drone icon while Drone Watch runs
 int deskDroneState = -1;        // last color applied: 0 steady, 1 blue, 2 red
 lv_obj_t *droneAlertBox = nullptr;  // on the top layer, survives screen changes
 String droneAlertId;
+lv_obj_t *wxAlertBox = nullptr;     // NWS alert pop-up (top layer)
+String wxAlertId;
+String wxAlertDetailId;
+lv_obj_t *wxaList = nullptr, *wxaStatus = nullptr;
+uint32_t wxaVer = 0;
+int deskWxBlink = -1;               // last opacity state applied to the desktop weather
 lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
 
@@ -166,6 +173,8 @@ void showDateTime();
 void showTimeZone();
 void showWeather();
 void showWeatherZip();
+void showWxAlerts();
+void showWxAlertDetail();
 
 // ---------- helpers ----------
 
@@ -174,6 +183,8 @@ void resetPtrs() {
   deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
   deskDrone = nullptr;
   deskDroneState = -1;
+  wxaList = wxaStatus = nullptr;
+  deskWxBlink = -1;
   deskTemp = TempW();
   wxTemp = TempW();
   dtTime = dtDate = dtStatus = nullptr;
@@ -397,10 +408,18 @@ void refreshDesktop() {
   }
 
   weather::Data wx = weather::data();
+  bool wxAlert = weather::unsnoozedAlertCount() > 0;
   setHidden(deskWx, !weather::configured());
   if (wx.valid) setImg(deskWxImg, weather::icon(wx, false));
-  setHidden(deskWxImg, !wx.valid || !weather::showIcon());
+  // An unsnoozed NWS alert shows the icon even if it's turned off, and flashes it
+  setHidden(deskWxImg, !wx.valid || (!weather::showIcon() && !wxAlert));
   setTemp(deskTemp, wx.valid, wx.tempC);
+  int blink = wxAlert ? (int)((millis() / 500) % 2) : 2;  // 0/1 flashing, 2 steady
+  if (deskWx && blink != deskWxBlink) {
+    deskWxBlink = blink;
+    lv_obj_set_style_opa(deskWx, blink == 0 ? LV_OPA_20 : LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(deskWx, wxAlert ? lv_palette_main(LV_PALETTE_RED) : theme::text(), 0);
+  }
 
   // Restyle only on change: setting a style invalidates (redraws) the widget
   if (state == deskIconState) return;
@@ -1995,6 +2014,17 @@ void showWeather() {
       },
       LV_EVENT_CLICKED, sw);
 
+  // Active NWS alerts sub-menu
+  {
+    size_t n = weather::alertCount(), live = weather::unsnoozedAlertCount();
+    char t[48];
+    if (n) snprintf(t, sizeof(t), "Active alerts (%u)", (unsigned)n);
+    else snprintf(t, sizeof(t), "Active alerts (none)");
+    lv_obj_t *ab = lv_list_add_btn(list, LV_SYMBOL_WARNING, t);
+    if (live) lv_obj_set_style_text_color(ab, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_add_event_cb(ab, [](lv_event_t *) { showWxAlerts(); }, LV_EVENT_CLICKED, nullptr);
+  }
+
   b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
   lv_obj_add_event_cb(
       b,
@@ -2055,6 +2085,124 @@ void showWeatherZip() {
       LV_EVENT_ALL, nullptr);
 
   load(scr, Screen::WeatherZip);
+}
+
+// ---------- NWS weather alerts ----------
+
+lv_color_t severityColor(const String &sev) {
+  switch (weather::severityRank(sev)) {
+    case 4:
+    case 3: return lv_palette_main(LV_PALETTE_RED);
+    case 2: return lv_palette_main(LV_PALETTE_ORANGE);
+    case 1: return lv_palette_main(LV_PALETTE_AMBER);
+    default: return theme::text();
+  }
+}
+
+String untilText(uint32_t until) {
+  if (!until) return "until further notice";
+  char b[32];
+  timesvc::formatEpoch(until, b, sizeof(b));
+  return String("until ") + b;
+}
+
+void onWxAlertClicked(lv_event_t *e) {
+  wxAlertDetailId = *(String *)lv_event_get_user_data(e);
+  showWxAlertDetail();
+}
+
+std::vector<String> wxaIds;  // row -> alert id (stable storage for user_data)
+
+void wxaFill() {
+  if (!wxaList) return;
+  wxaVer = weather::alertsVersion();
+  setText(wxaStatus, weather::alertsStatus().c_str());
+  lv_obj_clean(wxaList);
+  auto as = weather::alerts();
+  wxaIds.clear();
+  wxaIds.reserve(as.size());
+  if (as.empty()) lv_list_add_text(wxaList, "No active alerts for your area");
+  for (const auto &a : as) {
+    wxaIds.push_back(a.id);
+    lv_obj_t *b = lv_list_add_btn(wxaList, a.snoozed ? LV_SYMBOL_MUTE : LV_SYMBOL_WARNING, a.event.c_str());
+    lv_obj_set_style_text_color(b, severityColor(a.severity), 0);
+    if (a.snoozed) lv_obj_set_style_text_opa(b, LV_OPA_60, 0);
+    lv_obj_t *r = lv_label_create(b);
+    lv_label_set_text(r, a.snoozed ? "snoozed" : untilText(a.until).c_str());
+    lv_obj_set_style_text_color(r, theme::text(), 0);
+    lv_obj_set_style_text_opa(r, LV_OPA_70, 0);
+    lv_obj_add_event_cb(b, onWxAlertClicked, LV_EVENT_CLICKED, &wxaIds.back());
+  }
+  if (!as.empty()) lv_list_add_text(wxaList, "Tap an alert for details or to snooze it");
+}
+
+void pollWxAlerts() {
+  if (weather::alertsVersion() != wxaVer) wxaFill();
+  else setText(wxaStatus, weather::alertsStatus().c_str());
+}
+
+void showWxAlerts() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Weather alerts", [](lv_event_t *) { showWeather(); });
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  wxaStatus = bodyLabel(body);
+  lv_obj_set_style_text_opa(wxaStatus, LV_OPA_70, 0);
+  wxaList = bodyList(body);
+  load(scr, Screen::WxAlerts);
+  wxaFill();
+}
+
+void showWxAlertDetail() {
+  weather::Alert a;
+  if (!weather::findAlert(wxAlertDetailId, a)) {  // expired meanwhile
+    showWxAlerts();
+    return;
+  }
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, a.event.c_str(), [](lv_event_t *) { showWxAlerts(); });
+
+  const int btnRowH = 48;
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H - btnRowH);
+  lv_obj_align(box, LV_ALIGN_TOP_MID, 0, HEADER_H);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+  lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(box, 6, 0);
+
+  auto para = [&](const String &txt, lv_color_t c, bool dim) {
+    if (txt.isEmpty()) return;
+    lv_obj_t *l = lv_label_create(box);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_obj_set_style_text_color(l, c, 0);
+    if (dim) lv_obj_set_style_text_opa(l, LV_OPA_70, 0);
+    lv_label_set_text(l, txt.c_str());
+  };
+  char from[32] = "now";
+  if (a.onset) timesvc::formatEpoch(a.onset, from, sizeof(from));
+  String meta = a.severity + " / " + a.urgency + " / " + a.certainty + "\nFrom " + from + ", " +
+                untilText(a.until) + "\nAreas: " + a.area;
+  para(a.headline, severityColor(a.severity), false);
+  para(meta, theme::text(), true);
+  para(a.description, theme::text(), false);
+  if (a.instruction.length()) para("What to do: " + a.instruction, theme::accent(), false);
+  para(a.sender, theme::text(), true);
+
+  lv_obj_t *sz = flatBtn(scr, a.snoozed ? LV_SYMBOL_BELL "  Unsnooze" : LV_SYMBOL_MUTE "  Snooze alert",
+                         W() - 16, 38);
+  lv_obj_align(sz, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_bg_color(sz, lv_palette_main(a.snoozed ? LV_PALETTE_BLUE : LV_PALETTE_GREY), 0);
+  lv_obj_add_event_cb(
+      sz,
+      [](lv_event_t *) {
+        weather::Alert cur;
+        if (weather::findAlert(wxAlertDetailId, cur)) weather::snoozeAlert(wxAlertDetailId, !cur.snoozed);
+        showWxAlertDetail();  // rebuild with the new state
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::WxAlertDetail);
 }
 
 // ---------- Date & time ----------
@@ -2485,9 +2633,37 @@ void showNextDroneAlert() {
       LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
+// New NWS alert pop-up: Close or View (opens the alert's details)
+void showNextWxAlert() {
+  String id;
+  if (!weather::nextAlertPopup(id)) return;
+  weather::Alert a;
+  if (!weather::findAlert(id, a)) return;
+  wxAlertId = id;
+  String msg = a.event + "\n" + untilText(a.until) + "\n\n" + (a.headline.length() ? a.headline : a.area);
+  static const char *btns[] = {"Close", "View", ""};
+  wxAlertBox = lv_msgbox_create(nullptr, LV_SYMBOL_WARNING " NWS weather alert", msg.c_str(), btns, false);
+  lv_obj_set_width(wxAlertBox, W() - 24);
+  lv_obj_center(wxAlertBox);
+  lv_obj_add_event_cb(
+      wxAlertBox,
+      [](lv_event_t *e) {
+        lv_obj_t *box = lv_event_get_current_target(e);
+        bool view = lv_msgbox_get_active_btn(box) == 1;
+        lv_msgbox_close_async(box);
+        wxAlertBox = nullptr;
+        if (view) {
+          wxAlertDetailId = wxAlertId;
+          showWxAlertDetail();
+        }
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
 void poll(lv_timer_t *) {
   // Drone Watch alerts, one at a time, on whatever screen is showing
-  if (!droneAlertBox) showNextDroneAlert();
+  if (!droneAlertBox && !wxAlertBox) showNextDroneAlert();
+  if (!droneAlertBox && !wxAlertBox) showNextWxAlert();
 
   switch (cur) {
     case Screen::Desktop: refreshDesktop(); break;
@@ -2502,6 +2678,7 @@ void poll(lv_timer_t *) {
     case Screen::Trackers: pollTrackers(); break;
     case Screen::DateTime: refreshDateTime(); break;
     case Screen::Weather: refreshWeather(); break;
+    case Screen::WxAlerts: pollWxAlerts(); break;
     default: break;
   }
 }

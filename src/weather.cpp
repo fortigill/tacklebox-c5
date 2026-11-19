@@ -6,9 +6,11 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include <algorithm>
 #include <mutex>
 
 #include "net.h"
+#include "version.h"
 #include "wx_icons.h"
 
 namespace weather {
@@ -16,7 +18,11 @@ namespace {
 
 const uint32_t REFRESH_MS = 15UL * 60 * 1000;  // normal refresh
 const uint32_t RETRY_MS = 2UL * 60 * 1000;     // after a failure
-const uint32_t TASK_STACK = 10240;
+const uint32_t TASK_STACK = 12288;  // room for a TLS handshake (NWS is HTTPS-only)
+const uint32_t ALERTS_REFRESH_MS = 5UL * 60 * 1000;
+const size_t MAX_ALERTS = 8;
+const size_t MAX_DESC = 900, MAX_INSTR = 450;
+const size_t MAX_SNOOZED = 16;
 const uint16_t HTTP_TIMEOUT_MS = 8000;
 
 std::mutex mtx;
@@ -35,11 +41,27 @@ Data cur;
 volatile Status st = Status::Idle;
 String err;
 
+// NWS alerts (guarded by mtx)
+std::vector<Alert> alertList;
+std::vector<String> snoozedIds;  // persisted
+std::vector<String> poppedIds;   // alerts already announced this boot
+std::vector<String> popupQueue;
+uint32_t alertsVer = 0;
+uint32_t alertsFetchedMs = 0;
+String alertsErr;
+
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
 bool attempted = false;
 bool lastOk = false;
 bool force = false;
+uint32_t alLastAttempt = 0;
+bool alAttempted = false;
+bool alLastOk = false;
+bool alForce = false;
+volatile bool taskRunning = false;
+enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2 };
+uint8_t taskFlags = 0;
 volatile bool locDirty = false;  // task resolved a location; save it from loop()
 
 // Plain HTTP first (no TLS = far less RAM); fall back to HTTPS if the
@@ -149,7 +171,135 @@ bool fetchForecast(float la, float lo, Data &out, String &why) {
   return true;
 }
 
-void fetchTask(void *) {
+// "2026-11-19T10:00:00-05:00" -> epoch seconds (0 if unparseable)
+uint32_t parseIso(const char *s) {
+  int Y, M, D, h, m, sec;
+  if (!s || sscanf(s, "%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &sec) != 6) return 0;
+  const char *tz = s + 19;
+  while (*tz == '.' || isdigit((unsigned char)*tz)) tz++;  // fractional seconds
+  long off = 0;
+  if (*tz == '+' || *tz == '-') {
+    int oh = 0, om = 0;
+    sscanf(tz + 1, "%d:%d", &oh, &om);
+    off = (oh * 3600L + om * 60L) * (*tz == '-' ? -1 : 1);
+  }
+  // days since 1970-01-01 (civil-from-days inverse, valid for any Gregorian date)
+  int y = Y - (M <= 2);
+  long era = (y >= 0 ? y : y - 399) / 400;
+  long yoe = y - era * 400;
+  long doy = (153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1;
+  long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  long days = era * 146097 + doe - 719468;
+  long t = days * 86400L + h * 3600L + m * 60L + sec - off;
+  return t > 0 ? (uint32_t)t : 0;
+}
+
+String clip(const char *s, size_t max) {
+  String out(s ? s : "");
+  out.replace("\r", "");
+  if (out.length() > max) out = out.substring(0, max - 3) + "...";
+  return out;
+}
+
+bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
+  // Same declaration order rule as httpGet(): clients must outlive `http`
+  WiFiClientSecure tls;
+  HTTPClient http;
+  tls.setInsecure();  // public, read-only data
+  http.setTimeout(10000);
+  http.setConnectTimeout(10000);
+  http.useHTTP10(true);  // no chunked encoding, so the JSON can be parsed straight off the stream
+  char url[128];
+  snprintf(url, sizeof(url), "https://api.weather.gov/alerts/active?point=%.4f,%.4f", la, lo);
+  if (!http.begin(tls, url)) {
+    why = "bad URL";
+    return false;
+  }
+  http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
+  http.addHeader("Accept", "application/geo+json");
+  int code = http.GET();
+  if (code != 200) {
+    why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
+    http.end();
+    return false;
+  }
+  // Keep only the fields we show; alert texts can be long
+  JsonDocument filter;
+  for (const char *k : {"id", "event", "headline", "severity", "urgency", "certainty", "areaDesc", "onset",
+                        "expires", "ends", "description", "instruction", "senderName", "status"})
+    filter["features"][0]["properties"][k] = true;
+  JsonDocument doc;
+  DeserializationError e = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  if (e) {
+    why = String("bad alert data: ") + e.c_str();
+    return false;
+  }
+  for (JsonObject f : doc["features"].as<JsonArray>()) {
+    JsonObject p = f["properties"];
+    if (strcmp(p["status"] | "Actual", "Actual") != 0) continue;  // skip tests and exercises
+    Alert a;
+    a.id = p["id"] | "";
+    if (a.id.isEmpty()) continue;
+    a.event = p["event"] | "Weather alert";
+    a.headline = clip(p["headline"] | "", 200);
+    a.severity = p["severity"] | "Unknown";
+    a.urgency = p["urgency"] | "";
+    a.certainty = p["certainty"] | "";
+    a.area = clip(p["areaDesc"] | "", 200);
+    a.description = clip(p["description"] | "", MAX_DESC);
+    a.instruction = clip(p["instruction"] | "", MAX_INSTR);
+    a.sender = p["senderName"] | "";
+    a.onset = parseIso(p["onset"] | "");
+    const char *ends = p["ends"] | "";
+    a.until = parseIso(*ends ? ends : (p["expires"] | ""));
+    out.push_back(a);
+    if (out.size() >= MAX_ALERTS) break;
+  }
+  return true;
+}
+
+void saveSnoozed() {  // caller holds mtx
+  String s;
+  for (const auto &id : snoozedIds) s += id + "\n";
+  prefs.begin("wx", false);
+  prefs.putString("asnz", s);
+  prefs.end();
+}
+
+// Replace the alert list with a fresh fetch (holds mtx)
+void applyAlerts(std::vector<Alert> &fresh) {
+  for (auto &a : fresh) {
+    a.snoozed = std::find(snoozedIds.begin(), snoozedIds.end(), a.id) != snoozedIds.end();
+    if (std::find(poppedIds.begin(), poppedIds.end(), a.id) == poppedIds.end()) {
+      poppedIds.push_back(a.id);
+      if (!a.snoozed) popupQueue.push_back(a.id);
+      Serial.printf("[wx] NWS alert: %s (%s)\n", a.event.c_str(), a.severity.c_str());
+    }
+  }
+  std::sort(fresh.begin(), fresh.end(), [](const Alert &x, const Alert &y) {
+    return severityRank(x.severity) > severityRank(y.severity);
+  });
+  // Forget snoozes and announcements for alerts that are no longer active
+  auto active = [&](const String &id) {
+    for (const auto &a : fresh)
+      if (a.id == id) return true;
+    return false;
+  };
+  size_t before = snoozedIds.size();
+  snoozedIds.erase(std::remove_if(snoozedIds.begin(), snoozedIds.end(), [&](const String &id) { return !active(id); }),
+                   snoozedIds.end());
+  if (snoozedIds.size() != before) saveSnoozed();
+  poppedIds.erase(std::remove_if(poppedIds.begin(), poppedIds.end(), [&](const String &id) { return !active(id); }),
+                  poppedIds.end());
+  alertList.swap(fresh);
+  alertsVer++;
+}
+
+// All the fetch work lives here so its locals (Strings, JSON) are destroyed
+// when it returns. vTaskDelete() never returns, so anything still in scope in
+// the task function itself would leak on every fetch.
+void fetchWork() {
   String zip, place, why;
   float la, lo;
   bool have;
@@ -161,8 +311,10 @@ void fetchTask(void *) {
     have = haveLoc;
     place = placeName;
   }
-  Serial.printf("[wx] fetching for %s, free heap %lu\n", zip.c_str(),
-                (unsigned long)ESP.getFreeHeap());
+  uint8_t flags = taskFlags;
+  bool doForecast = flags & DO_FORECAST;
+  Serial.printf("[wx] fetching%s%s for %s, free heap %lu\n", doForecast ? " forecast" : "",
+                (flags & DO_ALERTS) ? " alerts" : "", zip.c_str(), (unsigned long)ESP.getFreeHeap());
 
   bool ok = true;
   if (!have) {
@@ -170,7 +322,30 @@ void fetchTask(void *) {
     if (ok) Serial.printf("[wx] %s -> %s (%.4f, %.4f)\n", zip.c_str(), place.c_str(), la, lo);
   }
   Data d;
-  if (ok) ok = fetchForecast(la, lo, d, why);
+  if (ok && doForecast) ok = fetchForecast(la, lo, d, why);
+
+  // NWS alerts (needs a location; US only, other places just come back empty or 404)
+  if ((flags & DO_ALERTS) && (have || ok)) {
+    std::vector<Alert> fresh;
+    String awhy;
+    bool aok = fetchAlerts(la, lo, fresh, awhy);
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      if (zip == zipCode) {
+        if (aok) {
+          applyAlerts(fresh);
+          alertsFetchedMs = millis();
+          alertsErr = "";
+        } else {
+          alertsErr = awhy;
+        }
+      }
+    }
+    if (aok) Serial.printf("[wx] %u active NWS alert(s)\n", (unsigned)alertList.size());
+    else Serial.printf("[wx] NWS alerts failed: %s\n", awhy.c_str());
+    alLastOk = aok;
+  }
+  if (!doForecast) return;  // alerts-only run: leave the forecast state alone
 
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -197,19 +372,38 @@ void fetchTask(void *) {
     Serial.printf("[wx] failed: %s\n", why.c_str());
   lastOk = ok;
   st = ok ? Status::Idle : Status::Error;
+}
+
+void fetchTask(void *) {
+  fetchWork();
+  taskRunning = false;
   vTaskDelete(nullptr);
 }
 
-void startFetch() {
-  st = Status::Busy;
-  attempted = true;
-  lastAttempt = millis();
-  if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) !=
-      pdPASS) {
+void startFetch(uint8_t flags) {
+  taskFlags = flags;
+  taskRunning = true;
+  if (flags & DO_FORECAST) {
+    st = Status::Busy;
+    attempted = true;
+    lastAttempt = millis();
+  }
+  if (flags & DO_ALERTS) {
+    alAttempted = true;
+    alLastAttempt = millis();
+  }
+  if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
-    err = "not enough memory";
-    st = Status::Error;
-    lastOk = false;
+    taskRunning = false;
+    if (flags & DO_FORECAST) {
+      err = "not enough memory";
+      st = Status::Error;
+      lastOk = false;
+    }
+    if (flags & DO_ALERTS) {
+      alertsErr = "not enough memory";
+      alLastOk = false;
+    }
   }
 }
 
@@ -224,7 +418,14 @@ void begin() {
   haveLoc = prefs.getBool("loc", false) && zipCode.length();
   unitF = prefs.getBool("unitF", true);
   iconOn = prefs.getBool("icon", true);
+  String sn = prefs.isKey("asnz") ? prefs.getString("asnz") : String();
   prefs.end();
+  for (int i = 0; i < (int)sn.length();) {
+    int nl = sn.indexOf('\n', i);
+    if (nl < 0) nl = sn.length();
+    if (nl > i) snoozedIds.push_back(sn.substring(i, nl));
+    i = nl + 1;
+  }
 }
 
 void loop() {
@@ -239,11 +440,29 @@ void loop() {
     prefs.end();
   }
 
-  if (st == Status::Busy || !configured() || net::state() != net::State::Connected) return;
-  uint32_t interval = lastOk ? REFRESH_MS : RETRY_MS;
-  if (force || !attempted || millis() - lastAttempt >= interval) {
-    force = false;
-    startFetch();
+  // Drop alerts whose end time has passed (between fetches)
+  static uint32_t lastExpireCheck = 0;
+  if (millis() - lastExpireCheck > 15000) {
+    lastExpireCheck = millis();
+    time_t now = time(nullptr);
+    if (now > 1700000000) {
+      std::lock_guard<std::mutex> lock(mtx);
+      size_t n = alertList.size();
+      alertList.erase(std::remove_if(alertList.begin(), alertList.end(),
+                                     [&](const Alert &a) { return a.until && (time_t)a.until < now; }),
+                      alertList.end());
+      if (alertList.size() != n) alertsVer++;
+    }
+  }
+
+  if (taskRunning || !configured() || net::state() != net::State::Connected) return;
+  uint8_t flags = 0;
+  if (force || !attempted || millis() - lastAttempt >= (lastOk ? REFRESH_MS : RETRY_MS)) flags |= DO_FORECAST;
+  if (alForce || !alAttempted || millis() - alLastAttempt >= (alLastOk ? ALERTS_REFRESH_MS : RETRY_MS))
+    flags |= DO_ALERTS;
+  if (flags) {
+    force = alForce = false;
+    startFetch(flags);
   }
 }
 
@@ -270,15 +489,21 @@ void setZip(const String &z) {
     placeName = "";
     cur = Data();
     err = "";
+    alertList.clear();
+    poppedIds.clear();
+    popupQueue.clear();
+    alertsErr = "";
+    alertsFetchedMs = 0;
+    alertsVer++;
   }
   prefs.begin("wx", false);
   prefs.putString("zip", z);
   prefs.putBool("loc", false);
   prefs.end();
-  force = true;
+  force = alForce = true;
 }
 
-void refresh() { force = true; }
+void refresh() { force = alForce = true; }
 
 bool useF() { return unitF; }
 
@@ -354,5 +579,86 @@ const char *describe(int c) {
 int temp(float c) { return (int)lroundf(unitF ? c * 9.0f / 5.0f + 32.0f : c); }
 int wind(float kmh) { return (int)lroundf(unitF ? kmh / 1.609f : kmh); }
 const char *windUnit() { return unitF ? "mph" : "km/h"; }
+
+// ---------- NWS alerts API ----------
+
+int severityRank(const String &s) {
+  if (s == "Extreme") return 4;
+  if (s == "Severe") return 3;
+  if (s == "Moderate") return 2;
+  if (s == "Minor") return 1;
+  return 0;
+}
+
+std::vector<Alert> alerts() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return alertList;
+}
+
+bool findAlert(const String &id, Alert &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  for (const auto &a : alertList) {
+    if (a.id == id) {
+      out = a;
+      return true;
+    }
+  }
+  return false;
+}
+
+void snoozeAlert(const String &id, bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  auto it = std::find(snoozedIds.begin(), snoozedIds.end(), id);
+  if (on && it == snoozedIds.end()) {
+    if (snoozedIds.size() >= MAX_SNOOZED) snoozedIds.erase(snoozedIds.begin());
+    snoozedIds.push_back(id);
+  } else if (!on && it != snoozedIds.end()) {
+    snoozedIds.erase(it);
+  } else {
+    return;
+  }
+  for (auto &a : alertList)
+    if (a.id == id) a.snoozed = on;
+  popupQueue.erase(std::remove(popupQueue.begin(), popupQueue.end(), id), popupQueue.end());
+  saveSnoozed();
+  alertsVer++;
+}
+
+size_t alertCount() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return alertList.size();
+}
+
+size_t unsnoozedAlertCount() {
+  std::lock_guard<std::mutex> lock(mtx);
+  size_t n = 0;
+  for (const auto &a : alertList)
+    if (!a.snoozed) n++;
+  return n;
+}
+
+bool nextAlertPopup(String &id) {
+  std::lock_guard<std::mutex> lock(mtx);
+  while (!popupQueue.empty()) {
+    id = popupQueue.front();
+    popupQueue.erase(popupQueue.begin());
+    for (const auto &a : alertList)
+      if (a.id == id && !a.snoozed) return true;  // still active and not snoozed
+  }
+  return false;
+}
+
+uint32_t alertsVersion() { return alertsVer; }
+
+String alertsStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (zipCode.isEmpty()) return "Set a ZIP code to monitor NWS alerts.";
+  if (alertsErr.length()) return "NWS update failed: " + alertsErr;
+  if (!alertsFetchedMs) return "Checking the National Weather Service...";
+  char b[64];
+  snprintf(b, sizeof(b), "NWS checked %lu min ago, every 5 min",
+           (unsigned long)((millis() - alertsFetchedMs) / 60000));
+  return b;
+}
 
 }  // namespace weather

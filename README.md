@@ -92,6 +92,7 @@ src/display.cpp     TFT + touch drivers, rotation, calibration
 src/ble.cpp         BLE scanner, trackers, hunt (NimBLE)
 src/hunt.h          shared RSSI averaging for hunt modes
 src/ota.cpp         over-the-air updates (ArduinoOTA)
+src/led.cpp         rear RGB LED (boot status: red, blinking red, green)
 src/weather.cpp     weather fetch (Open-Meteo), ZIP lookup, icon mapping
 src/wx_icons.c      generated weather icons (tools/gen_wx_icons.py)
 src/timesvc.cpp     NTP sync, time zone, 12/24 h formatting

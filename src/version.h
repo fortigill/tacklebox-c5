@@ -1,4 +1,4 @@
 #pragma once
 
 // Bump this with every release and add an entry to CHANGELOG.md.
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.1.1"

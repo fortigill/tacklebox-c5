@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.1.1] - 2026-11-18
+
+### Added
+- Boot status on the rear RGB LED:
+  - Solid red as soon as the firmware starts.
+  - Blinks red while booting (5 Hz, driven by an `esp_timer`, so it keeps blinking through setup).
+  - Solid green once the board is up: setup is done and Wi-Fi has connected, failed, or has no
+    saved network, with a 20 s cap.
+  - New `src/led.cpp` drives the active-low LED on GPIO 4/16/17 and supports all 7 colors plus blink.
+
 ## [0.1.0] - 2026-11-18
 
 ### Changed

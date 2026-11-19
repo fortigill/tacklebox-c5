@@ -18,7 +18,13 @@ namespace {
 
 const size_t MAX_DRONES = 20;
 const size_t ODID_MSG_SIZE = 25;
-const uint32_t HOP_DWELL_MS = 110;
+const uint32_t HOP_DWELL_MS = 150;
+// The ESP32 has one 2.4 GHz radio shared by Wi-Fi and Bluetooth. A
+// continuous BLE scan (99% duty) left the Wi-Fi sniffer almost deaf, so DJI
+// drones, which send Remote ID only in Wi-Fi beacons, were missed. The two now
+// take turns: mostly Wi-Fi, with short Bluetooth slots.
+const uint32_t WIFI_SLOT_MS = 2400;
+const uint32_t BLE_SLOT_MS = 800;
 // Every other stop is channel 6 (NaN discovery channel and a common beacon
 // channel); the rest sweep 1-13.
 const uint8_t HOP_SEQ[] = {6, 1, 6, 2, 6, 3, 6, 4, 6, 5, 6, 7, 6, 8, 6, 9, 6, 10, 6, 11, 6, 12, 6, 13};
@@ -38,6 +44,10 @@ volatile bool active = false;
 uint32_t frameCount = 0;  // written under mtx
 volatile uint32_t lastHeardMs = 0;  // millis() of the last Remote ID message of any drone
 size_t hopIdx = 0;
+bool bleOk = false;         // Bluetooth Remote ID scan available this session
+bool bleSlot = false;       // true while Bluetooth has its turn
+uint32_t slotEnd = 0;
+volatile uint32_t beaconCnt = 0, ridBeaconCnt = 0, nanCnt = 0;  // for the 10 s log line
 uint32_t nextHop = 0;
 uint8_t channel = 6;
 
@@ -196,6 +206,7 @@ void parseBeacon(const uint8_t *f, int len, int rssi, uint8_t ch) {
     i += 2 + l;
   }
   if (!pack) return;
+  ridBeaconCnt++;
   withDrone(src, nullptr, Transport::WifiBeacon, ch, rssi, [&](Drone &d) {
     if (ssid.length()) d.ssid = ssid;
     if ((pack[0] >> 4) == 0xF) decodePack(d, pack, packLen);
@@ -240,8 +251,13 @@ void snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
   int len = pkt->rx_ctrl.sig_len - 4;  // drop FCS
   if (len < 24) return;
   const uint8_t *f = pkt->payload;
-  if (f[0] == 0x80) parseBeacon(f, len, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
-  else if (f[0] == 0xD0) parseNan(f, len, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
+  if (f[0] == 0x80) {
+    beaconCnt++;
+    parseBeacon(f, len, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
+  } else if (f[0] == 0xD0) {
+    nanCnt++;
+    parseNan(f, len, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
+  }
 }
 
 // ---------- Bluetooth ----------
@@ -426,7 +442,12 @@ void radioOn() {
   hopIdx = 0;
   nextHop = 0;
   channel = 0;  // force the first hop to set the channel
-  if (!ble::startRid(onBleMessage)) Serial.println("[rid] Bluetooth unavailable, Wi-Fi only");
+  bleOk = ble::startRid(onBleMessage);
+  if (!bleOk) Serial.println("[rid] Bluetooth unavailable, Wi-Fi only");
+  // Start with a Wi-Fi turn
+  if (bleOk) ble::pauseRid(true);
+  bleSlot = false;
+  slotEnd = millis() + WIFI_SLOT_MS;
 }
 
 void radioOff() {
@@ -543,6 +564,35 @@ void loop() {
       phaseEnd = now + WATCH_SCAN_MS;
       radioOn();
     }
+  }
+
+  // Wi-Fi / Bluetooth turns (see WIFI_SLOT_MS)
+  bool bleHunt;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    bleHunt = huntKey.length() && !huntChannel;  // hunting a Bluetooth transmitter
+  }
+  if (active && bleOk && bleHunt && !bleSlot) {  // keep Bluetooth on while hunting it
+    bleSlot = true;
+    ble::pauseRid(false);
+  } else if (active && bleOk && !bleHunt && (int32_t)(now - slotEnd) >= 0) {
+    bleSlot = !bleSlot;
+    ble::pauseRid(!bleSlot);
+    slotEnd = now + (bleSlot ? BLE_SLOT_MS : WIFI_SLOT_MS);
+  }
+
+  // What the sniffer is hearing, every 10 s (helps when a drone isn't found)
+  static uint32_t lastStat = 0;
+  if (active && now - lastStat >= 10000) {
+    lastStat = now;
+    size_t n;
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      n = drones.size();
+    }
+    Serial.printf("[rid] last 10 s: %lu beacons (%lu with Remote ID), %lu NaN frames, %u transmitters\n",
+                  (unsigned long)beaconCnt, (unsigned long)ridBeaconCnt, (unsigned long)nanCnt, (unsigned)n);
+    beaconCnt = ridBeaconCnt = nanCnt = 0;
   }
 
   if (active && (int32_t)(now - nextHop) >= 0) {

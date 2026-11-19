@@ -261,6 +261,15 @@ bool startRid(RidSink sink) {
   return true;
 }
 
+void pauseRid(bool paused) {
+  if (md != Mode::Rid || !scan) return;
+  if (paused) {
+    if (scan->isScanning()) scan->stop();
+  } else if (!scan->isScanning()) {
+    scan->start(0, false, true);
+  }
+}
+
 void stop() {
   radioStop();
   std::lock_guard<std::mutex> lock(mtx);

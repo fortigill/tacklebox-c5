@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.10] - 2026-11-19
+
+### Fixed
+- Drone Scan and Watch missed DJI drones (tested with a DJI Avata 2 that another ESP32 firmware
+  on the same board detected immediately). DJI sends Remote ID only in Wi-Fi beacons, but the
+  Bluetooth Remote ID scan ran at 99% duty (100 ms interval, 99 ms window) on the single 2.4 GHz
+  radio the ESP32 shares between Wi-Fi and Bluetooth, which left the Wi-Fi sniffer almost deaf.
+  The two now take turns: 2.4 s of Wi-Fi only, then 0.8 s of Bluetooth. While hunting a Bluetooth
+  transmitter, Bluetooth stays on.
+- Channel dwell went from 110 ms to 150 ms, so beacons on the channels other than channel 6
+  (5 Hz there per ASTM F3411) are caught more reliably.
+
+### Added
+- While scanning, a serial log line every 10 s: beacons heard, how many carried Remote ID, NaN
+  frames, and transmitters found.
+
 ## [0.7.9] - 2026-11-19
 
 ### Fixed

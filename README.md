@@ -66,6 +66,10 @@ the password, then flash once over USB so the device knows it. If mDNS doesn't r
 `hostname` in `[ota]` to the device's IP (it's shown on the About screen). A change to the partition
 table (as in 0.1.0) always needs a USB flash.
 
+Every OTA push has to be approved on the device. A "Firmware update" pop-up offers **Accept update**
+or **Do not allow**, with an 8-second countdown. If nobody taps Accept, the update is blocked, the
+upload fails on the computer, and the current firmware keeps running. USB flashing isn't affected.
+
 ## Touch calibration
 
 - Runs automatically the first time the firmware boots.

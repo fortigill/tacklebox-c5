@@ -2733,6 +2733,61 @@ void ui::begin() {
 
 // ---------- OTA progress (called from ArduinoOTA hooks) ----------
 
+namespace {
+volatile int otaAnswer = -1;  // -1 waiting, 0 refused, 1 accepted
+}
+
+bool ui::otaAsk(unsigned sizeKB, uint32_t timeoutMs) {
+  static const char *btns[] = {"Accept update", "Do not allow", ""};
+  char msg[160];
+  snprintf(msg, sizeof(msg),
+           "Someone on your network is pushing new firmware (%u KB) to this device.\n\n"
+           "Allow the update?",
+           sizeKB);
+  otaAnswer = -1;
+  lv_obj_t *m = lv_msgbox_create(nullptr, LV_SYMBOL_WARNING " Firmware update", msg, btns, false);
+  lv_obj_set_width(m, W() - 20);
+  lv_obj_center(m);
+  lv_obj_t *bm = lv_msgbox_get_btns(m);
+  lv_obj_set_height(bm, 48);  // big targets for the stylus
+  lv_obj_t *count = lv_label_create(lv_msgbox_get_content(m));
+  lv_obj_set_style_text_color(count, theme::accent(), 0);
+  lv_obj_add_event_cb(
+      m,
+      [](lv_event_t *e) {
+        lv_obj_t *box = lv_event_get_current_target(e);
+        otaAnswer = lv_msgbox_get_active_btn(box) == 0 ? 1 : 0;
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+
+  // We're inside ArduinoOTA.handle(), outside the normal loop, so run LVGL
+  // here until the user answers or time runs out.
+  const uint32_t t0 = millis();
+  int lastLeft = -1;
+  while (otaAnswer < 0) {
+    uint32_t el = millis() - t0;
+    if (el >= timeoutMs) break;
+    int left = (int)((timeoutMs - el + 999) / 1000);
+    if (left != lastLeft) {
+      lastLeft = left;
+      char t[48];
+      snprintf(t, sizeof(t), "Refusing automatically in %d s", left);
+      lv_label_set_text(count, t);
+    }
+    lv_timer_handler();
+    delay(5);
+  }
+  bool ok = otaAnswer == 1;
+  bool timedOut = otaAnswer < 0;
+  lv_msgbox_close(m);
+  if (!ok)
+    errorBox("Update refused", timedOut ? "No answer in time, so the update was blocked."
+                                        : "The firmware update was blocked.");
+  lv_refr_now(nullptr);
+  Serial.printf("[ota] user %s the update%s\n", ok ? "accepted" : "refused", timedOut ? " (no answer)" : "");
+  return ok;
+}
+
 void ui::otaStart() {
   lv_obj_t *scr = newScreen();
   lv_obj_t *col = lv_obj_create(scr);

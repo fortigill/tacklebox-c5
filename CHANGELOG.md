@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.6.0] - 2026-11-19
+
+### Added
+- Approval for over-the-air updates. When firmware (or a filesystem image) is pushed with
+  `pio run -e cyd-ota -t upload`, the device shows "Firmware update" with **Accept update** and
+  **Do not allow**, plus an 8-second countdown.
+  - **Accept update:** the update runs as before, with a progress screen and a restart.
+  - **Do not allow**, or no answer in time: the update is aborted before anything is written,
+    the upload fails on the computer, the running firmware stays, and the device shows
+    "Update refused".
+  - The countdown is short because espota.py only waits about 10 s for the device to connect
+    back after the invitation.
+
 ## [0.5.9] - 2026-11-19
 
 ### Fixed

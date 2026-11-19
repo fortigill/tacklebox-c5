@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
+#include <Update.h>
 
 #include "ble.h"
 #include "net.h"
@@ -19,20 +20,32 @@ namespace {
 const char *HOSTNAME = "cyd";
 bool started = false;
 int lastPct = -1;
+bool refused = false;
+// espota.py waits about 10 s for the device to connect back after the
+// invitation, so the question has to be answered within that window.
+const uint32_t ASK_TIMEOUT_MS = 8000;
 
 void begin() {
   ArduinoOTA.setHostname(HOSTNAME);
   ArduinoOTA.setPassword(OTA_STR(OTA_PASSWORD));
 
   ArduinoOTA.onStart([]() {
-    Serial.printf("[ota] update started (%s)\n",
-                  ArduinoOTA.getCommand() == U_FLASH ? "firmware" : "filesystem");
+    Serial.printf("[ota] update offered (%s, %u bytes), asking the user\n",
+                  ArduinoOTA.getCommand() == U_FLASH ? "firmware" : "filesystem", (unsigned)Update.size());
+    refused = !ui::otaAsk((unsigned)(Update.size() / 1024), ASK_TIMEOUT_MS);
+    if (refused) {
+      // Nothing has been written yet. Aborting makes every following write
+      // fail, so espota reports an error and the running firmware stays.
+      Update.abort();
+      return;
+    }
     ble::stop();
     net::stopHunt();
     lastPct = -1;
     ui::otaStart();
   });
   ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    if (refused) return;
     int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
     if (pct == lastPct) return;  // redraw only when the number changes
     lastPct = pct;
@@ -43,6 +56,11 @@ void begin() {
     ui::otaFinished(true, "Update complete - restarting...");
   });
   ArduinoOTA.onError([](ota_error_t e) {
+    if (refused) {
+      Serial.println("[ota] refused update ended");
+      refused = false;
+      return;  // the refusal was already handled on screen
+    }
     const char *why = e == OTA_AUTH_ERROR      ? "Wrong OTA password"
                       : e == OTA_BEGIN_ERROR   ? "Not enough space for the update"
                       : e == OTA_CONNECT_ERROR ? "Connection failed"

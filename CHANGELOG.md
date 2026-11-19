@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.7] - 2026-11-19
+
+### Fixed
+- NWS alerts failing with "read Timeout". The board sent HTTP/1.0 requests, which
+  api.weather.gov's CDN answered slowly or not at all, while a normal HTTP/1.1 request returns
+  in about 0.2 s. Alerts now use HTTP/1.1, and `HTTPClient::writeToStream` decodes chunked replies
+  straight into the SPIFFS file.
+- The serial log now shows the NWS reply code, the response time and the size, to make problems
+  easier to diagnose.
+
 ## [0.5.6] - 2026-11-19
 
 ### Fixed

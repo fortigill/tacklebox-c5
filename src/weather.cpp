@@ -30,8 +30,6 @@ const uint32_t TLS_MIN_BLOCK = 36 * 1024;     // skip HTTPS when RAM is too tigh
 const uint16_t HTTP_TIMEOUT_MS = 8000;
 const char *ALERTS_TMP = "/nws.json";          // alert download is saved here, then parsed offline
 const size_t ALERTS_MAX_BYTES = 96 * 1024;     // fits the 128 KB SPIFFS partition
-const uint32_t ALERTS_STALL_MS = 20000;        // give up if no bytes arrive for this long
-const uint32_t ALERTS_TOTAL_MS = 90000;        // and on the whole download after this
 const uint32_t FULLTEXT_MIN_BLOCK = 48 * 1024; // keep the long alert texts only with this much RAM
 
 std::mutex mtx;
@@ -232,7 +230,10 @@ bool downloadAlerts(float la, float lo, String &why) {
   tls.setInsecure();  // public, read-only data
   http.setTimeout(15000);
   http.setConnectTimeout(15000);
-  http.useHTTP10(true);  // plain body, no chunked encoding
+  // HTTP/1.1 like a browser: api.weather.gov's CDN answered HTTP/1.0 requests
+  // slowly or not at all ("read Timeout"). Chunked replies are decoded by
+  // writeToStream() below.
+  http.setReuse(false);  // ask the server to close when done
   char url[128];
   snprintf(url, sizeof(url), "https://api.weather.gov/alerts/active?point=%.4f,%.4f", la, lo);
   if (!http.begin(tls, url)) {
@@ -241,7 +242,10 @@ bool downloadAlerts(float la, float lo, String &why) {
   }
   http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
   http.addHeader("Accept", "application/geo+json");
+  const uint32_t t0 = millis();
   int code = http.GET();
+  Serial.printf("[wx] NWS replied %d after %lu ms, size %d\n", code, (unsigned long)(millis() - t0),
+                http.getSize());
   if (code != 200) {
     why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
     http.end();
@@ -253,45 +257,26 @@ bool downloadAlerts(float la, float lo, String &why) {
     http.end();
     return false;
   }
-  auto *in = http.getStreamPtr();
-  const int expected = http.getSize();  // -1 when the server doesn't say
-  uint8_t buf[512];
-  size_t total = 0;
-  bool tooBig = false, stalled = false;
-  const uint32_t start = millis();
-  uint32_t lastByte = start;
-  while (in && (in->connected() || in->available())) {
-    int n = in->available();
-    if (n > 0) {
-      n = in->read(buf, std::min(n, (int)sizeof(buf)));
-      if (n > 0) {
-        if (total + n > ALERTS_MAX_BYTES) {
-          tooBig = true;
-          break;
-        }
-        f.write(buf, n);
-        total += n;
-        lastByte = millis();
-        if (expected > 0 && total >= (size_t)expected) break;
-      }
-    } else {
-      if (millis() - lastByte > ALERTS_STALL_MS || millis() - start > ALERTS_TOTAL_MS) {
-        stalled = true;
-        break;
-      }
-      delay(20);
-    }
+  const int expected = http.getSize();  // -1 for chunked replies
+  if (expected > (int)ALERTS_MAX_BYTES) {
+    f.close();
+    http.end();
+    why = String("alert data too large (") + expected / 1024 + " KB)";
+    return false;
   }
+  // Writes the body to flash, handling chunked transfer; each read waits up
+  // to the 15 s timeout set above.
+  const int got = http.writeToStream(&f);
+  const size_t total = f.size();
   f.close();
   http.end();
   tls.stop();
-  if (tooBig) {
-    why = "alert data too large (over 96 KB)";
+  if (got < 0) {
+    why = String("download failed: ") + http.errorToString(got) + " after " + total / 1024 + " KB";
     return false;
   }
   if (expected > 0 && total < (size_t)expected) {
-    why = String("download cut off (") + total / 1024 + " of " + expected / 1024 + " KB)" +
-          (stalled ? ", connection stalled" : "");
+    why = String("download cut off (") + total / 1024 + " of " + expected / 1024 + " KB)";
     return false;
   }
   if (total == 0) {

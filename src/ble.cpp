@@ -24,6 +24,12 @@ bool ignoredLoaded = false;
 
 NimBLEScan *scan = nullptr;
 bool inited = false;
+uint32_t lastBusyMs = 0;  // last time any Bluetooth tool was using the stack
+// NimBLE keeps ~20 KB of heap while initialised. HTTPS downloads (NWS alerts,
+// NDBC buoys) need ~50 KB, so the stack is shut down once no tool has used it
+// for this long. It starts again by itself on next use. Longer than Drone
+// Watch's 25 s rest, so a running watch keeps it.
+const uint32_t RELEASE_IDLE_MS = 60000;
 bool scannedOnce = false;
 Mode md = Mode::Idle;
 uint32_t scanEnd = 0;
@@ -186,6 +192,7 @@ class Callbacks : public NimBLEScanCallbacks {
 Callbacks callbacks;
 
 bool ensureStarted() {
+  lastBusyMs = millis();
   if (inited) return true;
   Serial.printf("[ble] starting NimBLE, free heap %lu\n", (unsigned long)ESP.getFreeHeap());
   // The ESP32 refuses to run Bluetooth alongside Wi-Fi unless Wi-Fi modem
@@ -287,6 +294,15 @@ uint32_t scanRemainingMs() {
 
 void loop() {
   uint32_t now = millis();
+  if (md != Mode::Idle) lastBusyMs = now;
+  if (inited && md == Mode::Idle && now - lastBusyMs > RELEASE_IDLE_MS) {
+    radioStop();
+    NimBLEDevice::deinit(true);  // frees the host and controller memory
+    scan = nullptr;
+    inited = false;
+    Serial.printf("[ble] idle, Bluetooth released, free heap %lu, largest block %lu\n",
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+  }
   if (md == Mode::Scan && (int32_t)(now - scanEnd) >= 0) {
     radioStop();
     std::lock_guard<std::mutex> lock(mtx);

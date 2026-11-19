@@ -27,7 +27,16 @@ const size_t MAX_ALERTS = 8;
 const size_t MAX_DESC = 900, MAX_INSTR = 450;
 const size_t MAX_SNOOZED = 16;
 const uint32_t ALERTS_BOOT_DELAY_MS = 30000;  // first NWS check waits until boot has settled
-const uint32_t TLS_MIN_BLOCK = 36 * 1024;     // skip HTTPS when RAM is too tight for TLS
+// Skip HTTPS when RAM is too tight: a TLS session takes ~50 KB in total, with
+// single allocations up to ~17 KB. A 38 KB block with 47 KB free still failed.
+const uint32_t TLS_MIN_BLOCK = 36 * 1024;
+const uint32_t TLS_MIN_FREE = 54 * 1024;
+bool tlsFits(String &why) {
+  if (ESP.getMaxAllocHeap() >= TLS_MIN_BLOCK && ESP.getFreeHeap() >= TLS_MIN_FREE) return true;
+  why = String("skipped, low memory (") + ESP.getFreeHeap() / 1024 + " KB free, " + ESP.getMaxAllocHeap() / 1024 +
+        " KB block). Bluetooth tools hold memory; it is released 1 min after they stop";
+  return false;
+}
 const uint16_t HTTP_TIMEOUT_MS = 8000;
 const char *ALERTS_TMP = "/nws.json";          // alert download is saved here, then parsed offline
 const size_t ALERTS_MAX_BYTES = 96 * 1024;     // fits the 128 KB SPIFFS partition
@@ -366,11 +375,7 @@ bool parseAlerts(std::vector<Alert> &out, String &why) {
 }
 
 bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
-  if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {
-    why = String("skipped, low memory (") + ESP.getMaxAllocHeap() / 1024 +
-          " KB free block). Bluetooth tools hold RAM until reboot";
-    return false;
-  }
+  if (!tlsFits(why)) return false;
   if (!fsReady()) {
     why = "flash storage unavailable";
     return false;
@@ -499,10 +504,7 @@ bool fetchBuoy(const String &station, Buoy &out, String &why) {
   for (int secure = 0; secure < 2 && !got; secure++) {  // plain HTTP first: no TLS, far less RAM
     std::unique_ptr<TlsGuard> guard;                     // declared first, released last
     if (secure) {
-      if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {
-        why = String("skipped, low memory (") + ESP.getMaxAllocHeap() / 1024 + " KB free block)";
-        return false;
-      }
+      if (!tlsFits(why)) return false;
       guard.reset(new TlsGuard());
     }
     WiFiClient plain;

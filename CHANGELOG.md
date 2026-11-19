@@ -3,6 +3,23 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.11] - 2026-11-19
+
+### Fixed
+- Buoy data (and NWS alerts) failing after Drone Watch or other Bluetooth tools had run:
+  "X509 - Allocation of memory failed". NDBC redirects plain HTTP to HTTPS, and NimBLE kept about
+  20 KB of heap until reboot, which left ~45 KB free with a ~37 KB largest block, too little for
+  TLS.
+  - Bluetooth is now shut down (`NimBLEDevice::deinit`) once no tool has used it for 60 s, which
+    returns its memory. It starts again automatically the next time a Bluetooth tool, Drone Scan
+    or Drone Watch needs it. A running Drone Watch keeps it (its rests are 25 s).
+  - The HTTPS memory check also requires 54 KB of total free heap, not just a 36 KB block, so a
+    download that can't succeed is skipped with a clear message instead of a TLS error.
+
+### Confirmed
+- 0.7.10's radio time-sharing fix: Drone Watch now detects a DJI Avata 2 over Wi-Fi beacon
+  Remote ID.
+
 ## [0.7.10] - 2026-11-19
 
 ### Fixed

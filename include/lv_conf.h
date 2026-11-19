@@ -47,5 +47,30 @@
 #define LV_USE_THEME_DEFAULT   1
 #define LV_THEME_DEFAULT_DARK  1
 
+// Everything below is on by default in LVGL but unused here. Switching it off
+// keeps firmware.bin inside the 1.9 MB OTA slot.
+#define LV_USE_LINE      0
+#define LV_USE_TABLE     0
+#define LV_USE_CHECKBOX  0
+#define LV_USE_DROPDOWN  0
+#define LV_USE_ROLLER    0
+#define LV_USE_CANVAS    0
+#define LV_USE_ANIMIMG   0
+#define LV_USE_CALENDAR  0
+#define LV_USE_COLORWHEEL 0
+#define LV_USE_IMGBTN    0
+#define LV_USE_LED       0
+#define LV_USE_MENU      0
+#define LV_USE_METER     0
+#define LV_USE_SPAN      0
+#define LV_USE_SPINBOX   0
+#define LV_USE_TABVIEW   0
+#define LV_USE_TILEVIEW  0
+#define LV_USE_WIN       0
+#define LV_USE_THEME_BASIC 0
+#define LV_USE_THEME_MONO  0
+#define LV_USE_GRID      0
+#define LV_USE_SNAPSHOT  0
+
 #endif // LV_CONF_H
 #endif

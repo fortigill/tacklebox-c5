@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.12] - 2026-11-19
+
+### Fixed
+- 0.7.11 didn't build: firmware.bin was 1,967,968 bytes, 2 KB over the 1,966,080-byte OTA slot
+  (`tools/check_size.py` stopped it). `lv_conf.h` now turns off LVGL widgets and features the
+  app never uses, which LVGL enables by default: line, table, checkbox, dropdown, roller,
+  canvas, animimg, calendar, colorwheel, imgbtn, LED, menu, meter, span, spinbox, tabview,
+  tileview, win, the basic/mono themes, grid layout and snapshot. Nothing visible changes.
+  Includes all the 0.7.11 changes.
+
 ## [0.7.11] - 2026-11-19
 
 ### Fixed

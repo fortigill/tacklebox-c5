@@ -3,6 +3,20 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.4.3] - 2026-11-19
+
+### Fixed
+- A drone stopped alerting after its first pop-up even when it wasn't ignored. Both buttons snoozed
+  it for 30 minutes, and neither deleting it from the log nor restarting Watch cleared the snooze.
+  The rules are now:
+  - **Ignore 30 min**: the only action that snoozes, for 30 minutes.
+  - **View**: acknowledges the alert. No repeats while the drone stays around, but it alerts again
+    once it has been gone for 2 watch cycles (~65 s) and returns.
+  - **Starting Watch** clears acknowledgments, so each session alerts fresh. Snoozes are
+    time-based and still apply.
+  - **Deleting a drone from the log** (or Delete all) forgets its snooze, acknowledgment and any
+    queued alert.
+
 ## [0.4.2] - 2026-11-19
 
 ### Added

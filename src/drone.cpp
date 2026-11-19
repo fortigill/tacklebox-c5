@@ -269,6 +269,11 @@ struct Snooze {
   uint32_t until;
 };
 std::vector<Snooze> snoozes;
+struct Ack {
+  String id;
+  uint32_t lastHeard;
+};
+std::vector<Ack> acks;
 
 bool snoozedLocked(const String &id, uint32_t now) {
   snoozes.erase(std::remove_if(snoozes.begin(), snoozes.end(),
@@ -279,8 +284,31 @@ bool snoozedLocked(const String &id, uint32_t now) {
   return false;
 }
 
+// True if alerts for `id` are acknowledged; refreshes the "still around" time
+bool ackedLocked(const String &id, uint32_t now, bool heardNow) {
+  acks.erase(std::remove_if(acks.begin(), acks.end(),
+                            [&](const Ack &a) { return now - a.lastHeard > ACK_GONE_MS; }),
+             acks.end());
+  for (auto &a : acks) {
+    if (a.id == id) {
+      if (heardNow) a.lastHeard = now;
+      return true;
+    }
+  }
+  return false;
+}
+
+void forgetAlertStateLocked(const String &id) {
+  snoozes.erase(std::remove_if(snoozes.begin(), snoozes.end(), [&](const Snooze &z) { return z.id == id; }),
+                snoozes.end());
+  acks.erase(std::remove_if(acks.begin(), acks.end(), [&](const Ack &a) { return a.id == id; }), acks.end());
+  alertQueue.erase(std::remove(alertQueue.begin(), alertQueue.end(), id), alertQueue.end());
+}
+
 void queueAlertLocked(const String &id) {
-  if (snoozedLocked(id, millis())) return;
+  uint32_t now = millis();
+  if (snoozedLocked(id, now)) return;
+  if (ackedLocked(id, now, true)) return;
   if (std::find(alertQueue.begin(), alertQueue.end(), id) != alertQueue.end()) return;
   alertQueue.push_back(id);
 }
@@ -448,6 +476,10 @@ bool startScan() {
 bool startWatch() {
   stop();
   resetSession();
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    acks.clear();  // a new watch session alerts fresh
+  }
   md = Mode::Watch;
   ledState = -1;
   burst = true;
@@ -554,6 +586,13 @@ bool logFind(const String &key, LogEntry &out) {
 
 void logDelete(const String &key) {
   std::lock_guard<std::mutex> lock(mtx);
+  for (const auto &e : logv) {  // forget snooze/ack for this drone (by ID and MAC)
+    if (key == e.key || (e.id[0] && key == e.id)) {
+      if (e.id[0]) forgetAlertStateLocked(e.id);
+      forgetAlertStateLocked(e.key);
+    }
+  }
+  forgetAlertStateLocked(key);
   logv.erase(std::remove_if(logv.begin(), logv.end(),
                             [&](const LogEntry &e) { return key == e.key || (e.id[0] && key == e.id); }),
              logv.end());
@@ -563,6 +602,9 @@ void logDelete(const String &key) {
 void logClear() {
   std::lock_guard<std::mutex> lock(mtx);
   logv.clear();
+  snoozes.clear();
+  acks.clear();
+  alertQueue.clear();
   logSave();
 }
 
@@ -578,7 +620,8 @@ bool nextAlert(String &id) {
   while (!alertQueue.empty()) {
     id = alertQueue.front();
     alertQueue.erase(alertQueue.begin());
-    if (!snoozedLocked(id, millis())) return true;  // may have been snoozed while queued
+    uint32_t now = millis();  // may have been snoozed or acknowledged while queued
+    if (!snoozedLocked(id, now) && !ackedLocked(id, now, false)) return true;
   }
   return false;
 }
@@ -595,6 +638,13 @@ void snooze(const String &id, uint32_t ms) {
   }
   snoozes.push_back({id, now + ms});
   Serial.printf("[rid] alerts for %s snoozed for %lu min\n", id.c_str(), (unsigned long)(ms / 60000));
+}
+
+void acknowledge(const String &id) {
+  std::lock_guard<std::mutex> lock(mtx);
+  uint32_t now = millis();
+  if (ackedLocked(id, now, true)) return;
+  acks.push_back({id, now});
 }
 
 bool watchDroneNearby() {

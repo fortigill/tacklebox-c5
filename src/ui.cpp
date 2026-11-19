@@ -2438,8 +2438,9 @@ void showAbout() {
 
 // ---------- refresh timer ----------
 
-// "Drone detected" pop-up. Either button snoozes alerts for that drone for
-// 30 minutes; a different drone still alerts right away.
+// "Drone detected" pop-up. Ignore snoozes that drone for 30 minutes; View
+// acknowledges it (no repeats while it stays around). Other drones still
+// alert right away.
 void showNextDroneAlert() {
   String id;
   if (!drone::nextAlert(id)) return;
@@ -2467,7 +2468,8 @@ void showNextDroneAlert() {
       [](lv_event_t *e) {
         lv_obj_t *box = lv_event_get_current_target(e);
         bool view = lv_msgbox_get_active_btn(box) == 1;
-        drone::snooze(droneAlertId);  // either way, no repeat for 30 min
+        if (view) drone::acknowledge(droneAlertId);  // quiet while it stays around
+        else drone::snooze(droneAlertId);            // Ignore: quiet for 30 min
         lv_msgbox_close_async(box);
         droneAlertBox = nullptr;
         if (view) {

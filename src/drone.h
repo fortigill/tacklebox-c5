@@ -87,11 +87,17 @@ uint32_t logNewCount();      // increments each time a new drone is logged
 String logNewestTitle();
 
 // Watch alerts. Each watch scan queues the drones it heard, except those
-// already queued or snoozed. Drones are identified by Remote ID (falling
-// back to MAC), since some transmitters rotate their Bluetooth address.
+// already queued, snoozed or acknowledged. Drones are identified by Remote ID
+// (falling back to MAC), since some transmitters rotate their Bluetooth address.
+//   snooze      - "Ignore 30 min": no alerts for that drone for 30 minutes
+//   acknowledge - "View": no repeats while it stays around; alerts again once
+//                 it has been gone ACK_GONE_MS, or when Watch is restarted
+// Deleting a drone from the log forgets both.
 const uint32_t ALERT_SNOOZE_MS = 30UL * 60 * 1000;
+const uint32_t ACK_GONE_MS = 2 * (WATCH_SCAN_MS + WATCH_REST_MS) + 5000;
 bool nextAlert(String &id);              // pop the next drone to alert about
 void snooze(const String &id, uint32_t ms = ALERT_SNOOZE_MS);
+void acknowledge(const String &id);
 bool watchDroneNearby();                 // Watch heard a drone within the last cycle
 
 std::vector<Drone> list();  // most recently heard first

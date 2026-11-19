@@ -3,6 +3,21 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.3.0] - 2026-11-18
+
+### Added
+- **Color themes** under **Menu > Display & touch > Theme**, saved across reboots:
+  - **Dark**: the original look.
+  - **Light**: soft grey background, white panels, dark text.
+  - **Miami Vice**: midnight purple with hot pink and aqua neon.
+  - **Cyber Hacker**: black terminal with phosphor-green text and buttons (black button text).
+  - Built as a child theme on top of LVGL's default theme (`src/theme.cpp`). It sets screen,
+    panel, list section, button text and keyboard colors. A preview is in `tools/themes_preview.png`.
+
+### Fixed
+- The temperature degree ring and the Wi-Fi analyzer channel numbers were hard-coded white
+  (invisible on Light). They now use the theme's text color.
+
 ## [0.2.1] - 2026-11-18
 
 ### Fixed

@@ -27,7 +27,7 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
   details, **Ignore** it (hidden from future scans, saved), or **Hunt** it. Hunt shows a live signal
   readout, a closer/farther arrow and a history graph to help you find it. Phones that use rotating
   random addresses can't be ignored permanently, and a hunt loses them when the address changes.
-- **Display & touch**: brightness, landscape/portrait (plus flipped variants), red/blue swap for panels that show
+- **Display & touch**: theme (Dark, Light, Miami Vice, Cyber Hacker), brightness, landscape/portrait (plus flipped variants), red/blue swap for panels that show
   blue as orange, and touch calibration.
 
 ## Board
@@ -93,6 +93,7 @@ include/lv_conf.h   LVGL config
 src/version.h       firmware version
 src/main.cpp        setup/loop
 src/display.cpp     TFT + touch drivers, rotation, calibration
+src/theme.cpp       color themes (child theme over LVGL default)
 src/drone.cpp       drone Remote ID: Wi-Fi sniffer, ODID decoder
 src/ble.cpp         BLE scanner, trackers, hunt, Remote ID adverts (NimBLE)
 src/hunt.h          shared RSSI averaging for hunt modes

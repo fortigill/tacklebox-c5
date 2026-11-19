@@ -7,6 +7,7 @@
 #include "led.h"
 #include "net.h"
 #include "ota.h"
+#include "theme.h"
 #include "timesvc.h"
 #include "ui.h"
 #include "version.h"
@@ -32,6 +33,7 @@ void setup() {
   Serial.begin(115200);
   Serial.printf("\nCYD UI v%s (built %s %s)\n", FW_VERSION, __DATE__, __TIME__);
   display::begin();
+  theme::begin();
   net::begin();
   timesvc::begin();
   weather::begin();

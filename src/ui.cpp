@@ -11,6 +11,7 @@
 #include "drone.h"
 #include "net.h"
 #include "ota.h"
+#include "theme.h"
 #include "timesvc.h"
 #include "version.h"
 #include "weather.h"
@@ -277,7 +278,7 @@ TempW makeTemp(lv_obj_t *parent, const lv_font_t *font, int ring) {
   lv_obj_set_size(deg, ring, ring);
   lv_obj_set_style_radius(deg, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_width(deg, ring >= 10 ? 3 : 2, 0);
-  lv_obj_set_style_border_color(deg, lv_color_white(), 0);
+  lv_obj_set_style_border_color(deg, theme::text(), 0);
   lv_obj_set_style_border_opa(deg, LV_OPA_COVER, 0);
   lv_obj_set_style_translate_y(deg, ring / 2, 0);
   lv_obj_clear_flag(deg, LV_OBJ_FLAG_CLICKABLE);
@@ -508,6 +509,21 @@ void showDisplay() {
   lv_obj_t *list = lv_list_create(scr);
   lv_obj_set_size(list, W(), H() - HEADER_H);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_list_add_text(list, "Theme");
+  for (uint8_t i = 0; i < theme::COUNT; i++) {
+    bool sel = i == theme::current();
+    lv_obj_t *tb = lv_list_add_btn(list, sel ? LV_SYMBOL_OK : nullptr, theme::name((theme::Id)i));
+    lv_obj_add_event_cb(
+        tb,
+        [](lv_event_t *e) {
+          theme::Id id = (theme::Id)(intptr_t)lv_event_get_user_data(e);
+          if (id == theme::current()) return;
+          theme::set(id);
+          showDisplay();  // rebuild so every widget picks up the new styles
+        },
+        LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
 
   lv_list_add_text(list, "Brightness");
   lv_obj_t *row = lv_obj_create(list);
@@ -1376,7 +1392,7 @@ void wfaFill() {
     lv_bar_set_value(wfaBars[c], cnt[c], LV_ANIM_OFF);
     lv_obj_set_style_bg_color(wfaBars[c], congestionColor(cnt[c]), LV_PART_INDICATOR);
     lv_obj_set_style_text_color(wfaChLbl[c], c == myCh ? lv_palette_main(LV_PALETTE_BLUE)
-                                                      : lv_color_white(), 0);
+                                                      : theme::text(), 0);
   }
 
   // Suggest the least crowded of the non-overlapping 2.4 GHz channels

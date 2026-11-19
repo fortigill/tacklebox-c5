@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.6] - 2026-11-19
+
+### Changed
+- The value now comes before the icon: wave height then wave icon in the status bar and the
+  desktop widget, and "5 alerts" / "No alerts" then the warning icon in the alert widget.
+
 ## [0.7.5] - 2026-11-19
 
 ### Changed

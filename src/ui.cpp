@@ -581,6 +581,7 @@ void showDesktop() {
     deskBarWaveLbl = lv_label_create(deskBarWave);
     lv_obj_set_style_text_font(deskBarWaveLbl, barFont, 0);
     lv_label_set_text(deskBarWaveLbl, "--");
+    lv_obj_move_to_index(deskBarWaveLbl, 0);  // number first, then the icon
   }
   // Order: waves, then temperature + weather icon, then drone/clock/Wi-Fi
   lv_obj_move_to_index(deskBarWave, lv_obj_get_index(deskWx));
@@ -703,6 +704,7 @@ void showDesktop() {
   lv_obj_clear_flag(wimg, LV_OBJ_FLAG_CLICKABLE);
   deskWaveLbl = lv_label_create(wline);
   lv_label_set_text(deskWaveLbl, "--");
+  lv_obj_move_to_index(deskWaveLbl, 0);  // number first, then the icon
   chevron(wline);
 
   deskAlerts = widget([](lv_event_t *) {
@@ -713,6 +715,7 @@ void showDesktop() {
   lv_label_set_text(aic, LV_SYMBOL_WARNING);
   deskAlertsLbl = lv_label_create(deskAlerts);
   lv_label_set_text(deskAlertsLbl, "");
+  lv_obj_move_to_index(deskAlertsLbl, 0);  // "5 alerts" first, then the icon
   chevron(deskAlerts);
 
   deskWifiLbl = lv_label_create(scr);

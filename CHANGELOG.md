@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.9.1] - 2026-11-19
+
+### Fixed
+- 0.9.0 didn't build: firmware.bin was 1,978,944 bytes, 13 KB over the 1,966,080-byte OTA slot.
+  NimBLE is now built without the client (central), server (peripheral) and advertising
+  (broadcaster) roles (`CONFIG_BT_NIMBLE_ROLE_*_DISABLED`). The app only scans (observer role),
+  so nothing changes in use. NimBLE's docs put the saving at roughly 7 + 16 + 5 KB.
+  Includes all the 0.9.0 changes.
+- OTA uploads weren't using the patched espota.py, so the device had about 10 s instead of 45 s
+  to be approved. PlatformIO switches any host-name `upload_port` back to `espota`, which
+  overrode `upload_protocol = custom`. `tools/espota_patch.py` now runs as a post script and
+  points the platform's espota uploader (`$UPLOADER`) at `.pio/espota_cyd.py`.
+
 ## [0.9.0] - 2026-11-19
 
 ### Added

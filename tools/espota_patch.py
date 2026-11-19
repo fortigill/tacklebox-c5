@@ -1,11 +1,13 @@
-# PlatformIO pre-script for the cyd-ota environment.
+# PlatformIO post-script for the cyd-ota environment.
 #
 # The device asks "Accept update / Do not allow" before taking an OTA update.
 # Stock espota.py only waits a hard-coded 10 s for the device to connect back
 # after the invitation (the --timeout option covers the invitation only), which
 # leaves too little time to answer. This copies the framework's espota.py to
-# .pio/espota_cyd.py with that wait raised to ACCEPT_TIMEOUT_S, and the
-# cyd-ota upload_command uses the copy. The framework file is left untouched.
+# .pio/espota_cyd.py with that wait raised to ACCEPT_TIMEOUT_S and points the
+# platform's espota uploader ($UPLOADER) at the copy. It runs as a post script
+# so it comes after the platform has set up its own uploader. The framework
+# file is left untouched.
 import os
 
 Import("env")  # noqa: F821  (provided by PlatformIO)
@@ -48,3 +50,8 @@ if old != patched:
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(patched)
     print("espota_patch: wrote %s (device connect-back wait %d s)" % (out_path, ACCEPT_TIMEOUT_S))
+
+# Use the patched copy for `pio run -e cyd-ota -t upload`
+if env.subst("$UPLOAD_PROTOCOL") == "espota":  # noqa: F821
+    env.Replace(UPLOADER=out_path)  # noqa: F821
+    print("espota_patch: OTA uploads use %s" % out_path)

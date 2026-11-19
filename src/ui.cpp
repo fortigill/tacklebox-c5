@@ -13,6 +13,7 @@
 #include "ota.h"
 #include "theme.h"
 #include "timesvc.h"
+#include "ui_icons.h"
 #include "version.h"
 #include "weather.h"
 
@@ -41,6 +42,10 @@ lv_obj_t *deskWifiIcon = nullptr;
 lv_obj_t *deskWifiLbl = nullptr;
 lv_obj_t *deskClock = nullptr;
 lv_obj_t *deskWx = nullptr, *deskWxImg = nullptr;
+lv_obj_t *deskDrone = nullptr;  // status-bar drone icon while Drone Watch runs
+int deskDroneState = -1;        // last color applied: 0 steady, 1 blue, 2 red
+lv_obj_t *droneAlertBox = nullptr;  // on the top layer, survives screen changes
+String droneAlertId;
 lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
 
@@ -99,7 +104,6 @@ lv_obj_t *drnList = nullptr, *drnStatus = nullptr, *drnToggle = nullptr, *drnDet
 lv_obj_t *drnWatchBtn = nullptr, *drnLogBtn = nullptr;
 std::vector<String> drnLogKeys;
 String drnLogKey;
-uint32_t drnSeenNew = 0;  // watch-log "new drone" counter already alerted
 std::vector<String> drnRowKeys;
 String drnDetailKey;
 String huntDroneKey;
@@ -168,6 +172,8 @@ void showWeatherZip();
 void resetPtrs() {
   deskWifiIcon = deskWifiLbl = deskClock = nullptr;
   deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
+  deskDrone = nullptr;
+  deskDroneState = -1;
   deskTemp = TempW();
   wxTemp = TempW();
   dtTime = dtDate = dtStatus = nullptr;
@@ -374,6 +380,22 @@ void refreshDesktop() {
   timesvc::formatTime(clk, sizeof(clk));
   setText(deskClock, clk);
 
+  // Drone Watch icon: steady while watching, flashing blue/red while a drone
+  // has been heard within the last watch cycle
+  bool watching = drone::mode() == drone::Mode::Watch;
+  setHidden(deskDrone, !watching);
+  if (watching && deskDrone) {
+    int want = drone::watchDroneNearby() ? 1 + (int)((millis() / 400) % 2) : 0;
+    if (want != deskDroneState) {
+      deskDroneState = want;
+      lv_obj_set_style_img_recolor(deskDrone,
+                                   want == 1   ? lv_palette_main(LV_PALETTE_BLUE)
+                                   : want == 2 ? lv_palette_main(LV_PALETTE_RED)
+                                               : theme::text(),
+                                   0);
+    }
+  }
+
   weather::Data wx = weather::data();
   setHidden(deskWx, !weather::configured());
   if (wx.valid) setImg(deskWxImg, weather::icon(wx, false));
@@ -439,6 +461,16 @@ void showDesktop() {
   deskWxImg = lv_img_create(deskWx);                       // ...then the icon
   lv_obj_clear_flag(deskWxImg, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(deskWxImg, LV_OBJ_FLAG_HIDDEN);
+
+  // Drone Watch indicator: only shown while Watch runs; tap for Drone RID
+  deskDrone = lv_img_create(bar);
+  lv_img_set_src(deskDrone, &ui_drone);
+  lv_obj_add_flag(deskDrone, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(deskDrone, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(deskDrone, 8);
+  lv_obj_set_style_img_recolor_opa(deskDrone, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(deskDrone, theme::text(), 0);
+  lv_obj_add_event_cb(deskDrone, [](lv_event_t *) { showDrones(); }, LV_EVENT_CLICKED, nullptr);
 
   // Clock; tap it for Date & time settings
   deskClock = lv_label_create(bar);
@@ -2406,14 +2438,49 @@ void showAbout() {
 
 // ---------- refresh timer ----------
 
-void poll(lv_timer_t *) {
-  // Drone Watch logged a new drone: tell the user whatever screen they're on
-  if (drone::logNewCount() != drnSeenNew) {
-    drnSeenNew = drone::logNewCount();
-    String msg = String("Drone Watch logged a new drone:\n") + drone::logNewestTitle() +
-                 "\n\nSee Drone RID > Log.";
-    errorBox(LV_SYMBOL_WARNING " Drone detected", msg.c_str());
+// "Drone detected" pop-up. Either button snoozes alerts for that drone for
+// 30 minutes; a different drone still alerts right away.
+void showNextDroneAlert() {
+  String id;
+  if (!drone::nextAlert(id)) return;
+  droneAlertId = id;
+
+  drone::LogEntry e;
+  char msg[200];
+  if (drone::logFind(id, e)) {
+    char when[32];
+    timesvc::formatEpoch(e.first, when, sizeof(when));
+    snprintf(msg, sizeof(msg), "%s%s\n%s, signal %d dBm\nSeen in %u watch scan%s, first %s",
+             (e.flags & drone::LOG_DJI) ? "DJI  " : "", e.id[0] ? e.id : e.key,
+             drone::uaTypeName(e.uaType), e.rssiLast, e.sightings, e.sightings == 1 ? "" : "s",
+             e.first ? when : "this session");
+  } else {
+    snprintf(msg, sizeof(msg), "%s", id.c_str());
   }
+
+  static const char *btns[] = {"Ignore 30 min", "View", ""};
+  droneAlertBox = lv_msgbox_create(nullptr, LV_SYMBOL_WARNING " New drone detected", msg, btns, false);
+  lv_obj_set_width(droneAlertBox, W() - 24);
+  lv_obj_center(droneAlertBox);
+  lv_obj_add_event_cb(
+      droneAlertBox,
+      [](lv_event_t *e) {
+        lv_obj_t *box = lv_event_get_current_target(e);
+        bool view = lv_msgbox_get_active_btn(box) == 1;
+        drone::snooze(droneAlertId);  // either way, no repeat for 30 min
+        lv_msgbox_close_async(box);
+        droneAlertBox = nullptr;
+        if (view) {
+          drnLogKey = droneAlertId;
+          showDroneLogDetail();
+        }
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+void poll(lv_timer_t *) {
+  // Drone Watch alerts, one at a time, on whatever screen is showing
+  if (!droneAlertBox) showNextDroneAlert();
 
   switch (cur) {
     case Screen::Desktop: refreshDesktop(); break;

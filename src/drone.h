@@ -79,12 +79,20 @@ struct LogEntry {
 };
 
 std::vector<LogEntry> watchLog();  // most recently heard first
-bool logFind(const String &key, LogEntry &out);
+bool logFind(const String &keyOrId, LogEntry &out);  // by MAC or Remote ID
 void logDelete(const String &key);
 void logClear();
 size_t logCount();
 uint32_t logNewCount();      // increments each time a new drone is logged
 String logNewestTitle();
+
+// Watch alerts. Each watch scan queues the drones it heard, except those
+// already queued or snoozed. Drones are identified by Remote ID (falling
+// back to MAC), since some transmitters rotate their Bluetooth address.
+const uint32_t ALERT_SNOOZE_MS = 30UL * 60 * 1000;
+bool nextAlert(String &id);              // pop the next drone to alert about
+void snooze(const String &id, uint32_t ms = ALERT_SNOOZE_MS);
+bool watchDroneNearby();                 // Watch heard a drone within the last cycle
 
 std::vector<Drone> list();  // most recently heard first
 bool find(const String &key, Drone &out);

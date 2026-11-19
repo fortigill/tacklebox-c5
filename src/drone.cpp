@@ -261,6 +261,29 @@ bool logDirty = false;
 uint32_t logLastSave = 0;
 uint32_t logNew = 0;
 String logNewTitle;
+
+// Watch alerts (guarded by mtx)
+std::vector<String> alertQueue;
+struct Snooze {
+  String id;
+  uint32_t until;
+};
+std::vector<Snooze> snoozes;
+
+bool snoozedLocked(const String &id, uint32_t now) {
+  snoozes.erase(std::remove_if(snoozes.begin(), snoozes.end(),
+                               [&](const Snooze &z) { return (int32_t)(now - z.until) >= 0; }),
+                snoozes.end());
+  for (const auto &z : snoozes)
+    if (z.id == id) return true;
+  return false;
+}
+
+void queueAlertLocked(const String &id) {
+  if (snoozedLocked(id, millis())) return;
+  if (std::find(alertQueue.begin(), alertQueue.end(), id) != alertQueue.end()) return;
+  alertQueue.push_back(id);
+}
 Preferences logPrefs;
 
 uint32_t epochNow() {
@@ -319,6 +342,7 @@ void logMerge(uint32_t since) {
       logNewTitle = d.uasId.length() ? d.uasId : d.key;
       Serial.printf("[rid] watch: new drone %s\n", logNewTitle.c_str());
     }
+    queueAlertLocked(d.uasId.length() ? d.uasId : d.key);
     copyStr(it->key, sizeof(it->key), d.key);
     if (d.uasId.length()) copyStr(it->id, sizeof(it->id), d.uasId);
     it->idType = d.idType;
@@ -445,6 +469,7 @@ void stop() {
     std::lock_guard<std::mutex> lock(mtx);
     huntKey = "";
     huntChannel = 0;
+    alertQueue.clear();
     if (logDirty) logSave();
   }
   md = Mode::Off;
@@ -519,7 +544,7 @@ std::vector<LogEntry> watchLog() {
 bool logFind(const String &key, LogEntry &out) {
   std::lock_guard<std::mutex> lock(mtx);
   for (const auto &e : logv) {
-    if (key == e.key) {
+    if (key == e.key || (e.id[0] && key == e.id)) {
       out = e;
       return true;
     }
@@ -529,7 +554,8 @@ bool logFind(const String &key, LogEntry &out) {
 
 void logDelete(const String &key) {
   std::lock_guard<std::mutex> lock(mtx);
-  logv.erase(std::remove_if(logv.begin(), logv.end(), [&](const LogEntry &e) { return key == e.key; }),
+  logv.erase(std::remove_if(logv.begin(), logv.end(),
+                            [&](const LogEntry &e) { return key == e.key || (e.id[0] && key == e.id); }),
              logv.end());
   logSave();
 }
@@ -546,6 +572,40 @@ size_t logCount() {
 }
 
 uint32_t logNewCount() { return logNew; }
+
+bool nextAlert(String &id) {
+  std::lock_guard<std::mutex> lock(mtx);
+  while (!alertQueue.empty()) {
+    id = alertQueue.front();
+    alertQueue.erase(alertQueue.begin());
+    if (!snoozedLocked(id, millis())) return true;  // may have been snoozed while queued
+  }
+  return false;
+}
+
+void snooze(const String &id, uint32_t ms) {
+  std::lock_guard<std::mutex> lock(mtx);
+  uint32_t now = millis();
+  snoozedLocked(id, now);  // prunes expired entries
+  for (auto &z : snoozes) {
+    if (z.id == id) {
+      z.until = now + ms;
+      return;
+    }
+  }
+  snoozes.push_back({id, now + ms});
+  Serial.printf("[rid] alerts for %s snoozed for %lu min\n", id.c_str(), (unsigned long)(ms / 60000));
+}
+
+bool watchDroneNearby() {
+  if (md != Mode::Watch) return false;
+  uint32_t now = millis();
+  const uint32_t window = WATCH_SCAN_MS + WATCH_REST_MS + 5000;  // one full cycle + margin
+  std::lock_guard<std::mutex> lock(mtx);
+  for (const auto &d : drones)
+    if (now - d.lastSeen < window) return true;
+  return false;
+}
 
 String logNewestTitle() {
   std::lock_guard<std::mutex> lock(mtx);

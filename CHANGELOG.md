@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.6] - 2026-11-19
+
+### Fixed
+- Crash (LoadProhibited in `lv_list_add_btn` from `showWeather`) when a screen was opened during
+  the NWS alert download. LVGL allocates from the same heap as the ~40 KB TLS session, and a new
+  screen is built while the old one still exists, so the heap ran out. Screen changes now wait
+  until any HTTPS download finishes (at most 20 s) and show "Updating weather alerts..." meanwhile.
+  This was likely also the "unstable" behavior seen with 0.5.1-0.5.3.
+
+### Notes
+- "SPIFFS: mount failed, -10025" on the first boot after 0.5.5 is expected: the empty partition
+  is formatted automatically and the message doesn't come back.
+
 ## [0.5.5] - 2026-11-19
 
 ### Fixed

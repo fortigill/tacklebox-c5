@@ -8,6 +8,7 @@
 #include <WiFiClientSecure.h>
 
 #include <algorithm>
+#include <memory>
 #include <mutex>
 
 #include "net.h"
@@ -68,6 +69,11 @@ bool alAttempted = false;
 bool alLastOk = false;
 bool alForce = false;
 volatile bool taskRunning = false;
+volatile bool tlsBusy = false;  // an HTTPS session is open (holds ~40 KB of heap)
+struct TlsGuard {               // marks the scope of a TLS session for the UI
+  TlsGuard() { tlsBusy = true; }
+  ~TlsGuard() { tlsBusy = false; }
+};
 enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2 };
 uint8_t taskFlags = 0;
 volatile bool locDirty = false;  // task resolved a location; save it from loop()
@@ -86,7 +92,9 @@ bool httpGet(const String &hostAndPath, String &body, String &why) {
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setConnectTimeout(HTTP_TIMEOUT_MS);
     bool ok;
+    std::unique_ptr<TlsGuard> guard;
     if (secure) {
+      guard.reset(new TlsGuard());
       tls.setInsecure();  // public, read-only data; skip CA bundle to save RAM
       ok = http.begin(tls, "https://" + hostAndPath);
     } else {
@@ -218,6 +226,7 @@ bool fsReady() {
 // Step 1: save the NWS response to flash. The TLS session lives only inside this
 // function, so its ~40 KB is free again before any JSON parsing starts.
 bool downloadAlerts(float la, float lo, String &why) {
+  TlsGuard guard;        // declared first, so it is released after the TLS session is gone
   WiFiClientSecure tls;  // declared before `http` so it outlives it
   HTTPClient http;
   tls.setInsecure();  // public, read-only data
@@ -567,6 +576,8 @@ void loop() {
     startFetch(flags);
   }
 }
+
+bool tlsActive() { return tlsBusy; }
 
 bool configured() {
   std::lock_guard<std::mutex> lock(mtx);

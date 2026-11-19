@@ -28,6 +28,7 @@ void begin();
 void loop();  // schedules refreshes (every 15 min while Wi-Fi is up)
 
 bool configured();         // a ZIP code is set
+bool tlsActive();          // an HTTPS download is in progress (big heap user)
 String zip();
 String place();            // e.g. "New York, NY"
 void setZip(const String &zip);  // clears the cached location and refetches

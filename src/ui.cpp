@@ -214,7 +214,28 @@ void setHidden(lv_obj_t *o, bool hide) {
   else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
 }
 
+// LVGL objects come from the same heap as the TLS session. Building a new
+// screen while the old one still exists, during an HTTPS download, ran out of
+// memory and crashed in lv_list_add_btn. So wait (max 20 s) for it to finish.
+void waitForTls() {
+  if (!weather::tlsActive()) return;
+  lv_obj_t *note = lv_label_create(lv_layer_top());
+  if (note) {
+    lv_label_set_text(note, "Updating weather alerts...");
+    lv_obj_set_style_bg_opa(note, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(note, lv_color_black(), 0);
+    lv_obj_set_style_text_color(note, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(note, 6, 0);
+    lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_refr_now(nullptr);
+  }
+  uint32_t t0 = millis();
+  while (weather::tlsActive() && millis() - t0 < 20000) delay(20);
+  if (note) lv_obj_del(note);
+}
+
 lv_obj_t *newScreen() {
+  waitForTls();
   if (calTimer) {
     lv_timer_del(calTimer);
     calTimer = nullptr;

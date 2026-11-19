@@ -58,7 +58,7 @@ lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nu
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
 // Desktop widgets: wave height and alert count (tap for their pages), plus
 // the wave height in the status bar
-lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr;
+lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr, *deskWaveName = nullptr;
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
 int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
@@ -198,6 +198,7 @@ void resetPtrs() {
   deskDrone = nullptr;
   deskDroneState = -1;
   wxaList = wxaStatus = nullptr;
+  deskWaveName = nullptr;
   deskWave = deskWaveLbl = deskBarWave = deskBarWaveLbl = deskAlerts = deskAlertsLbl = nullptr;
   deskAlertsColor = -1;
   byWave = byName = byDetail = byStatus = byIdTa = nullptr;
@@ -452,7 +453,12 @@ void refreshDesktop() {
   setHidden(deskWave, !deskWaveOn);
   if (barWave || deskWaveOn) {
     String wt = weather::waveText(weather::buoy().waveM);
-    if (deskWaveOn) setText(deskWaveLbl, wt.c_str());
+    if (deskWaveOn) {
+      setText(deskWaveLbl, wt.c_str());
+      String id = weather::buoyStation();
+      String nm = weather::buoyName(id);
+      setText(deskWaveName, (nm.length() ? nm : "Station " + id).c_str());
+    }
     if (barWave) {
       if (W() < 300) wt.replace("' ", "'");  // tighter in portrait
       setText(deskBarWaveLbl, wt.c_str());
@@ -622,7 +628,7 @@ void showDesktop() {
   lv_obj_set_style_text_font(lv_obj_get_child(mb, 0), &lv_font_montserrat_20, 0);
   // Portrait stacks the two desktop widgets, so the menu sits lower there
   const bool portrait = H() > W();
-  lv_obj_align(mb, LV_ALIGN_CENTER, 0, portrait ? 34 : 4);
+  lv_obj_align(mb, LV_ALIGN_CENTER, 0, portrait ? 42 : 22);
   lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
 
   // Widgets between the status bar and the menu: wave height and alert count
@@ -671,14 +677,33 @@ void showDesktop() {
     buoyBack = Screen::Desktop;
     showBuoy();
   });
-  lv_obj_t *wimg = lv_img_create(deskWave);
+  // Two lines: the buoy's friendly name, then wave icon + height + ">"
+  lv_obj_set_flex_flow(deskWave, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskWave, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskWave, 0, 0);
+  deskWaveName = lv_label_create(deskWave);
+  lv_obj_set_style_text_font(deskWaveName, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_opa(deskWaveName, LV_OPA_80, 0);
+  lv_label_set_long_mode(deskWaveName, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_width(deskWaveName, W() - 40, 0);  // long names end in "..."
+  lv_obj_set_height(deskWaveName, lv_font_get_line_height(&lv_font_montserrat_14));
+  lv_label_set_text(deskWaveName, "");
+  lv_obj_t *wline = lv_obj_create(deskWave);
+  lv_obj_remove_style_all(wline);
+  lv_obj_set_size(wline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(wline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(wline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(wline, 6, 0);
+  lv_obj_clear_flag(wline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(wline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  lv_obj_t *wimg = lv_img_create(wline);
   lv_img_set_src(wimg, &ui_wave);
   lv_obj_set_style_img_recolor_opa(wimg, LV_OPA_COVER, 0);
   lv_obj_set_style_img_recolor(wimg, theme::accent(), 0);
   lv_obj_clear_flag(wimg, LV_OBJ_FLAG_CLICKABLE);
-  deskWaveLbl = lv_label_create(deskWave);
+  deskWaveLbl = lv_label_create(wline);
   lv_label_set_text(deskWaveLbl, "--");
-  chevron(deskWave);
+  chevron(wline);
 
   deskAlerts = widget([](lv_event_t *) {
     wxaBack = Screen::Desktop;

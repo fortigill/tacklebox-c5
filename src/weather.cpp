@@ -1038,15 +1038,16 @@ String alertsStatus() {
 namespace {
 // Built-in list, north to south along the Florida Atlantic coast, then the Keys
 const BuoyPreset PRESETS[] = {
-    {"41112", "Offshore Fernandina Beach, FL"},
-    {"41117", "St. Augustine, FL"},
-    {"41070", "Ponce de Leon Inlet, FL"},
-    {"41009", "Canaveral, 20 NM E of Cape Canaveral"},
-    {"41012", "St. Augustine, 40 NM ENE"},
-    {"41113", "Cape Canaveral Nearshore, FL"},
-    {"41114", "Fort Pierce, FL"},
-    {"41122", "Hollywood Beach, FL"},
-    {"42095", "Satan Shoal, FL (Key West)"},
+    // Short enough to fit the desktop widget
+    {"41112", "Fernandina Beach Offshore"},
+    {"41117", "St. Augustine"},
+    {"41070", "Ponce de Leon Inlet"},
+    {"41009", "Canaveral 20 NM East"},
+    {"41012", "St. Augustine 40 NM ENE"},
+    {"41113", "Cape Canaveral Nearshore"},
+    {"41114", "Fort Pierce"},
+    {"41122", "Hollywood Beach"},
+    {"42095", "Satan Shoal, Key West"},
 };
 const size_t MAX_BUOY_FAVS = 8;
 

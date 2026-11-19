@@ -3,6 +3,15 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.5] - 2026-11-19
+
+### Changed
+- The desktop wave bubble shows the buoy's friendly name above the wave icon and height (for
+  example "Canaveral 20 NM East"). Typed-in stations show as "Station 42078". Long names end in
+  "...".
+- The built-in buoy names are shorter so they fit the widget.
+- The Menu button sits a little lower to make room for the taller wave bubble.
+
 ## [0.7.4] - 2026-11-19
 
 ### Changed

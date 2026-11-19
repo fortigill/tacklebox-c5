@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.6.3] - 2026-11-19
+
+### Changed
+- The desktop Wi-Fi icon is green when connected (was blue). Amber still means
+  connecting/lost, and grey means off.
+
 ## [0.6.2] - 2026-11-19
 
 ### Fixed

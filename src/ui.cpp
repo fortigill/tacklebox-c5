@@ -448,7 +448,7 @@ void refreshDesktop() {
   lv_color_t color;
   lv_opa_t opa = LV_OPA_COVER;
   switch (net::state()) {
-    case net::State::Connected: color = lv_palette_main(LV_PALETTE_BLUE); break;
+    case net::State::Connected: color = lv_palette_main(LV_PALETTE_GREEN); break;
     case net::State::Connecting:
     case net::State::Lost: color = lv_palette_main(LV_PALETTE_AMBER); break;
     default:

@@ -40,7 +40,6 @@ Screen calReturn = Screen::Desktop;
 lv_obj_t *deskWifiIcon = nullptr;
 lv_obj_t *deskWifiLbl = nullptr;
 lv_obj_t *deskClock = nullptr;
-lv_obj_t *deskScr = nullptr, *menuScrim = nullptr;  // desktop screen + menu drawer overlay
 lv_obj_t *deskWx = nullptr, *deskWxImg = nullptr;
 lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
@@ -143,7 +142,6 @@ int32_t calSumX = 0, calSumY = 0;
 
 void showDesktop();
 void showMenu();
-void openMenu();
 void showWifi();
 void showPassword();
 void showConnecting();
@@ -169,7 +167,6 @@ void showWeatherZip();
 
 void resetPtrs() {
   deskWifiIcon = deskWifiLbl = deskClock = nullptr;
-  deskScr = menuScrim = nullptr;
   deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
   deskTemp = TempW();
   wxTemp = TempW();
@@ -247,7 +244,10 @@ lv_obj_t *makeHeader(lv_obj_t *scr, const char *title, lv_event_cb_t backCb,
   lv_obj_t *t = lv_label_create(h);
   lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);
   lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(t, W() - titleX - 12 - rightReserve);
+  // One line only: a fixed height makes LONG_DOT end a long title with "..."
+  // instead of wrapping it out of the header
+  lv_obj_set_size(t, W() - titleX - 12 - rightReserve,
+                  lv_font_get_line_height(&lv_font_montserrat_20));
   lv_label_set_text(t, title);
   lv_obj_align(t, LV_ALIGN_LEFT_MID, titleX, 0);
   return h;
@@ -257,6 +257,40 @@ void errorBox(const char *title, const char *msg) {
   lv_obj_t *m = lv_msgbox_create(nullptr, title, msg, nullptr, true);  // modal, on top layer
   lv_obj_set_width(m, W() - 40);
   lv_obj_center(m);
+}
+
+// Content area from `top` to the bottom of the screen, laid out as a column:
+// info lines take the height their (wrapped) text needs and the list fills
+// what's left. A long status line therefore pushes the list down instead of
+// being hidden underneath it, which matters on the 240 px-wide portrait screen.
+lv_obj_t *makeBody(lv_obj_t *scr, int top) {
+  lv_obj_t *b = lv_obj_create(scr);
+  lv_obj_remove_style_all(b);
+  lv_obj_set_size(b, W(), H() - top);
+  lv_obj_align(b, LV_ALIGN_TOP_LEFT, 0, top);
+  lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_top(b, 4, 0);
+  lv_obj_set_style_pad_row(b, 4, 0);
+  lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+  return b;
+}
+
+// A full-width info line that wraps instead of being cut off
+lv_obj_t *bodyLabel(lv_obj_t *parent) {
+  lv_obj_t *l = lv_label_create(parent);
+  lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(l, LV_PCT(100));
+  lv_obj_set_style_pad_hor(l, 6, 0);
+  lv_label_set_text(l, "");
+  return l;
+}
+
+// The list that takes the remaining height of a body
+lv_obj_t *bodyList(lv_obj_t *body) {
+  lv_obj_t *list = lv_list_create(body);
+  lv_obj_set_width(list, LV_PCT(100));
+  lv_obj_set_flex_grow(list, 1);
+  return list;
 }
 
 // Radio tools can't run while the drone scanner owns Wi-Fi and Bluetooth
@@ -434,13 +468,11 @@ void showDesktop() {
   lv_label_set_text(deskWifiIcon, LV_SYMBOL_WIFI);
   lv_obj_center(deskWifiIcon);
 
-  deskScr = scr;
-
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);
   lv_obj_set_style_text_font(lv_obj_get_child(mb, 0), &lv_font_montserrat_20, 0);
   lv_obj_align(mb, LV_ALIGN_CENTER, 0, 4);
-  lv_obj_add_event_cb(mb, [](lv_event_t *) { openMenu(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -454,14 +486,6 @@ void showDesktop() {
 }
 
 // ---------- Main menu ----------
-
-// Main menu: a drawer over the live desktop. It covers about half the
-// screen and leaves the status bar visible; tap the dimmed area to close.
-void closeMenu() {
-  if (!menuScrim) return;
-  lv_obj_del_async(menuScrim);  // may be called from the scrim's own event
-  menuScrim = nullptr;
-}
 
 void addMenuItems(lv_obj_t *list) {
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_WIFI, "Network settings");
@@ -504,49 +528,16 @@ void addMenuItems(lv_obj_t *list) {
 
 }
 
-void openMenu() {
-  if (!deskScr || menuScrim) return;
-  const int top = 36;  // status bar height
-  menuScrim = lv_obj_create(deskScr);
-  lv_obj_remove_style_all(menuScrim);
-  lv_obj_set_size(menuScrim, W(), H() - top);
-  lv_obj_set_pos(menuScrim, 0, top);
-  lv_obj_set_style_bg_color(menuScrim, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(menuScrim, LV_OPA_40, 0);
-  lv_obj_add_flag(menuScrim, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(menuScrim, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(
-      menuScrim,
-      [](lv_event_t *e) {
-        if (lv_event_get_target(e) == menuScrim) closeMenu();  // tap outside the panel
-      },
-      LV_EVENT_CLICKED, nullptr);
-
-  int pw = W() >= 300 ? W() / 2 + 10 : W() * 2 / 3;  // portrait needs a bit more for labels
-  lv_obj_t *panel = lv_list_create(menuScrim);
-  lv_obj_set_size(panel, pw, H() - top);
-  lv_obj_set_pos(panel, 0, 0);
-  lv_obj_set_style_radius(panel, 0, 0);
-  lv_obj_set_style_shadow_width(panel, 16, 0);
-  lv_obj_set_style_shadow_opa(panel, LV_OPA_50, 0);
-  lv_list_add_text(panel, "Menu");
-  addMenuItems(panel);
-
-  // Slide in from the left
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, panel);
-  lv_anim_set_values(&a, -pw, 0);
-  lv_anim_set_time(&a, 160);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-  lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_x((lv_obj_t *)o, v); });
-  lv_anim_start(&a);
-}
-
-// "Back to the menu" from any screen: desktop with the drawer open
 void showMenu() {
-  showDesktop();
-  openMenu();
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Menu", [](lv_event_t *) { showDesktop(); });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+  addMenuItems(list);
+
+  load(scr, Screen::Menu);
 }
 
 // ---------- Display & touch ----------
@@ -915,14 +906,9 @@ void showBle() {
       },
       LV_EVENT_CLICKED, nullptr);
 
-  bleStatus = lv_label_create(scr);
-  lv_label_set_text(bleStatus, "");
-  lv_obj_align(bleStatus, LV_ALIGN_TOP_LEFT, 8, HEADER_H + 7);
-
-  const int listY = HEADER_H + 28;
-  bleList = lv_list_create(scr);
-  lv_obj_set_size(bleList, W(), H() - listY);
-  lv_obj_align(bleList, LV_ALIGN_TOP_MID, 0, listY);
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  bleStatus = bodyLabel(body);
+  bleList = bodyList(body);
 
   load(scr, Screen::Ble);
   bleLastMode = ble::mode();
@@ -1349,16 +1335,9 @@ void showDrones() {
   lv_obj_set_style_bg_color(drnLogBtn, lv_palette_main(LV_PALETTE_GREY), 0);
   lv_obj_add_event_cb(drnLogBtn, [](lv_event_t *) { showDroneLog(); }, LV_EVENT_CLICKED, nullptr);
 
-  drnStatus = lv_label_create(scr);
-  lv_label_set_long_mode(drnStatus, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(drnStatus, W() - 12);
-  lv_label_set_text(drnStatus, "");
-  lv_obj_align(drnStatus, LV_ALIGN_TOP_LEFT, 6, rowY + btnH + 4);
-
-  const int listY = rowY + btnH + 24;
-  drnList = lv_list_create(scr);
-  lv_obj_set_size(drnList, W(), H() - listY);
-  lv_obj_align(drnList, LV_ALIGN_TOP_MID, 0, listY);
+  lv_obj_t *body = makeBody(scr, rowY + btnH);
+  drnStatus = bodyLabel(body);
+  drnList = bodyList(body);
 
   load(scr, Screen::Drones);
   drnUpdateStatus();
@@ -1709,16 +1688,9 @@ void showWifiAnalyzer() {
     lv_label_set_text_fmt(wfaChLbl[c], "%d", c);
   }
 
-  wfaStatus = lv_label_create(scr);
-  lv_label_set_long_mode(wfaStatus, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(wfaStatus, W() - 12);
-  lv_label_set_text(wfaStatus, "");
-  lv_obj_align(wfaStatus, LV_ALIGN_TOP_LEFT, 6, HEADER_H + graphH + 6);
-
-  const int listY = HEADER_H + graphH + 26;
-  wfaList = lv_list_create(scr);
-  lv_obj_set_size(wfaList, W(), H() - listY);
-  lv_obj_align(wfaList, LV_ALIGN_TOP_MID, 0, listY);
+  lv_obj_t *body = makeBody(scr, HEADER_H + graphH + 2);
+  wfaStatus = bodyLabel(body);
+  wfaList = bodyList(body);
 
   load(scr, Screen::WifiAnalyzer);
   if (net::scanState() == net::ScanState::Done && !net::rawResults().empty()) {
@@ -1853,16 +1825,9 @@ void showTrackers() {
       },
       LV_EVENT_CLICKED, nullptr);
 
-  trkStatus = lv_label_create(scr);
-  lv_label_set_long_mode(trkStatus, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(trkStatus, W() - 12);
-  lv_label_set_text(trkStatus, "");
-  lv_obj_align(trkStatus, LV_ALIGN_TOP_LEFT, 6, HEADER_H + 7);
-
-  const int listY = HEADER_H + 28;
-  trkList = lv_list_create(scr);
-  lv_obj_set_size(trkList, W(), H() - listY);
-  lv_obj_align(trkList, LV_ALIGN_TOP_MID, 0, listY);
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  trkStatus = bodyLabel(body);
+  trkList = bodyList(body);
 
   load(scr, Screen::Trackers);
   trkLastMode = ble::mode();
@@ -2272,22 +2237,25 @@ void showWifi() {
   lv_obj_add_event_cb(wifiScanBtn, [](lv_event_t *) { net::startScan(); }, LV_EVENT_CLICKED,
                       nullptr);
 
-  wifiStatusLbl = lv_label_create(scr);
-  lv_label_set_long_mode(wifiStatusLbl, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(wifiStatusLbl, W() - 90);
-  lv_label_set_text(wifiStatusLbl, "");
-  lv_obj_align(wifiStatusLbl, LV_ALIGN_TOP_LEFT, 8, HEADER_H + 9);
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  lv_obj_t *row = lv_obj_create(body);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_right(row, 4, 0);
+  lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-  wifiForgetBtn = flatBtn(scr, "Forget", 70, 26);
-  lv_obj_align(wifiForgetBtn, LV_ALIGN_TOP_RIGHT, -4, HEADER_H + 3);
+  wifiStatusLbl = bodyLabel(row);
+  lv_obj_set_width(wifiStatusLbl, 0);
+  lv_obj_set_flex_grow(wifiStatusLbl, 1);  // wraps in the space left of Forget
+
+  wifiForgetBtn = flatBtn(row, "Forget", 70, 26);
   lv_obj_set_style_bg_color(wifiForgetBtn, lv_palette_main(LV_PALETTE_RED), 0);
   lv_obj_add_event_cb(wifiForgetBtn, [](lv_event_t *) { net::forget(); }, LV_EVENT_CLICKED,
                       nullptr);
 
-  const int listY = HEADER_H + 32;
-  wifiList = lv_list_create(scr);
-  lv_obj_set_size(wifiList, W(), H() - listY);
-  lv_obj_align(wifiList, LV_ALIGN_TOP_MID, 0, listY);
+  wifiList = bodyList(body);
 
   load(scr, Screen::Wifi);
 

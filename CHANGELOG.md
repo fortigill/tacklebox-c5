@@ -3,6 +3,21 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.4.1] - 2026-11-19
+
+### Fixed
+- Status text above lists was hidden. For example, on Network settings, "Connected: <network>
+  (<IP>)" wrapped onto more lines, but the network list started at a fixed position and covered
+  everything after the first line. This was worst in portrait (240 px wide). Network settings, the
+  Bluetooth scanner, the tracker detector, Drone RID and the Wi-Fi analyzer now use a column
+  layout: info lines take the height their wrapped text needs, and the list fills the space below
+  (`makeBody` / `bodyLabel` / `bodyList`).
+- Header titles are pinned to one line and end in "..." when too long, instead of wrapping out of
+  the title bar.
+
+### Reverted
+- The half-screen menu drawer from 0.4.0. The main menu is a full screen again.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

@@ -23,13 +23,15 @@ const char *server();
 
 bool use24h();
 void setUse24h(bool on);
+bool barAmPm();             // show AM/PM after the status-bar clock in 12-hour mode
+void setBarAmPm(bool on);
 
 const Zone *zones(size_t *count);
 size_t zoneIndex();
 void setZone(size_t index);
 
 // Formatting helpers; return "--:--" / "" style placeholders until valid()
-void formatTime(char *buf, size_t n);  // "3:07 PM" or "15:07"
+void formatTime(char *buf, size_t n, bool amPm = true);  // "3:07 PM" ("3:07" without amPm) or "15:07"
 void formatDate(char *buf, size_t n);  // "Wed Nov 18 2026"
 void formatEpoch(uint32_t epoch, char *buf, size_t n);  // "Nov 19 8:15 AM" (0 -> "unknown")
 

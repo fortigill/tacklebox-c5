@@ -44,6 +44,7 @@ const size_t DEFAULT_ZONE = 1;  // US Eastern
 Preferences prefs;
 size_t zone = DEFAULT_ZONE;
 bool h24 = false;
+bool amPmBar = true;
 bool sntpStarted = false;
 volatile uint32_t lastSync = 0;
 
@@ -72,6 +73,7 @@ void begin() {
   prefs.begin("time", false);
   String tz = prefs.isKey("tz") ? prefs.getString("tz") : String(ZONES[DEFAULT_ZONE].tz);
   h24 = prefs.getBool("h24", false);
+  amPmBar = prefs.getBool("ampm", true);
   prefs.end();
   zone = DEFAULT_ZONE;
   for (size_t i = 0; i < ZONE_COUNT; i++)
@@ -110,6 +112,15 @@ void setUse24h(bool on) {
   prefs.end();
 }
 
+bool barAmPm() { return amPmBar; }
+
+void setBarAmPm(bool on) {
+  amPmBar = on;
+  prefs.begin("time", false);
+  prefs.putBool("ampm", on);
+  prefs.end();
+}
+
 const Zone *zones(size_t *count) {
   if (count) *count = ZONE_COUNT;
   return ZONES;
@@ -126,7 +137,7 @@ void setZone(size_t index) {
   prefs.end();
 }
 
-void formatTime(char *buf, size_t n) {
+void formatTime(char *buf, size_t n, bool amPm) {
   if (!valid()) {
     snprintf(buf, n, "--:--");
     return;
@@ -138,7 +149,8 @@ void formatTime(char *buf, size_t n) {
     snprintf(buf, n, "%02d:%02d", t.tm_hour, t.tm_min);
   } else {
     int h = t.tm_hour % 12;
-    snprintf(buf, n, "%d:%02d %s", h ? h : 12, t.tm_min, t.tm_hour < 12 ? "AM" : "PM");
+    if (amPm) snprintf(buf, n, "%d:%02d %s", h ? h : 12, t.tm_min, t.tm_hour < 12 ? "AM" : "PM");
+    else snprintf(buf, n, "%d:%02d", h ? h : 12, t.tm_min);
   }
 }
 

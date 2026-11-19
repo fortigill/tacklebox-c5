@@ -456,7 +456,7 @@ void refreshDesktop() {
   setText(deskWifiLbl, buf);
 
   char clk[16];
-  timesvc::formatTime(clk, sizeof(clk));
+  timesvc::formatTime(clk, sizeof(clk), timesvc::barAmPm());
   setText(deskClock, clk);
 
   // Drone Watch icon: steady while watching, flashing blue/red while a drone
@@ -2805,6 +2805,22 @@ void showDateTime() {
         if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
         else lv_obj_clear_state(sw, LV_STATE_CHECKED);
         refreshDateTime();
+      },
+      LV_EVENT_CLICKED, sw);
+
+  // AM/PM after the status-bar clock (12-hour mode only; this page keeps it)
+  b = lv_list_add_btn(list, LV_SYMBOL_EYE_OPEN, "AM/PM in status bar");
+  sw = lv_switch_create(b);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (timesvc::barAmPm()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *e) {
+        lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !timesvc::barAmPm();
+        timesvc::setBarAmPm(on);
+        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
       },
       LV_EVENT_CLICKED, sw);
 

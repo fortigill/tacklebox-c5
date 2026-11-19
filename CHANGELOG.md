@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.15] - 2026-11-19
+
+### Added
+- **Date & time > AM/PM in status bar**: in 12-hour mode the status bar clock can show just
+  "2:47" instead of "2:47 PM". It's on by default and saved in NVS. The Date & time page itself
+  still shows AM/PM, and the switch has no effect in 24-hour mode.
+
 ## [0.7.14] - 2026-11-19
 
 ### Fixed

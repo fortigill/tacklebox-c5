@@ -30,7 +30,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam
 };
 
 const int HEADER_H = 40;
@@ -81,6 +81,14 @@ String skDetailSym;                    // ticker on the detail page
 std::vector<String> skRowSyms;         // list page: row -> ticker (stable user_data)
 std::vector<lv_obj_t *> skRowVals;     // list page: price + change label per row
 Screen stockBack = Screen::Menu;
+// NFL: status bar readout, desktop bubble, NFL page
+lv_obj_t *deskBarNfl = nullptr;
+lv_obj_t *deskNfl = nullptr, *deskNflScore = nullptr, *deskNflDetail = nullptr;
+lv_obj_t *deskBarMenu = nullptr;  // small menu icon when the big Menu button has no room
+int deskNflKey = -1;
+lv_obj_t *nfScore = nullptr, *nfTeams = nullptr, *nfDetail = nullptr, *nfStatus = nullptr, *nfGames = nullptr;
+uint32_t nfVer = 0;
+Screen nflBack = Screen::Menu;
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
 int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
@@ -214,6 +222,24 @@ void showBuoyId();
 void showStock();
 void showStockSym();
 void showStockDetail();
+void showNfl();
+void showNflTeam();
+
+// "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
+String nflScoreText(const weather::Game &g) {
+  if (g.state == "pre") return g.away + " @ " + g.home;
+  return g.away + " " + String(g.awayScore) + "-" + String(g.homeScore) + " " + g.home;
+}
+
+// Game clock / kickoff time / Final
+String nflDetailText(const weather::Game &g) {
+  if (g.state == "pre" && g.kickoff) {
+    char b[32];
+    timesvc::formatEpoch(g.kickoff, b, sizeof(b));
+    return b;
+  }
+  return g.detail;
+}
 
 // Stock formatting shared by the status bar, desktop and stock page
 String fmtPrice(const weather::Stock &s) {
@@ -257,6 +283,10 @@ void resetPtrs() {
   skName = skPrice = skChange = skDetail = skStatus = skTa = nullptr;
   skVer = 0;
   skRowVals.clear();
+  deskBarNfl = deskNfl = deskNflScore = deskNflDetail = deskBarMenu = nullptr;
+  deskNflKey = -1;
+  nfScore = nfTeams = nfDetail = nfStatus = nfGames = nullptr;
+  nfVer = 0;
   deskBar = deskRow = deskMenu = nullptr;
   deskLayoutKey = -1;
   deskWaveKey = -1;
@@ -469,11 +499,11 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 // Places the widget row under the (possibly two-row) status bar and the Menu
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
-  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock) return;
+  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl) return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   int key = barH * 1000 + rowH;
   if (key == deskLayoutKey) return;
@@ -485,10 +515,23 @@ void layoutDesktop() {
   int usual = (H() - fullH) / 2 + (portrait ? 42 : 22);
   int below = (rowH ? rowY + rowH : barH) + 10;
   int y = std::max(usual, below);
-  // Keep clear of the Wi-Fi line at the bottom: shrink the Menu button if needed
-  int room = H() - 30 - y;
-  lv_obj_set_height(deskMenu, std::max(minH, std::min(fullH, room)));
-  lv_obj_align(deskMenu, LV_ALIGN_TOP_MID, 0, y);
+  // Keep clear of the Wi-Fi line at the bottom: shrink the Menu button; if
+  // that's not enough, drop the Wi-Fi line; if still not, the Menu button
+  // gives way to a small menu icon in the status bar
+  int limit = H() - 30;
+  bool wifiLine = true, bigMenu = true;
+  if (y + minH > limit) {
+    wifiLine = false;
+    limit = H() - 4;
+  }
+  if (y + minH > limit) bigMenu = false;
+  setHidden(deskWifiLbl, !wifiLine);
+  setHidden(deskMenu, !bigMenu);
+  setHidden(deskBarMenu, bigMenu);
+  if (bigMenu) {
+    lv_obj_set_height(deskMenu, std::max(minH, std::min(fullH, limit - y)));
+    lv_obj_align(deskMenu, LV_ALIGN_TOP_MID, 0, y);
+  }
 }
 
 void refreshDesktop() {
@@ -585,6 +628,37 @@ void refreshDesktop() {
       lv_obj_set_style_text_color(deskBarStockPct, pc, 0);
     }
   }
+
+  // NFL readouts (rebuilt when the scores or switches change)
+  bool barNfl = weather::showNflBar(), deskNflOn = weather::showNflDesk();
+  setHidden(deskNfl, !deskNflOn);
+  int nflKey = (int)weather::nflVersion();
+  if (nflKey != deskNflKey) {
+    deskNflKey = nflKey;
+    weather::Game g;
+    String team = weather::nflTeam();
+    bool have = weather::nflTeamGame(g);
+    String score, detail;
+    if (team.isEmpty()) score = "NFL: pick a team";
+    else if (!have) score = team + ": no game";
+    else {
+      score = nflScoreText(g);
+      detail = nflDetailText(g);
+    }
+    setText(deskNflScore, score.c_str());
+    setText(deskNflDetail, detail.c_str());
+    // Live games in the accent color
+    lv_color_t col = have && g.state == "in" ? theme::accent() : theme::text();
+    lv_obj_set_style_text_color(deskNflScore, col, 0);
+    // Status bar: only when there's a game to show
+    setHidden(deskBarNfl, !barNfl || !have);
+    if (have) {
+      String b = nflScoreText(g) + (g.state == "post" ? " F" : "");
+      setText(deskBarNfl, b.c_str());
+      lv_obj_set_style_text_color(deskBarNfl, col, 0);
+    }
+  }
+  if (!barNfl) setHidden(deskBarNfl, true);
 
   if (deskAlerts) {
     bool on = weather::showAlertDesk() && weather::configured();
@@ -758,6 +832,29 @@ void showDesktop() {
   lv_label_set_text(deskBarStockPct, "");
   lv_obj_move_to_index(deskBarStock, lv_obj_get_index(deskBarWave));
 
+  // NFL: "SEA 21-17 SF", left of the stock; tap for the NFL page
+  deskBarNfl = lv_label_create(ext);
+  lv_obj_set_style_text_font(deskBarNfl, barFont, 0);
+  lv_label_set_text(deskBarNfl, "");
+  lv_obj_add_flag(deskBarNfl, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(deskBarNfl, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_ext_click_area(deskBarNfl, 6);
+  lv_obj_add_event_cb(
+      deskBarNfl,
+      [](lv_event_t *) {
+        nflBack = Screen::Desktop;
+        showNfl();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  lv_obj_move_to_index(deskBarNfl, lv_obj_get_index(deskBarStock));
+
+  // Menu icon at the far left, shown only when the widgets need the Menu
+  // button's space (see layoutDesktop)
+  deskBarMenu = flatBtn(bar, LV_SYMBOL_LIST, 40, 32);
+  lv_obj_add_flag(deskBarMenu, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(deskBarMenu, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_move_to_index(deskBarMenu, 0);
+
   // Drone Watch indicator: only shown while Watch runs; tap for Drone RID
   deskDrone = lv_img_create(ext);
   lv_img_set_src(deskDrone, &ui_drone);
@@ -909,6 +1006,22 @@ void showDesktop() {
   lv_label_set_text(deskStockPct, "");
   chevron(deskStock);
 
+  // NFL bubble, one line: score, game clock (small), ">"
+  deskNfl = widget([](lv_event_t *) {
+    nflBack = Screen::Desktop;
+    showNfl();
+  });
+  deskNflScore = lv_label_create(deskNfl);
+  lv_label_set_text(deskNflScore, "");
+  deskNflDetail = lv_label_create(deskNfl);
+  lv_obj_set_style_text_font(deskNflDetail, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_opa(deskNflDetail, LV_OPA_80, 0);
+  lv_label_set_long_mode(deskNflDetail, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_width(deskNflDetail, W() / 2 - 20, 0);
+  lv_obj_set_height(deskNflDetail, lv_font_get_line_height(&lv_font_montserrat_14));
+  lv_label_set_text(deskNflDetail, "");
+  chevron(deskNfl);
+
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
   lv_obj_set_width(deskWifiLbl, W() - 16);
@@ -958,6 +1071,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         stockBack = Screen::Menu;
         showStock();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_PLAY, "NFL scores");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        nflBack = Screen::Menu;
+        showNfl();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -3126,6 +3248,177 @@ void showStockSym() {
   load(scr, Screen::StockSym);
 }
 
+// ---------- NFL scores ----------
+
+void refreshNflScreen() {
+  if (!nfStatus) return;
+  setText(nfStatus, weather::nflStatus().c_str());
+  if (weather::nflVersion() == nfVer) return;
+  nfVer = weather::nflVersion();
+
+  String team = weather::nflTeam();
+  weather::Game g;
+  if (team.isEmpty()) {
+    setText(nfScore, "");
+    setText(nfTeams, "No team picked");
+    setText(nfDetail, "Tap Team below to follow one. All of this week's games are listed further down.");
+  } else if (!weather::nflTeamGame(g)) {
+    setText(nfScore, "");
+    setText(nfTeams, team.c_str());
+    setText(nfDetail, "No game this week (bye), or the schedule isn't out yet.");
+  } else {
+    char b[48];
+    if (g.state == "pre") snprintf(b, sizeof(b), "%s @ %s", g.away.c_str(), g.home.c_str());
+    else snprintf(b, sizeof(b), "%d - %d", g.awayScore, g.homeScore);
+    setText(nfScore, b);
+    lv_obj_set_style_text_color(nfScore, g.state == "in" ? theme::accent() : theme::text(), 0);
+    String t = g.away + " @ " + g.home;
+    setText(nfTeams, t.c_str());
+    String d = nflDetailText(g);
+    if (g.state == "in") {
+      if (g.downDist.length()) d += "\n" + g.downDist;
+      if (g.possession.length()) d += "\n" + g.possession + " has the ball";
+    }
+    setText(nfDetail, d.c_str());
+  }
+
+  // This week's games
+  if (nfGames) {
+    lv_obj_clean(nfGames);
+    auto games = weather::nflGamesList();
+    if (games.empty()) {
+      lv_obj_t *l = lv_label_create(nfGames);
+      lv_label_set_text(l, "No games loaded yet");
+    }
+    for (const auto &x : games) {
+      lv_obj_t *l = lv_label_create(nfGames);
+      lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+      lv_obj_set_width(l, LV_PCT(100));
+      String t = nflScoreText(x) + "   " + nflDetailText(x);
+      lv_label_set_text(l, t.c_str());
+      bool mine = team.length() && (x.home == team || x.away == team);
+      if (x.state == "in" || mine) lv_obj_set_style_text_color(l, theme::accent(), 0);
+      if (x.state == "post" && !mine) lv_obj_set_style_text_opa(l, LV_OPA_70, 0);
+    }
+  }
+}
+
+void showNfl() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "NFL scores", [](lv_event_t *) {
+    if (nflBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_set_style_pad_row(card, 4, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  auto wrapLabel = [&](lv_obj_t *parent, const lv_font_t *font) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    if (font) lv_obj_set_style_text_font(l, font, 0);
+    lv_label_set_text(l, "");
+    return l;
+  };
+  nfScore = wrapLabel(card, &lv_font_montserrat_48);
+  nfTeams = wrapLabel(card, &lv_font_montserrat_20);
+  nfDetail = wrapLabel(card, nullptr);
+  nfStatus = wrapLabel(card, nullptr);
+  lv_obj_set_style_text_opa(nfStatus, LV_OPA_70, 0);
+
+  String team = weather::nflTeam();
+  String t = "Team: ";
+  if (team.isEmpty()) t += "none";
+  else
+    for (size_t i = 0; i < weather::nflTeamCount(); i++)
+      if (team == weather::nflTeamAbbrAt(i)) t += weather::nflTeamNameAt(i);
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, t.c_str());
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showNflTeam(); }, LV_EVENT_CLICKED, nullptr);
+
+  auto toggleRow = [&](const char *label, bool on, lv_event_cb_t cb) {
+    lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, label);
+    lv_obj_t *s = lv_switch_create(row);
+    lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, s);
+  };
+  toggleRow("Score in status bar", weather::showNflBar(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showNflBar();
+    weather::setShowNflBar(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  toggleRow("Score on desktop", weather::showNflDesk(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showNflDesk();
+    weather::setShowNflDesk(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get scores.");
+          return;
+        }
+        if (!weather::nflActive()) {
+          errorBox("Scores are off", "Turn on the status bar or desktop score display first.");
+          return;
+        }
+        weather::refreshNfl();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  lv_list_add_text(list, "This week");
+  nfGames = lv_obj_create(list);
+  lv_obj_remove_style_all(nfGames);
+  lv_obj_set_size(nfGames, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(nfGames, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(nfGames, 8, 0);
+  lv_obj_set_style_pad_row(nfGames, 6, 0);
+  lv_obj_clear_flag(nfGames, LV_OBJ_FLAG_SCROLLABLE);
+  lv_list_add_text(list, "Scores: ESPN");
+
+  load(scr, Screen::Nfl);
+  nfVer = weather::nflVersion() - 1;
+  refreshNflScreen();
+}
+
+void onNflTeamPicked(lv_event_t *e) {
+  weather::setNflTeam((const char *)lv_event_get_user_data(e));
+  showNfl();
+}
+
+void showNflTeam() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Pick a team", [](lv_event_t *) { showNfl(); });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+  String cur = weather::nflTeam();
+  lv_obj_t *b = lv_list_add_btn(list, cur.isEmpty() ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, "None");
+  lv_obj_add_event_cb(b, onNflTeamPicked, LV_EVENT_CLICKED, (void *)"");
+  for (size_t i = 0; i < weather::nflTeamCount(); i++) {
+    const char *ab = weather::nflTeamAbbrAt(i);
+    String t = String(ab) + "  " + weather::nflTeamNameAt(i);
+    b = lv_list_add_btn(list, cur == ab ? LV_SYMBOL_OK : LV_SYMBOL_PLAY, t.c_str());
+    lv_obj_add_event_cb(b, onNflTeamPicked, LV_EVENT_CLICKED, (void *)ab);
+  }
+  load(scr, Screen::NflTeam);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -3683,6 +3976,7 @@ void poll(lv_timer_t *) {
     case Screen::About: refreshAbout(); break;
     case Screen::Stock:
     case Screen::StockDetail: refreshStockScreen(); break;
+    case Screen::Nfl: refreshNflScreen(); break;
     default: break;
   }
 }

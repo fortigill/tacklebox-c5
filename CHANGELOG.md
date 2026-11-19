@@ -3,6 +3,29 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.9.0] - 2026-11-19
+
+### Added
+- NFL scores:
+  - **Menu > NFL scores**: pick a team (all 32 teams, or none).
+  - **Status bar**: your team's game, "SEA 21-17 SF" (away team first, as ESPN lists it), in the
+    accent color while live, with " F" when final. It shows only when there's a game.
+  - **Desktop**: a one-line bubble with the score and the game clock, kickoff time or "Final".
+  - **NFL page**: a large score, teams, clock, down and distance and possession while live, and all
+    of this week's games (live games and yours highlighted).
+  - Two switches: **Score in status bar** and **Score on desktop**.
+- How it's fetched: ESPN's public scoreboard (`site.api.espn.com/.../football/nfl/scoreboard`,
+  no key), plain HTTP first and HTTPS only if redirected.
+  - The reply is hundreds of KB, so it's parsed straight off the connection by `BodyStream`
+    (chunked/Content-Length decoding with a 15 s stall limit) with an ArduinoJson filter that
+    keeps only teams, scores, status and the situation, and never stored.
+  - Refreshes every 60 s while your team's game is on, every 2 min in the 30 min before kickoff,
+    and every 30 min otherwise. The first check is 75 s after boot. It pauses while Bluetooth tools
+    are in use.
+- Desktop space handling: when the widgets need the room, the Menu button shrinks (to 40 px),
+  then the Wi-Fi line at the bottom hides, and finally the Menu button is replaced by a small menu
+  icon at the left of the status bar.
+
 ## [0.8.3] - 2026-11-19
 
 ### Changed

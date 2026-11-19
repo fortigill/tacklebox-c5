@@ -44,6 +44,17 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
   and every 30 min otherwise, all over one HTTPS connection. Like the weather and buoy, updates
   pause while Drone Scan, Drone Watch or a Bluetooth tool is in use. Data comes from Yahoo Finance's
   free chart endpoint (unofficial, may be delayed).
+- **NFL scores**: pick your team under **Menu > NFL scores**. Its game this week shows in the
+  status bar ("SEA 21-17 SF", accent color while live) and in a desktop bubble with the game clock
+  or kickoff time, each with its own switch. The NFL page adds down and distance and who has the
+  ball, plus every game of the week. Scores refresh every minute while your team plays, every
+  2 min in the half hour before kickoff, and every 30 min otherwise. Like the other downloads,
+  updates pause while Drone Scan, Drone Watch or a Bluetooth tool is in use. Data comes from ESPN's
+  public scoreboard (unofficial). It's fetched over plain HTTP when possible and parsed as it
+  streams in, keeping only teams, scores and the clock.
+- **Desktop space**: with many widgets on, the Menu button shrinks, then the Wi-Fi line at the
+  bottom hides, and finally the Menu button gives way to a small menu icon at the left of the
+  status bar.
 - **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
   bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,

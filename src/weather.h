@@ -142,6 +142,35 @@ uint32_t stockVersion();
 String stockStatus();
 float stockChangePct(const Stock &s);  // day change in %, NAN if unknown
 
+// ---- NFL scores (ESPN scoreboard, this week's games) ----
+// Every minute while your team's game is on, every 2 min in the half hour
+// before kickoff, every 30 min otherwise. Paused while Bluetooth tools run.
+struct Game {
+  String shortName;          // "SEA @ SF"
+  String away, home;         // abbreviations, e.g. "SEA"
+  int awayScore = 0, homeScore = 0;
+  String state;              // "pre", "in" or "post"
+  String detail;             // "Q3 5:32", "Final", "Sun, 11/23 - 1:00 PM EST"
+  String downDist;           // "3rd & 7 at SF 35" while in play
+  String possession;         // abbreviation of the team with the ball, or ""
+  uint32_t kickoff = 0;      // epoch
+};
+size_t nflTeamCount();
+const char *nflTeamAbbrAt(size_t i);
+const char *nflTeamNameAt(size_t i);
+String nflTeam();                     // tracked team ("" = none)
+void setNflTeam(const String &abbr);
+bool showNflBar();
+void setShowNflBar(bool on);
+bool showNflDesk();
+void setShowNflDesk(bool on);
+bool nflActive();
+void refreshNfl();
+std::vector<Game> nflGamesList();
+bool nflTeamGame(Game &out);          // your team's game this week
+uint32_t nflVersion();
+String nflStatus();
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

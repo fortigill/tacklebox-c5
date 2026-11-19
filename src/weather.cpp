@@ -55,6 +55,13 @@ const uint32_t STOCK_CLOSED_MS = 30UL * 60 * 1000;   // nights and weekends
 const uint32_t STOCK_RETRY_MS = 2UL * 60 * 1000;
 const uint32_t STOCK_BOOT_DELAY_MS = 60000;          // after forecast, alerts and buoy
 const char *STOCK_DEFAULT = "SPY";
+// NFL scores (ESPN scoreboard)
+const uint32_t NFL_LIVE_MS = 60UL * 1000;          // your team's game is on
+const uint32_t NFL_SOON_MS = 2UL * 60 * 1000;      // kickoff within 30 min
+const uint32_t NFL_IDLE_MS = 30UL * 60 * 1000;     // otherwise
+const uint32_t NFL_RETRY_MS = 2UL * 60 * 1000;
+const uint32_t NFL_BOOT_DELAY_MS = 75000;
+const size_t MAX_GAMES = 20;
 const size_t MAX_STOCKS = 8;
 
 std::mutex mtx;
@@ -100,6 +107,14 @@ String stockErr;                // last failure of the whole update (memory, TLS
 uint32_t stockFetchedMs = 0;
 uint32_t stockVer = 0;
 
+// NFL (guarded by mtx)
+String nflTeamAbbr;                // tracked team, e.g. "SEA" ("" = none)
+bool nflBar = true, nflDesk = true;
+std::vector<Game> nflGames;
+String nflErr;
+uint32_t nflFetchedMs = 0;
+uint32_t nflVer = 0;
+
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
 bool attempted = false;
@@ -117,13 +132,17 @@ uint32_t stLastAttempt = 0;
 bool stAttempted = false;
 bool stLastOk = false;
 bool stForce = false;
+uint32_t nfLastAttempt = 0;
+bool nfAttempted = false;
+bool nfLastOk = false;
+bool nfForce = false;
 volatile bool taskRunning = false;
 volatile bool tlsBusy = false;  // an HTTPS session is open (holds ~40 KB of heap)
 struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8 };
+enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -866,6 +885,203 @@ bool parseStockFile(size_t i, const String &sym, Stock &out, String &why) {
   return true;
 }
 
+// ---------- NFL scores (ESPN) ----------
+// http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard lists
+// this week's games with a lot of detail per game (hundreds of KB). It is
+// parsed straight off the connection through BodyStream with a filter that
+// keeps only teams, scores and the game clock, so it never has to fit in RAM
+// or flash. Plain HTTP is tried first (no TLS); HTTPS only if redirected.
+
+// The HTTP body as a Stream ArduinoJson can read: decodes chunked transfer
+// encoding, stops at Content-Length, and waits (up to 15 s) for slow data.
+class BodyStream : public Stream {
+ public:
+  BodyStream(Client *c, bool chunked, int length) : c_(c), chunked_(chunked), left_(length) {
+    if (!chunked_ && length < 0) left_ = -1;  // unknown length: read until close
+    setTimeout(200);
+  }
+  int available() override { return done_ ? 0 : (peeked_ >= 0 ? 1 : c_->available()); }
+  int peek() override {
+    if (peeked_ < 0) peeked_ = next();
+    return peeked_;
+  }
+  int read() override {
+    if (peeked_ >= 0) {
+      int v = peeked_;
+      peeked_ = -1;
+      return v;
+    }
+    return next();
+  }
+  size_t write(uint8_t) override { return 0; }
+  size_t bytes() const { return total_; }
+  bool failed() const { return failed_; }
+
+ private:
+  int raw() {
+    uint32_t t0 = millis();
+    while (true) {
+      int v = c_->read();
+      if (v >= 0) return v;
+      if (!c_->connected() && !c_->available()) return -1;
+      if (millis() - t0 > 15000) {
+        failed_ = true;
+        return -1;
+      }
+      delay(1);
+    }
+  }
+  int next() {
+    if (done_) return -1;
+    if (chunked_) {
+      if (left_ <= 0) {
+        if (started_) {  // CRLF after the previous chunk
+          raw();
+          raw();
+        }
+        started_ = true;
+        char line[20];
+        size_t k = 0;
+        int v;
+        while ((v = raw()) >= 0 && v != '\n')
+          if (v != '\r' && k < sizeof(line) - 1) line[k++] = (char)v;
+        line[k] = 0;
+        if (v < 0) return finish();
+        left_ = (long)strtoul(line, nullptr, 16);
+        if (left_ == 0) return finish();
+      }
+    } else if (left_ == 0) {
+      return finish();
+    }
+    int v = raw();
+    if (v < 0) return finish();
+    if (left_ > 0) left_--;
+    total_++;
+    return v;
+  }
+  int finish() {
+    done_ = true;
+    return -1;
+  }
+  Client *c_;
+  bool chunked_;
+  long left_;
+  bool started_ = false, done_ = false, failed_ = false;
+  int peeked_ = -1;
+  size_t total_ = 0;
+};
+
+// "2026-11-23T18:00Z" (ESPN leaves out the seconds) -> epoch
+uint32_t parseEspnDate(const char *s) {
+  int Y, M, D, h, m;
+  if (!s || sscanf(s, "%d-%d-%dT%d:%d", &Y, &M, &D, &h, &m) != 5) return 0;
+  return epochUtc(Y, M, D, h, m);
+}
+
+bool parseScoreboard(Stream &in, std::vector<Game> &out, String &why) {
+  JsonDocument filter;
+  JsonObject fe = filter["events"][0].to<JsonObject>();
+  fe["date"] = true;
+  fe["shortName"] = true;
+  fe["status"]["type"]["state"] = true;
+  fe["status"]["type"]["shortDetail"] = true;
+  JsonObject fc = fe["competitions"][0].to<JsonObject>();
+  fc["situation"]["shortDownDistanceText"] = true;
+  fc["situation"]["possession"] = true;
+  JsonObject fp = fc["competitors"][0].to<JsonObject>();
+  fp["id"] = true;
+  fp["homeAway"] = true;
+  fp["score"] = true;
+  fp["team"]["abbreviation"] = true;
+  JsonDocument doc;
+  DeserializationError e = deserializeJson(doc, in, DeserializationOption::Filter(filter));
+  if (e) {
+    why = String("bad scoreboard data: ") + e.c_str();
+    return false;
+  }
+  for (JsonObject ev : doc["events"].as<JsonArray>()) {
+    if (out.size() >= MAX_GAMES) break;
+    Game g;
+    g.shortName = ev["shortName"] | "";
+    g.kickoff = parseEspnDate(ev["date"] | "");
+    g.state = ev["status"]["type"]["state"] | "";
+    g.detail = ev["status"]["type"]["shortDetail"] | "";
+    JsonObject comp = ev["competitions"][0];
+    g.downDist = comp["situation"]["shortDownDistanceText"] | "";
+    const char *poss = comp["situation"]["possession"] | "";
+    for (JsonObject c : comp["competitors"].as<JsonArray>()) {
+      bool home = strcmp(c["homeAway"] | "", "home") == 0;
+      const char *abbr = c["team"]["abbreviation"] | "?";
+      int score = atoi(c["score"] | "0");
+      if (home) {
+        g.home = abbr;
+        g.homeScore = score;
+      } else {
+        g.away = abbr;
+        g.awayScore = score;
+      }
+      if (*poss && strcmp(poss, c["id"] | "") == 0) g.possession = abbr;
+    }
+    out.push_back(g);
+  }
+  return true;
+}
+
+bool fetchNfl(std::vector<Game> &out, String &why) {
+  const char *path = "site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
+  for (int secure = 0; secure < 2; secure++) {  // plain HTTP first: no TLS
+    std::unique_ptr<TlsGuard> guard;
+    if (secure) {
+      if (!tlsFits(why)) return false;
+      guard.reset(new TlsGuard());
+    }
+    WiFiClient plain;
+    WiFiClientSecure tls;
+    HTTPClient http;  // after the clients, so it is destroyed first
+    http.setTimeout(15000);
+    http.setConnectTimeout(15000);
+    http.setReuse(false);
+    bool ok;
+    if (secure) {
+      tls.setInsecure();  // public, read-only data
+      ok = http.begin(tls, String("https://") + path);
+    } else {
+      ok = http.begin(plain, String("http://") + path);
+    }
+    if (!ok) {
+      why = "bad URL";
+      return false;
+    }
+    http.setUserAgent("Mozilla/5.0 (compatible; CYD-UI/" FW_VERSION ")");
+    const char *hdrs[] = {"Transfer-Encoding"};
+    http.collectHeaders(hdrs, 1);
+    int code = http.GET();
+    Serial.printf("[nfl] %s -> %d (free %lu, largest block %lu)\n", secure ? "https" : "http", code,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+    if (code == 200) {
+      BodyStream body(http.getStreamPtr(), http.header("Transfer-Encoding").equalsIgnoreCase("chunked"),
+                      http.getSize());
+      bool parsed = parseScoreboard(body, out, why);
+      Serial.printf("[nfl] read %u bytes, %u games\n", (unsigned)body.bytes(), (unsigned)out.size());
+      http.end();
+      if (!parsed && body.failed()) why = "connection stalled";
+      return parsed;
+    }
+    why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
+    http.end();
+    // a redirect to HTTPS (or plain HTTP refused): try again over TLS
+  }
+  return false;
+}
+
+// The tracked team's game this week, or nullptr (caller holds mtx)
+const Game *teamGame() {
+  if (nflTeamAbbr.isEmpty()) return nullptr;
+  for (const auto &g : nflGames)
+    if (g.home == nflTeamAbbr || g.away == nflTeamAbbr) return &g;
+  return nullptr;
+}
+
 void saveSnoozed() {  // caller holds mtx
   String s;
   for (const auto &id : snoozedIds) s += id + "\n";
@@ -981,10 +1197,36 @@ void stockWork() {
   stLastOk = ok;
 }
 
+void nflWork() {
+  std::vector<Game> games;
+  String why;
+  bool ok = fetchNfl(games, why);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (ok) {
+      nflGames.swap(games);
+      nflErr = "";
+      nflFetchedMs = millis();
+    } else {
+      nflErr = why;
+    }
+    nflVer++;
+    if (ok) {
+      const Game *g = teamGame();
+      if (g)
+        Serial.printf("[nfl] %s %d - %s %d, %s\n", g->away.c_str(), g->awayScore, g->home.c_str(), g->homeScore,
+                      g->detail.c_str());
+    }
+  }
+  if (!ok) Serial.printf("[nfl] failed: %s\n", why.c_str());
+  nfLastOk = ok;
+}
+
 void fetchWork() {
   if (taskFlags & DO_BUOY) buoyWork();
   if (taskFlags & DO_STOCK) stockWork();
-  if (!(taskFlags & (DO_FORECAST | DO_ALERTS))) return;  // buoy/stock-only run
+  if (taskFlags & DO_NFL) nflWork();
+  if (!(taskFlags & (DO_FORECAST | DO_ALERTS))) return;  // buoy/stock/NFL-only run
   String zip, place, why;
   float la, lo;
   bool have;
@@ -1085,6 +1327,10 @@ void startFetch(uint8_t flags) {
     stAttempted = true;
     stLastAttempt = millis();
   }
+  if (flags & DO_NFL) {
+    nfAttempted = true;
+    nfLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -1104,6 +1350,10 @@ void startFetch(uint8_t flags) {
     if (flags & DO_STOCK) {
       stockErr = "not enough memory";
       stLastOk = false;
+    }
+    if (flags & DO_NFL) {
+      nflErr = "not enough memory";
+      nfLastOk = false;
     }
   }
 }
@@ -1142,6 +1392,9 @@ void begin() {
     }
   }
   stockBar = prefs.getBool("stkBar", true);
+  nflTeamAbbr = prefs.isKey("nflTeam") ? prefs.getString("nflTeam") : String();
+  nflBar = prefs.getBool("nflBar", true);
+  nflDesk = prefs.getBool("nflDesk", true);
   stockDesk = prefs.getBool("stkDesk", true);
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
@@ -1208,10 +1461,27 @@ void loop() {
     uint32_t every = !stLastOk ? STOCK_RETRY_MS : usMarketHours() ? STOCK_REFRESH_MS : STOCK_CLOSED_MS;
     if (stForce || !stAttempted || millis() - stLastAttempt >= every) flags |= DO_STOCK;
   }
+  // NFL: every minute while your team plays, every 2 min just before kickoff
+  if (!flags && (nflBar || nflDesk) && (millis() >= NFL_BOOT_DELAY_MS || nfForce)) {
+    uint32_t every = NFL_IDLE_MS;
+    if (!nfLastOk) {
+      every = NFL_RETRY_MS;
+    } else {
+      std::lock_guard<std::mutex> lock(mtx);
+      if (const Game *g = teamGame()) {
+        time_t now = time(nullptr);
+        if (g->state == "in") every = NFL_LIVE_MS;
+        else if (g->state == "pre" && g->kickoff && now > 1700000000 && (long)g->kickoff - (long)now < 30 * 60)
+          every = NFL_SOON_MS;
+      }
+    }
+    if (nfForce || !nfAttempted || millis() - nfLastAttempt >= every) flags |= DO_NFL;
+  }
   if (flags) {
     force = alForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
+    if (flags & DO_NFL) nfForce = false;
     startFetch(flags);
   }
 }
@@ -1681,6 +1951,100 @@ String stockStatus() {
 float stockChangePct(const Stock &s) {
   if (!s.valid || std::isnan(s.prevClose) || s.prevClose <= 0) return NAN;
   return (s.price - s.prevClose) / s.prevClose * 100.0f;
+}
+
+// ---------- NFL API ----------
+
+namespace {
+const char *const NFL_TEAMS[][2] = {
+    {"ARI", "Arizona Cardinals"},    {"ATL", "Atlanta Falcons"},      {"BAL", "Baltimore Ravens"},
+    {"BUF", "Buffalo Bills"},        {"CAR", "Carolina Panthers"},    {"CHI", "Chicago Bears"},
+    {"CIN", "Cincinnati Bengals"},   {"CLE", "Cleveland Browns"},     {"DAL", "Dallas Cowboys"},
+    {"DEN", "Denver Broncos"},       {"DET", "Detroit Lions"},        {"GB", "Green Bay Packers"},
+    {"HOU", "Houston Texans"},       {"IND", "Indianapolis Colts"},   {"JAX", "Jacksonville Jaguars"},
+    {"KC", "Kansas City Chiefs"},    {"LV", "Las Vegas Raiders"},     {"LAC", "Los Angeles Chargers"},
+    {"LAR", "Los Angeles Rams"},     {"MIA", "Miami Dolphins"},       {"MIN", "Minnesota Vikings"},
+    {"NE", "New England Patriots"},  {"NO", "New Orleans Saints"},    {"NYG", "New York Giants"},
+    {"NYJ", "New York Jets"},        {"PHI", "Philadelphia Eagles"},  {"PIT", "Pittsburgh Steelers"},
+    {"SF", "San Francisco 49ers"},   {"SEA", "Seattle Seahawks"},     {"TB", "Tampa Bay Buccaneers"},
+    {"TEN", "Tennessee Titans"},     {"WSH", "Washington Commanders"},
+};
+}
+
+size_t nflTeamCount() { return sizeof(NFL_TEAMS) / sizeof(NFL_TEAMS[0]); }
+const char *nflTeamAbbrAt(size_t i) { return i < nflTeamCount() ? NFL_TEAMS[i][0] : ""; }
+const char *nflTeamNameAt(size_t i) { return i < nflTeamCount() ? NFL_TEAMS[i][1] : ""; }
+
+String nflTeam() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return nflTeamAbbr;
+}
+
+void setNflTeam(const String &abbr) {
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    nflTeamAbbr = abbr;
+    nflVer++;
+  }
+  prefs.begin("wx", false);
+  prefs.putString("nflTeam", abbr);
+  prefs.end();
+  nfForce = true;
+}
+
+bool nflActive() { return nflBar || nflDesk; }
+bool showNflBar() { return nflBar; }
+bool showNflDesk() { return nflDesk; }
+
+void setShowNflBar(bool on) {
+  bool was = nflActive();
+  nflBar = on;
+  prefs.begin("wx", false);
+  prefs.putBool("nflBar", on);
+  prefs.end();
+  if (!was && on) nfForce = true;
+  nflVer++;
+}
+
+void setShowNflDesk(bool on) {
+  bool was = nflActive();
+  nflDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("nflDesk", on);
+  prefs.end();
+  if (!was && on) nfForce = true;
+  nflVer++;
+}
+
+void refreshNfl() { nfForce = true; }
+
+std::vector<Game> nflGamesList() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return nflGames;
+}
+
+bool nflTeamGame(Game &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  const Game *g = teamGame();
+  if (!g) return false;
+  out = *g;
+  return true;
+}
+
+uint32_t nflVersion() { return nflVer; }
+
+String nflStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!nflBar && !nflDesk) return "NFL scores are off (both displays are switched off).";
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (nflErr.length()) return "Score update failed: " + nflErr;
+  if (!nflFetchedMs)
+    return millis() < NFL_BOOT_DELAY_MS ? "First scores about a minute after startup..." : "Getting scores...";
+  const Game *g = teamGame();
+  const char *pace = g && g->state == "in" ? "every minute (game on)" : "every 30 min, every minute during your game";
+  char b[112];
+  snprintf(b, sizeof(b), "Checked %lu min ago, %s - ESPN", (unsigned long)((millis() - nflFetchedMs) / 60000), pace);
+  return b;
 }
 
 }  // namespace weather

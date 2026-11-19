@@ -29,7 +29,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail
 };
 
 const int HEADER_H = 40;
@@ -69,9 +69,15 @@ lv_obj_t *aboutUptime = nullptr;  // live uptime line on the About screen
 lv_obj_t *deskBarStock = nullptr, *deskBarStockLbl = nullptr, *deskBarStockPct = nullptr;
 lv_obj_t *deskStock = nullptr, *deskStockSym = nullptr, *deskStockPrice = nullptr, *deskStockPct = nullptr;
 int deskStockKey = -1;
+size_t deskStockIdx = 0;      // ticker shown now; the readouts rotate every few seconds
+uint32_t deskStockRotMs = 0;
+const uint32_t STOCK_ROTATE_MS = 5000;
 lv_obj_t *skName = nullptr, *skPrice = nullptr, *skChange = nullptr, *skDetail = nullptr, *skStatus = nullptr,
          *skTa = nullptr;
 uint32_t skVer = 0;
+String skDetailSym;                    // ticker on the detail page
+std::vector<String> skRowSyms;         // list page: row -> ticker (stable user_data)
+std::vector<lv_obj_t *> skRowVals;     // list page: price + change label per row
 Screen stockBack = Screen::Menu;
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
@@ -205,6 +211,7 @@ void showBuoyPick();
 void showBuoyId();
 void showStock();
 void showStockSym();
+void showStockDetail();
 
 // Stock formatting shared by the status bar, desktop and stock page
 String fmtPrice(const weather::Stock &s) {
@@ -246,6 +253,7 @@ void resetPtrs() {
   deskStockKey = -1;
   skName = skPrice = skChange = skDetail = skStatus = skTa = nullptr;
   skVer = 0;
+  skRowVals.clear();
   deskBar = deskRow = deskMenu = nullptr;
   deskLayoutKey = -1;
   deskWaveKey = -1;
@@ -543,17 +551,24 @@ void refreshDesktop() {
       setText(deskBarWaveLbl, wt.c_str());
     }
   }
-  // Stock readouts (rebuilt only when the quote, ticker or switches change)
+  // Stock readouts: rotate through the tickers; rebuilt only when the shown
+  // ticker or its quote changes
   bool barStock = weather::showStockBar(), deskStockOn = weather::showStockDesk();
-  setHidden(deskBarStock, !barStock);
-  setHidden(deskStock, !deskStockOn);
-  int stockKey = (int)weather::stockVersion();
-  if ((barStock || deskStockOn) && stockKey != deskStockKey) {
+  size_t nStocks = weather::stockCount();
+  if (nStocks > 1 && millis() - deskStockRotMs >= STOCK_ROTATE_MS) {
+    deskStockRotMs = millis();
+    deskStockIdx = (deskStockIdx + 1) % nStocks;
+  }
+  if (deskStockIdx >= nStocks) deskStockIdx = 0;
+  setHidden(deskBarStock, !barStock || !nStocks);
+  setHidden(deskStock, !deskStockOn || !nStocks);
+  int stockKey = (int)(weather::stockVersion() * 16 + deskStockIdx);
+  weather::Stock stk;
+  if ((barStock || deskStockOn) && nStocks && stockKey != deskStockKey && weather::stockAt(deskStockIdx, stk)) {
     deskStockKey = stockKey;
-    weather::Stock s = weather::stock();
-    String sym = s.valid ? s.symbol : weather::stockSymbol();
-    String price = fmtPrice(s), pct = fmtPct(s);
-    lv_color_t pc = pctColor(s);
+    String sym = stk.symbol;
+    String price = fmtPrice(stk), pct = fmtPct(stk);
+    lv_color_t pc = pctColor(stk);
     if (deskStockOn) {
       setText(deskStockSym, sym.c_str());
       setText(deskStockPrice, price.c_str());
@@ -2865,17 +2880,42 @@ void showBuoyId() {
 
 // ---------- Stocks ----------
 
+// "$590.12  +0.84%" (or the error) for a list row
+String stockRowText(const weather::Stock &s) {
+  if (!s.valid) return s.error.length() ? s.error : String("--");
+  String t = fmtPrice(s);
+  String p = fmtPct(s);
+  if (p.length()) t += "  " + p;
+  return t;
+}
+
+void onStockRow(lv_event_t *e) {
+  skDetailSym = *(String *)lv_event_get_user_data(e);
+  showStockDetail();
+}
+
 void refreshStockScreen() {
   if (!skStatus) return;
   setText(skStatus, weather::stockStatus().c_str());
   if (weather::stockVersion() == skVer) return;
   skVer = weather::stockVersion();
-  weather::Stock s = weather::stock();
-  if (!s.valid) {
-    setText(skName, weather::stockSymbol().c_str());
-    setText(skPrice, "--");
-    setText(skChange, "");
-    setText(skDetail, "");
+  if (cur == Screen::Stock) {  // list page: update each row
+    if (weather::stockCount() != skRowVals.size()) {  // added/removed elsewhere
+      showStock();
+      return;
+    }
+    for (size_t i = 0; i < skRowVals.size(); i++) {
+      weather::Stock s;
+      if (!weather::stockAt(i, s)) continue;
+      setText(skRowVals[i], stockRowText(s).c_str());
+      lv_obj_set_style_text_color(skRowVals[i], s.valid ? pctColor(s) : theme::text(), 0);
+    }
+    return;
+  }
+  // detail page
+  weather::Stock s;
+  if (!weather::findStock(skDetailSym, s)) {  // removed meanwhile
+    showStock();
     return;
   }
   String nm = s.symbol + (s.name.length() ? "  " + s.name : String());
@@ -2901,11 +2941,13 @@ void refreshStockScreen() {
   if (s.marketTime) {
     char t[32];
     timesvc::formatEpoch(s.marketTime, t, sizeof(t));
-    add("Last trade %s", t);
+    add("Last trade %s\n", t);
   }
+  if (s.error.length()) add("Last update failed: %s", s.error.c_str());
   setText(skDetail, buf);
 }
 
+// List of all tickers, plus add / display switches / refresh
 void showStock() {
   lv_obj_t *scr = newScreen();
   makeHeader(scr, "Stocks", [](lv_event_t *) {
@@ -2917,16 +2959,90 @@ void showStock() {
   lv_obj_set_size(list, W(), H() - HEADER_H);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
 
-  lv_obj_t *card = lv_obj_create(list);
-  lv_obj_remove_style_all(card);
-  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_all(card, 8, 0);
-  lv_obj_set_style_pad_row(card, 4, 0);
-  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  skStatus = lv_label_create(list);
+  lv_label_set_long_mode(skStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(skStatus, LV_PCT(100));
+  lv_obj_set_style_pad_all(skStatus, 6, 0);
+  lv_obj_set_style_text_opa(skStatus, LV_OPA_70, 0);
+  lv_label_set_text(skStatus, "");
+
+  skRowSyms = weather::stockSymbols();
+  skRowVals.clear();
+  lv_list_add_text(list, "Your tickers (tap for details)");
+  for (auto &sym : skRowSyms) {
+    lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_UP, sym.c_str());
+    lv_obj_t *v = lv_label_create(b);  // right side: price + change
+    lv_label_set_text(v, "--");
+    skRowVals.push_back(v);
+    lv_obj_add_event_cb(b, onStockRow, LV_EVENT_CLICKED, &sym);
+  }
+  if (skRowSyms.size() < 8) {
+    lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_PLUS, "Add ticker");
+    lv_obj_add_event_cb(b, [](lv_event_t *) { showStockSym(); }, LV_EVENT_CLICKED, nullptr);
+  }
+
+  lv_list_add_text(list, "Display");
+  auto toggleRow = [&](const char *label, bool on, lv_event_cb_t cb) {
+    lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, label);
+    lv_obj_t *s = lv_switch_create(row);
+    lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, s);
+  };
+  toggleRow("Stocks in status bar", weather::showStockBar(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showStockBar();
+    weather::setShowStockBar(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  toggleRow("Stocks on desktop", weather::showStockDesk(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showStockDesk();
+    weather::setShowStockDesk(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get stock quotes.");
+          return;
+        }
+        if (!weather::stockActive()) {
+          errorBox("Stocks are off", "Turn on the status bar or desktop stock display first.");
+          return;
+        }
+        weather::refreshStock();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  lv_list_add_text(list, "Quotes: Yahoo Finance, may be delayed. The status bar and desktop rotate through "
+                         "your tickers every 5 s.");
+
+  load(scr, Screen::Stock);
+  skVer = weather::stockVersion() - 1;  // fill the rows now
+  refreshStockScreen();
+}
+
+// One ticker in detail, with Remove
+void showStockDetail() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, skDetailSym.c_str(), [](lv_event_t *) { showStock(); });
+
+  const int btnRowH = 48;
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H - btnRowH);
+  lv_obj_align(box, LV_ALIGN_TOP_MID, 0, HEADER_H);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+  lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(box, 4, 0);
 
   auto wrapLabel = [&](const lv_font_t *font) {
-    lv_obj_t *l = lv_label_create(card);
+    lv_obj_t *l = lv_label_create(box);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(l, LV_PCT(100));
     if (font) lv_obj_set_style_text_font(l, font, 0);
@@ -2940,64 +3056,35 @@ void showStock() {
   skStatus = wrapLabel(nullptr);
   lv_obj_set_style_text_opa(skStatus, LV_OPA_70, 0);
 
-  String t = "Ticker: " + weather::stockSymbol();
-  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, t.c_str());
-  lv_obj_add_event_cb(b, [](lv_event_t *) { showStockSym(); }, LV_EVENT_CLICKED, nullptr);
-
-  auto toggleRow = [&](const char *label, bool on, lv_event_cb_t cb) {
-    lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, label);
-    lv_obj_t *s = lv_switch_create(row);
-    lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
-    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, s);
-  };
-  toggleRow("Stock in status bar", weather::showStockBar(), [](lv_event_t *e) {
-    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
-    bool on = !weather::showStockBar();
-    weather::setShowStockBar(on);
-    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
-    else lv_obj_clear_state(s, LV_STATE_CHECKED);
-  });
-  toggleRow("Stock on desktop", weather::showStockDesk(), [](lv_event_t *e) {
-    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
-    bool on = !weather::showStockDesk();
-    weather::setShowStockDesk(on);
-    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
-    else lv_obj_clear_state(s, LV_STATE_CHECKED);
-  });
-
-  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_t *rm = flatBtn(scr, LV_SYMBOL_TRASH "  Remove ticker", W() - 16, 38);
+  lv_obj_align(rm, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_bg_color(rm, lv_palette_main(LV_PALETTE_GREY), 0);
   lv_obj_add_event_cb(
-      b,
+      rm,
       [](lv_event_t *) {
-        if (net::state() != net::State::Connected) {
-          errorBox("No Wi-Fi", "Connect to Wi-Fi to get stock quotes.");
-          return;
-        }
-        if (!weather::stockActive()) {
-          errorBox("Stock is off", "Turn on the status bar or desktop stock display first.");
-          return;
-        }
-        weather::refreshStock();
+        String msg = "Stop tracking " + skDetailSym + "?";
+        confirmBox("Remove ticker", msg.c_str(), "Remove", [](lv_event_t *) {
+          weather::removeStockSymbol(skDetailSym);
+          showStock();
+        });
       },
       LV_EVENT_CLICKED, nullptr);
-  lv_list_add_text(list, "Quotes: Yahoo Finance, may be delayed");
 
-  load(scr, Screen::Stock);
+  load(scr, Screen::StockDetail);
+  skVer = weather::stockVersion() - 1;
   refreshStockScreen();
 }
 
 void showStockSym() {
   lv_obj_t *scr = newScreen();
-  makeHeader(scr, "Stock ticker", [](lv_event_t *) { showStock(); });
+  makeHeader(scr, "Add ticker", [](lv_event_t *) { showStock(); });
 
   skTa = lv_textarea_create(scr);
   lv_textarea_set_one_line(skTa, true);
-  // Letters, digits and the symbols Yahoo uses: BRK-B, BF.B, ^GSPC, EURUSD=X
+  // Letters, digits and the symbols Yahoo uses: BRK-B, BF.B, ^GSPC, GC=F
   lv_textarea_set_accepted_chars(skTa, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-^=");
   lv_textarea_set_max_length(skTa, 12);
-  lv_textarea_set_placeholder_text(skTa, "e.g. AAPL, TSLA, BRK-B");
-  lv_textarea_set_text(skTa, weather::stockSymbol().c_str());
+  lv_textarea_set_placeholder_text(skTa, "e.g. AAPL, GC=F, BRK-B");
   lv_obj_set_width(skTa, W() - 8);
   lv_obj_align(skTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
   lv_obj_add_state(skTa, LV_STATE_FOCUSED);
@@ -3023,7 +3110,11 @@ void showStockSym() {
             errorBox("No ticker", "Enter a stock ticker, for example AAPL.");
             return;
           }
-          weather::setStockSymbol(sym);
+          String why;
+          if (!weather::addStockSymbol(sym, why)) {
+            errorBox("Can't add", why.c_str());
+            return;
+          }
           showStock();
         }
       },
@@ -3571,7 +3662,8 @@ void poll(lv_timer_t *) {
     case Screen::WxAlerts: pollWxAlerts(); break;
     case Screen::Buoy: refreshBuoyScreen(); break;
     case Screen::About: refreshAbout(); break;
-    case Screen::Stock: refreshStockScreen(); break;
+    case Screen::Stock:
+    case Screen::StockDetail: refreshStockScreen(); break;
     default: break;
   }
 }

@@ -3,6 +3,23 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.8.1] - 2026-11-19
+
+### Added
+- Multiple stock tickers, up to 8:
+  - **Menu > Stocks** lists them all with price and day change. **Add ticker** adds one, and
+    tapping a ticker opens its detail page, which has **Remove ticker**.
+  - The status bar and desktop readouts rotate through the tickers every 5 s.
+  - The 0.8.0 single ticker carries over as the first entry.
+- All tickers are fetched over one TLS session: HTTPClient keep-alive reuses the connection, so
+  there's a single handshake per update. Each reply goes to its own flash file and is parsed after
+  the connection closes. A failed ticker shows its own error and keeps its last good price.
+
+### Fixed
+- `streamBody()` now consumes the end of a chunked reply (the final CRLF and any trailers), so a
+  kept-alive connection starts the next response cleanly. This was host-tested with chunked,
+  chunked-with-trailer and Content-Length bodies.
+
 ## [0.8.0] - 2026-11-19
 
 ### Added

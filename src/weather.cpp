@@ -54,8 +54,8 @@ const uint32_t STOCK_REFRESH_MS = 5UL * 60 * 1000;   // while the US market is o
 const uint32_t STOCK_CLOSED_MS = 30UL * 60 * 1000;   // nights and weekends
 const uint32_t STOCK_RETRY_MS = 2UL * 60 * 1000;
 const uint32_t STOCK_BOOT_DELAY_MS = 60000;          // after forecast, alerts and buoy
-const char *STOCK_TMP = "/stk.json";
 const char *STOCK_DEFAULT = "SPY";
+const size_t MAX_STOCKS = 8;
 
 std::mutex mtx;
 Preferences prefs;
@@ -93,10 +93,11 @@ String buoyErr;
 uint32_t buoyVer = 0;
 
 // Stock quote (guarded by mtx)
-String stockSym;
+std::vector<String> stockSyms;  // tickers in display order (persisted)
+std::vector<Stock> stockList;   // same order as stockSyms; valid=false until fetched
 bool stockBar = true, stockDesk = true;
-Stock stockData;
-String stockErr;
+String stockErr;                // last failure of the whole update (memory, TLS...)
+uint32_t stockFetchedMs = 0;
 uint32_t stockVer = 0;
 
 // Scheduling (main task only)
@@ -354,7 +355,17 @@ long streamBody(HTTPClient &http, bool chunked, File &f, size_t maxBytes, String
       }
       line[k] = 0;
       unsigned long sz = strtoul(line, nullptr, 16);
-      if (!sz) break;  // last chunk
+      if (!sz) {  // last chunk: skip optional trailers up to the blank line, so a
+                  // kept-alive connection starts the next reply cleanly
+        for (int guardLines = 0; guardLines < 16; guardLines++) {
+          size_t len = 0;
+          int c;
+          while ((c = readByte()) >= 0 && c != '\n')
+            if (c != '\r') len++;
+          if (c < 0 || len == 0) break;
+        }
+        break;
+      }
       if (!copy(sz)) return -1;
       readByte();  // CRLF after the chunk data
       readByte();
@@ -734,64 +745,85 @@ String urlEncodeSymbol(const String &s) {
   return out;
 }
 
-bool downloadStock(const String &sym, String &why, int &httpCode) {
+String stockFile(size_t i) { return "/stk" + String((unsigned)i) + ".json"; }
+
+void saveStockSyms() {  // caller holds mtx
+  String v;
+  for (const auto &x : stockSyms) v += x + "\n";
+  prefs.begin("wx", false);
+  prefs.putString("stkSyms", v);
+  prefs.end();
+}
+
+// Fetches every ticker over ONE TLS session: HTTPClient keeps the
+// connection open between requests to the same host (keep-alive), so the
+// expensive handshake happens once. Each reply goes to its own flash file.
+// Returns false only if nothing could be downloaded.
+bool downloadStocks(const std::vector<String> &syms, std::vector<String> &errs, String &why) {
   TlsGuard guard;  // declared first, released after the TLS session is gone
   WiFiClientSecure tls;
   HTTPClient http;
   tls.setInsecure();  // public, read-only data
   http.setTimeout(15000);
   http.setConnectTimeout(15000);
-  http.setReuse(false);
-  String url = "https://query1.finance.yahoo.com/v8/finance/chart/" + urlEncodeSymbol(sym) + "?range=1d&interval=1d";
-  if (!http.begin(tls, url)) {
-    why = "bad URL";
-    return false;
-  }
-  http.setUserAgent("Mozilla/5.0 (compatible; CYD-UI/" FW_VERSION ")");
+  http.setReuse(true);
   const char *hdrs[] = {"Transfer-Encoding"};
-  http.collectHeaders(hdrs, 1);
-  httpCode = http.GET();
-  Serial.printf("[stock] %s -> %d (free %lu, largest block %lu)\n", sym.c_str(), httpCode,
-                (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
-  if (httpCode != 200 && httpCode != 404) {  // 404 still carries a JSON error message
-    why = httpCode < 0 ? http.errorToString(httpCode) : String("HTTP ") + httpCode;
-    http.end();
-    return false;
+  size_t okCount = 0;
+  for (size_t i = 0; i < syms.size(); i++) {
+    SPIFFS.remove(stockFile(i));
+    String url = "https://query1.finance.yahoo.com/v8/finance/chart/" + urlEncodeSymbol(syms[i]) +
+                 "?range=1d&interval=1d";
+    if (!http.begin(tls, url)) {
+      errs[i] = "bad URL";
+      continue;
+    }
+    http.setUserAgent("Mozilla/5.0 (compatible; CYD-UI/" FW_VERSION ")");
+    http.collectHeaders(hdrs, 1);
+    int code = http.GET();
+    Serial.printf("[stock] %s -> %d (free %lu, largest block %lu)\n", syms[i].c_str(), code,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+    if (code != 200 && code != 404) {  // 404 still carries Yahoo's JSON error
+      errs[i] = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
+      http.end();
+      if (code < 0 && okCount == 0 && i == 0) {  // couldn't even connect: give up for now
+        why = errs[i];
+        return false;
+      }
+      continue;
+    }
+    File f = SPIFFS.open(stockFile(i), FILE_WRITE);
+    if (!f) {
+      errs[i] = "can't write to flash";
+      http.end();
+      continue;
+    }
+    const bool chunked = http.header("Transfer-Encoding").equalsIgnoreCase("chunked");
+    String swhy;
+    long got = streamBody(http, chunked, f, 32 * 1024, swhy);
+    f.close();
+    http.end();  // keeps the connection open for the next ticker when possible
+    if (got <= 0) {
+      errs[i] = got < 0 ? "download failed: " + swhy : String("empty response");
+      SPIFFS.remove(stockFile(i));
+      continue;
+    }
+    if (code == 404) errs[i] = "not found";  // the parser shows Yahoo's reason if any
+    okCount++;
   }
-  File f = SPIFFS.open(STOCK_TMP, FILE_WRITE);
-  if (!f) {
-    why = "can't write to flash";
-    http.end();
-    return false;
-  }
-  const bool chunked = http.header("Transfer-Encoding").equalsIgnoreCase("chunked");
-  String swhy;
-  long got = streamBody(http, chunked, f, 32 * 1024, swhy);
-  f.close();
+  http.setReuse(false);
   http.end();
   tls.stop();
-  if (got <= 0) {
-    why = got < 0 ? "download failed: " + swhy : String("empty response");
+  if (!okCount) {
+    why = errs.empty() ? String("no tickers") : errs[0];
     return false;
   }
   return true;
 }
 
-bool fetchStock(const String &sym, Stock &out, String &why) {
-  if (!fsReady()) {
-    why = "flash storage unavailable";
-    return false;
-  }
-  if (!tlsFits(why)) return false;
-  int code = 0;
-  bool ok = downloadStock(sym, why, code);  // TLS is closed when this returns
-  if (!ok) {
-    SPIFFS.remove(STOCK_TMP);
-    return false;
-  }
-  File f = SPIFFS.open(STOCK_TMP, FILE_READ);
+bool parseStockFile(size_t i, const String &sym, Stock &out, String &why) {
+  File f = SPIFFS.open(stockFile(i), FILE_READ);
   if (!f) {
-    why = "saved quote missing";
+    why = "no data";
     return false;
   }
   JsonDocument filter;
@@ -804,7 +836,7 @@ bool fetchStock(const String &sym, Stock &out, String &why) {
   JsonDocument doc;
   DeserializationError e = deserializeJson(doc, f, DeserializationOption::Filter(filter));
   f.close();
-  SPIFFS.remove(STOCK_TMP);
+  SPIFFS.remove(stockFile(i));
   if (e) {
     why = String("bad quote data: ") + e.c_str();
     return false;
@@ -812,7 +844,7 @@ bool fetchStock(const String &sym, Stock &out, String &why) {
   const char *err = doc["chart"]["error"]["description"] | "";
   JsonObject m = doc["chart"]["result"][0]["meta"];
   if (m.isNull() || !m["regularMarketPrice"].is<float>()) {
-    why = code == 404 || *err ? "ticker " + sym + " not found" : String("no price in the reply");
+    why = *err ? String("not found: ") + err : String("ticker not found");
     return false;
   }
   out.symbol = m["symbol"] | sym.c_str();
@@ -830,6 +862,7 @@ bool fetchStock(const String &sym, Stock &out, String &why) {
   out.marketTime = m["regularMarketTime"] | 0;
   out.fetchedMs = millis();
   out.valid = true;
+  out.error = "";
   return true;
 }
 
@@ -903,28 +936,48 @@ void buoyWork() {
 }
 
 void stockWork() {
-  String sym;
+  std::vector<String> syms;
   {
     std::lock_guard<std::mutex> lock(mtx);
-    sym = stockSym;
+    syms = stockSyms;
   }
-  Stock s;
+  if (syms.empty()) return;
+  std::vector<String> errs(syms.size());
+  std::vector<Stock> fresh(syms.size());
   String why;
-  bool ok = fetchStock(sym, s, why);
+  bool ok = fsReady() ? true : (why = "flash storage unavailable", false);
+  if (ok) ok = tlsFits(why);
+  if (ok) ok = downloadStocks(syms, errs, why);  // TLS is closed when this returns
+  if (ok) {
+    for (size_t i = 0; i < syms.size(); i++) {
+      if (!errs[i].length() || errs[i] == "not found") {
+        String perr;
+        if (!parseStockFile(i, syms[i], fresh[i], perr)) errs[i] = perr;
+      }
+      if (errs[i].length()) Serial.printf("[stock] %s failed: %s\n", syms[i].c_str(), errs[i].c_str());
+      else Serial.printf("[stock] %s %.2f (prev close %.2f)\n", syms[i].c_str(), fresh[i].price, fresh[i].prevClose);
+    }
+  } else {
+    for (size_t i = 0; i < syms.size(); i++) SPIFFS.remove(stockFile(i));
+    Serial.printf("[stock] update failed: %s\n", why.c_str());
+  }
   {
     std::lock_guard<std::mutex> lock(mtx);
-    if (sym == stockSym) {  // ignore if the ticker was changed meanwhile
+    if (syms == stockSyms) {  // ignore if the list was changed meanwhile
       if (ok) {
-        stockData = s;
+        for (size_t i = 0; i < syms.size(); i++) {
+          if (fresh[i].valid) stockList[i] = fresh[i];
+          stockList[i].symbol = syms[i];
+          stockList[i].error = errs[i];  // keeps the last good price if this one failed
+        }
         stockErr = "";
+        stockFetchedMs = millis();
       } else {
         stockErr = why;
       }
       stockVer++;
     }
   }
-  if (ok) Serial.printf("[stock] %s %.2f (prev close %.2f)\n", sym.c_str(), s.price, s.prevClose);
-  else Serial.printf("[stock] %s failed: %s\n", sym.c_str(), why.c_str());
   stLastOk = ok;
 }
 
@@ -1072,7 +1125,22 @@ void begin() {
   buoyBar = prefs.getBool("buoyBar", legacyOn);
   buoyDesk = prefs.getBool("buoyDesk", legacyOn);
   alertDesk = prefs.getBool("alertDesk", true);
-  stockSym = prefs.isKey("stkSym") ? prefs.getString("stkSym") : String(STOCK_DEFAULT);
+  {
+    String v = prefs.isKey("stkSyms") ? prefs.getString("stkSyms")
+               : prefs.isKey("stkSym") ? prefs.getString("stkSym") + "\n"  // 0.8.0 kept one ticker
+                                       : String(STOCK_DEFAULT) + "\n";
+    for (int i = 0; i < (int)v.length();) {
+      int nl = v.indexOf('\n', i);
+      if (nl < 0) nl = v.length();
+      if (nl > i && stockSyms.size() < MAX_STOCKS) stockSyms.push_back(v.substring(i, nl));
+      i = nl + 1;
+    }
+    for (const auto &x : stockSyms) {
+      Stock st;
+      st.symbol = x;
+      stockList.push_back(st);
+    }
+  }
   stockBar = prefs.getBool("stkBar", true);
   stockDesk = prefs.getBool("stkDesk", true);
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
@@ -1136,7 +1204,7 @@ void loop() {
       (byForce || !byAttempted || millis() - byLastAttempt >= (byLastOk ? BUOY_REFRESH_MS : BUOY_RETRY_MS)))
     flags |= DO_BUOY;
   // Stock quote: on its own, once nothing else is due
-  if (!flags && (stockBar || stockDesk) && stockSym.length() && (millis() >= STOCK_BOOT_DELAY_MS || stForce)) {
+  if (!flags && (stockBar || stockDesk) && !stockSyms.empty() && (millis() >= STOCK_BOOT_DELAY_MS || stForce)) {
     uint32_t every = !stLastOk ? STOCK_RETRY_MS : usMarketHours() ? STOCK_REFRESH_MS : STOCK_CLOSED_MS;
     if (stForce || !stAttempted || millis() - stLastAttempt >= every) flags |= DO_STOCK;
   }
@@ -1502,24 +1570,70 @@ String waveText(float m) {
 
 // ---------- Stock quote API ----------
 
-String stockSymbol() {
+size_t stockCount() {
   std::lock_guard<std::mutex> lock(mtx);
-  return stockSym;
+  return stockSyms.size();
 }
 
-void setStockSymbol(const String &sym) {
+std::vector<String> stockSymbols() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return stockSyms;
+}
+
+bool stockAt(size_t i, Stock &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (i >= stockList.size()) return false;
+  out = stockList[i];
+  return true;
+}
+
+bool findStock(const String &sym, Stock &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  for (const auto &st : stockList)
+    if (st.symbol == sym) {
+      out = st;
+      return true;
+    }
+  return false;
+}
+
+std::vector<Stock> stocks() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return stockList;
+}
+
+bool addStockSymbol(const String &sym, String &why) {
   {
     std::lock_guard<std::mutex> lock(mtx);
-    if (sym == stockSym && stockData.valid) return;
-    stockSym = sym;
-    stockData = Stock();
-    stockErr = "";
+    if (std::find(stockSyms.begin(), stockSyms.end(), sym) != stockSyms.end()) {
+      why = sym + " is already in the list.";
+      return false;
+    }
+    if (stockSyms.size() >= MAX_STOCKS) {
+      why = "Up to 8 tickers. Remove one first.";
+      return false;
+    }
+    stockSyms.push_back(sym);
+    Stock st;
+    st.symbol = sym;
+    stockList.push_back(st);
+    saveStockSyms();
     stockVer++;
   }
-  prefs.begin("wx", false);
-  prefs.putString("stkSym", sym);
-  prefs.end();
   stForce = true;
+  return true;
+}
+
+void removeStockSymbol(const String &sym) {
+  std::lock_guard<std::mutex> lock(mtx);
+  for (size_t i = 0; i < stockSyms.size(); i++)
+    if (stockSyms[i] == sym) {
+      stockSyms.erase(stockSyms.begin() + i);
+      stockList.erase(stockList.begin() + i);
+      saveStockSyms();
+      stockVer++;
+      return;
+    }
 }
 
 bool stockActive() { return stockBar || stockDesk; }
@@ -1548,23 +1662,19 @@ void setShowStockDesk(bool on) {
 
 void refreshStock() { stForce = true; }
 
-Stock stock() {
-  std::lock_guard<std::mutex> lock(mtx);
-  return stockData;
-}
-
 uint32_t stockVersion() { return stockVer; }
 
 String stockStatus() {
   std::lock_guard<std::mutex> lock(mtx);
   if (!stockBar && !stockDesk) return "Stock tracking is off (both stock displays are switched off).";
+  if (stockSyms.empty()) return "Add a ticker to start tracking.";
   if (bluetoothBusy()) return PAUSED_MSG;
   if (stockErr.length()) return "Quote update failed: " + stockErr;
-  if (!stockData.valid)
-    return millis() < STOCK_BOOT_DELAY_MS ? "First quote 1 min after startup..." : "Getting the quote...";
+  if (!stockFetchedMs)
+    return millis() < STOCK_BOOT_DELAY_MS ? "First quotes 1 min after startup..." : "Getting quotes...";
   char b[96];
   snprintf(b, sizeof(b), "Checked %lu min ago, every %s - Yahoo Finance (may be delayed)",
-           (unsigned long)((millis() - stockData.fetchedMs) / 60000), usMarketHours() ? "5 min" : "30 min (market closed)");
+           (unsigned long)((millis() - stockFetchedMs) / 60000), usMarketHours() ? "5 min" : "30 min (market closed)");
   return b;
 }
 

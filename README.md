@@ -35,13 +35,15 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 - **Alert count**: a desktop readout next to the wave height shows how many NWS alerts are
   active (red while any are unsnoozed). Tap it for the alert list. Switch it off under **Weather >
   Alert count on desktop**.
-- **Stocks**: one ticker of your choice (any NYSE/NASDAQ stock, ETF or index Yahoo Finance
-  knows, e.g. AAPL, BRK-B, ^GSPC). The price and the day's change (green up, red down) show in the
-  status bar and in a desktop bubble, each with its own switch under **Menu > Stocks**. Tap
-  either one for the stock page: change in $ and %, previous close, day range, exchange and last
-  trade time. Quotes refresh every 5 min while the US market is open and every 30 min otherwise.
-  Like the weather and buoy, updates pause while Drone Scan, Drone Watch or a Bluetooth tool is in
-  use. Data comes from Yahoo Finance's free chart endpoint (unofficial, may be delayed).
+- **Stocks**: track up to 8 tickers (any NYSE/NASDAQ stock, ETF, index or future Yahoo Finance
+  knows, e.g. AAPL, BRK-B, ^GSPC, GC=F for gold). The status bar and a desktop bubble show the price
+  and the day's change (green up, red down), rotating through your tickers every 5 s. Each has its
+  own switch under **Menu > Stocks**. That page lists every ticker with its price and change. Tap
+  one for details (change in $ and %, previous close, day range, exchange, last trade) or to
+  remove it, and use **Add ticker** for more. Quotes refresh every 5 min while the US market is open
+  and every 30 min otherwise, all over one HTTPS connection. Like the weather and buoy, updates
+  pause while Drone Scan, Drone Watch or a Bluetooth tool is in use. Data comes from Yahoo Finance's
+  free chart endpoint (unofficial, may be delayed).
 - **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
   bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,

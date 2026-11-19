@@ -117,21 +117,27 @@ String waveText(float m);                  // 4' 7" (or 1.4 m in Celsius mode)
 // One ticker, refreshed every 5 min while the US market is open (30 min
 // otherwise), paused like the other downloads while Bluetooth tools run.
 struct Stock {
-  bool valid = false;
+  bool valid = false;     // has a price (kept from the last good update if a later one failed)
   String symbol, name, exchange, currency;
+  String error;           // why the last update of this ticker failed, "" if it worked
   float price = NAN, prevClose = NAN, dayHigh = NAN, dayLow = NAN;
   uint32_t marketTime = 0;  // epoch of the last trade
   uint32_t fetchedMs = 0;
 };
-String stockSymbol();                 // default SPY
-void setStockSymbol(const String &sym);
+// Up to 8 tickers (default SPY), all fetched over one HTTPS session
+size_t stockCount();
+std::vector<String> stockSymbols();
+bool stockAt(size_t i, Stock &out);   // in list order; symbol is set even before data arrives
+bool findStock(const String &sym, Stock &out);
+std::vector<Stock> stocks();
+bool addStockSymbol(const String &sym, String &why);  // false if duplicate or list full
+void removeStockSymbol(const String &sym);
 bool showStockBar();                  // price + day change in the status bar
 void setShowStockBar(bool on);
 bool showStockDesk();                 // desktop widget
 void setShowStockDesk(bool on);
 bool stockActive();                   // either display on, so the quote is polled
 void refreshStock();
-Stock stock();
 uint32_t stockVersion();
 String stockStatus();
 float stockChangePct(const Stock &s);  // day change in %, NAN if unknown

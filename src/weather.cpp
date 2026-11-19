@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <SPIFFS.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -26,6 +27,11 @@ const size_t MAX_SNOOZED = 16;
 const uint32_t ALERTS_BOOT_DELAY_MS = 30000;  // first NWS check waits until boot has settled
 const uint32_t TLS_MIN_BLOCK = 36 * 1024;     // skip HTTPS when RAM is too tight for TLS
 const uint16_t HTTP_TIMEOUT_MS = 8000;
+const char *ALERTS_TMP = "/nws.json";          // alert download is saved here, then parsed offline
+const size_t ALERTS_MAX_BYTES = 96 * 1024;     // fits the 128 KB SPIFFS partition
+const uint32_t ALERTS_STALL_MS = 20000;        // give up if no bytes arrive for this long
+const uint32_t ALERTS_TOTAL_MS = 90000;        // and on the whole download after this
+const uint32_t FULLTEXT_MIN_BLOCK = 48 * 1024; // keep the long alert texts only with this much RAM
 
 std::mutex mtx;
 Preferences prefs;
@@ -203,19 +209,21 @@ String clip(const char *s, size_t max) {
   return out;
 }
 
-bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
-  if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {
-    why = String("skipped, low memory (") + ESP.getMaxAllocHeap() / 1024 +
-          " KB free block). Bluetooth tools hold RAM until reboot";
-    return false;
-  }
-  // Same declaration order rule as httpGet(): clients must outlive `http`
-  WiFiClientSecure tls;
+bool fsReady() {
+  static int8_t state = -1;  // -1 untried, 0 failed, 1 mounted
+  if (state < 0) state = SPIFFS.begin(true) ? 1 : 0;  // formats once on first use
+  return state == 1;
+}
+
+// Step 1: save the NWS response to flash. The TLS session lives only inside this
+// function, so its ~40 KB is free again before any JSON parsing starts.
+bool downloadAlerts(float la, float lo, String &why) {
+  WiFiClientSecure tls;  // declared before `http` so it outlives it
   HTTPClient http;
   tls.setInsecure();  // public, read-only data
-  http.setTimeout(10000);
-  http.setConnectTimeout(10000);
-  http.useHTTP10(true);  // no chunked encoding, so the JSON can be parsed straight off the stream
+  http.setTimeout(15000);
+  http.setConnectTimeout(15000);
+  http.useHTTP10(true);  // plain body, no chunked encoding
   char url[128];
   snprintf(url, sizeof(url), "https://api.weather.gov/alerts/active?point=%.4f,%.4f", la, lo);
   if (!http.begin(tls, url)) {
@@ -230,22 +238,89 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
     http.end();
     return false;
   }
-  // Keep only the fields we show; alert texts can be long
+  File f = SPIFFS.open(ALERTS_TMP, FILE_WRITE);
+  if (!f) {
+    why = "can't write to flash";
+    http.end();
+    return false;
+  }
+  auto *in = http.getStreamPtr();
+  const int expected = http.getSize();  // -1 when the server doesn't say
+  uint8_t buf[512];
+  size_t total = 0;
+  bool tooBig = false, stalled = false;
+  const uint32_t start = millis();
+  uint32_t lastByte = start;
+  while (in && (in->connected() || in->available())) {
+    int n = in->available();
+    if (n > 0) {
+      n = in->read(buf, std::min(n, (int)sizeof(buf)));
+      if (n > 0) {
+        if (total + n > ALERTS_MAX_BYTES) {
+          tooBig = true;
+          break;
+        }
+        f.write(buf, n);
+        total += n;
+        lastByte = millis();
+        if (expected > 0 && total >= (size_t)expected) break;
+      }
+    } else {
+      if (millis() - lastByte > ALERTS_STALL_MS || millis() - start > ALERTS_TOTAL_MS) {
+        stalled = true;
+        break;
+      }
+      delay(20);
+    }
+  }
+  f.close();
+  http.end();
+  tls.stop();
+  if (tooBig) {
+    why = "alert data too large (over 96 KB)";
+    return false;
+  }
+  if (expected > 0 && total < (size_t)expected) {
+    why = String("download cut off (") + total / 1024 + " of " + expected / 1024 + " KB)" +
+          (stalled ? ", connection stalled" : "");
+    return false;
+  }
+  if (total == 0) {
+    why = "empty response from NWS";
+    return false;
+  }
+  Serial.printf("[wx] NWS alerts: %u bytes saved\n", (unsigned)total);
+  return true;
+}
+
+// Step 2: parse the saved file with no network connection open.
+bool parseAlerts(std::vector<Alert> &out, String &why) {
+  File f = SPIFFS.open(ALERTS_TMP, FILE_READ);
+  if (!f) {
+    why = "saved alert data missing";
+    return false;
+  }
+  // The full texts are kept only when RAM allows; otherwise the summary fields
+  // are enough and the details page points to weather.gov.
+  const bool fullText = ESP.getMaxAllocHeap() >= FULLTEXT_MIN_BLOCK;
   JsonDocument filter;
-  // The long "description"/"instruction" texts (several KB each) are left out:
-  // holding them alongside the TLS session ran the heap dry.
   for (const char *k : {"id", "event", "headline", "severity", "urgency", "certainty", "areaDesc", "onset",
                         "expires", "ends", "senderName", "status"})
     filter["features"][0]["properties"][k] = true;
+  if (fullText) {
+    filter["features"][0]["properties"]["description"] = true;
+    filter["features"][0]["properties"]["instruction"] = true;
+  }
   JsonDocument doc;
-  DeserializationError e = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
+  DeserializationError e = deserializeJson(doc, f, DeserializationOption::Filter(filter));
+  f.close();
+  SPIFFS.remove(ALERTS_TMP);
   if (e) {
     why = String("bad alert data: ") + e.c_str();
     return false;
   }
-  for (JsonObject f : doc["features"].as<JsonArray>()) {
-    JsonObject p = f["properties"];
+  for (JsonObject ft : doc["features"].as<JsonArray>()) {
+    JsonObject p = ft["properties"];
     if (strcmp(p["status"] | "Actual", "Actual") != 0) continue;  // skip tests and exercises
     Alert a;
     a.id = p["id"] | "";
@@ -266,6 +341,23 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
     if (out.size() >= MAX_ALERTS) break;
   }
   return true;
+}
+
+bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
+  if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {
+    why = String("skipped, low memory (") + ESP.getMaxAllocHeap() / 1024 +
+          " KB free block). Bluetooth tools hold RAM until reboot";
+    return false;
+  }
+  if (!fsReady()) {
+    why = "flash storage unavailable";
+    return false;
+  }
+  if (!downloadAlerts(la, lo, why)) {
+    SPIFFS.remove(ALERTS_TMP);
+    return false;
+  }
+  return parseAlerts(out, why);
 }
 
 void saveSnoozed() {  // caller holds mtx

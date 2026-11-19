@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.5] - 2026-11-19
+
+### Fixed
+- NWS alerts failing with "bad alert data: IncompleteInput". The download was cut off while the
+  JSON was being parsed straight off the slow TLS connection. Alerts are now fetched in two steps:
+  1. Download: the response is saved to the SPIFFS partition (up to 96 KB) with 15 s
+     connect/read timeouts and a 20 s stall limit. Then the TLS connection is closed, freeing its
+     ~40 KB.
+  2. Parse: the saved file is parsed with no connection open, then deleted.
+- Error messages are clearer: "download cut off (x of y KB)", "alert data too large",
+  "connection stalled".
+
+### Changed
+- The full alert description and safety instructions come back when the largest free RAM block
+  is at least 48 KB at parse time. Otherwise only the summary fields are kept, as in 0.5.4.
+
 ## [0.5.4] - 2026-11-19
 
 ### Reverted

@@ -2558,6 +2558,24 @@ void onBuoyPicked(lv_event_t *e) {
   showBuoy();
 }
 
+std::vector<String> pickFavs;  // stable storage for the favorite rows' user_data
+String favToRemove;
+
+void onFavPicked(lv_event_t *e) {
+  weather::setBuoyStation(*(String *)lv_event_get_user_data(e));
+  showBuoy();
+}
+
+// Long-press a favorite to remove it from the list
+void onFavLongPress(lv_event_t *e) {
+  favToRemove = *(String *)lv_event_get_user_data(e);
+  String msg = "Remove buoy " + favToRemove + " from your favorites?";
+  confirmBox("Remove favorite", msg.c_str(), "Remove", [](lv_event_t *) {
+    weather::removeBuoyFavorite(favToRemove);
+    showBuoyPick();
+  });
+}
+
 void showBuoyPick() {
   lv_obj_t *scr = newScreen();
   makeHeader(scr, "Choose buoy", [](lv_event_t *) { showBuoy(); });
@@ -2566,9 +2584,19 @@ void showBuoyPick() {
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
 
   String curId = weather::buoyStation();
+  pickFavs = weather::buoyFavorites();
+  if (!pickFavs.empty()) {
+    lv_list_add_text(list, "Favorites (hold to remove)");
+    for (auto &f : pickFavs) {
+      String t = f + "  Added by you";
+      lv_obj_t *b = lv_list_add_btn(list, curId == f ? LV_SYMBOL_OK : LV_SYMBOL_GPS, t.c_str());
+      lv_obj_add_event_cb(b, onFavPicked, LV_EVENT_SHORT_CLICKED, &f);
+      lv_obj_add_event_cb(b, onFavLongPress, LV_EVENT_LONG_PRESSED, &f);
+    }
+  }
   size_t n;
   const weather::BuoyPreset *p = weather::buoyPresets(n);
-  lv_list_add_text(list, "Nearby NOAA buoys");
+  lv_list_add_text(list, "NOAA buoys");
   for (size_t i = 0; i < n; i++) {
     String t = String(p[i].id) + "  " + p[i].name;
     lv_obj_t *b = lv_list_add_btn(list, curId == p[i].id ? LV_SYMBOL_OK : LV_SYMBOL_GPS, t.c_str());
@@ -2615,6 +2643,7 @@ void showBuoyId() {
             errorBox("Invalid ID", "Enter an NDBC station ID, for example 41009.");
             return;
           }
+          weather::addBuoyFavorite(id);  // typed-in stations go to the top of the list
           weather::setBuoyStation(id);
           showBuoy();
         }

@@ -3,6 +3,20 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.4] - 2026-11-19
+
+### Changed
+- **Choose buoy** now lists, in this order: 41112 Offshore Fernandina Beach, 41117 St.
+  Augustine, 41070 Ponce de Leon Inlet, 41009 Canaveral 20 NM E (still the default), 41012 St.
+  Augustine 40 NM ENE, 41113 Cape Canaveral Nearshore, 41114 Fort Pierce, 41122 Hollywood Beach
+  and 42095 Satan Shoal (Key West). 41010 Canaveral East was dropped from the list, but it can
+  still be typed in.
+
+### Added
+- Buoy favorites: a station entered under **Other station ID...** is added to a Favorites
+  section at the top of the list (newest first, up to 8, saved across reboots). Built-in buoys
+  aren't duplicated. Hold a favorite to remove it.
+
 ## [0.7.3] - 2026-11-19
 
 ### Fixed

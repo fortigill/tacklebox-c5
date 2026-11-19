@@ -97,6 +97,9 @@ struct BuoyPreset {
 };
 const BuoyPreset *buoyPresets(size_t &n);  // nearby buoys offered in the picker
 String buoyName(const String &id);         // preset name, or "" for other stations
+std::vector<String> buoyFavorites();       // IDs typed in under "Other station ID", newest first
+void addBuoyFavorite(const String &id);    // no-op for built-in buoys; keeps up to 8
+void removeBuoyFavorite(const String &id);
 String buoyStation();                      // default 41009
 void setBuoyStation(const String &id);
 bool showBuoyBar();                        // wave height in the status bar

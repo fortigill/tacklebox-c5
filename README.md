@@ -30,7 +30,8 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
   both off the buoy isn't polled. The default buoy is 41009, 20 NM east of Cape Canaveral. Tap
   either reading, or **Weather > Buoy data**, for the full observation: wave direction and periods,
   wind and gusts in knots, water and air temperature, pressure and observation time. **Choose buoy**
-  offers nearby Florida buoys or any NDBC station ID. Data refreshes every 30 min.
+  lists 41112, 41117, 41070, 41009, 41012, 41113, 41114, 41122 and 42095. A station typed in under
+  **Other station ID** is saved as a favorite at the top of the list (hold a favorite to remove it). Data refreshes every 30 min.
 - **Alert count**: a desktop readout next to the wave height shows how many NWS alerts are
   active (red while any are unsnoozed). Tap it for the alert list. Switch it off under **Weather >
   Alert count on desktop**.

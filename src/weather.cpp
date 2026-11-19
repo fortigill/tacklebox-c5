@@ -66,6 +66,7 @@ String alertsErr;
 
 // NDBC buoy (guarded by mtx)
 String buoyId;
+std::vector<String> buoyFavs;  // station IDs typed in by the user, newest first (persisted)
 bool buoyBar = true;    // wave height in the status bar
 bool buoyDesk = true;   // wave height widget on the desktop
 bool alertDesk = true;  // active-alert count widget on the desktop
@@ -770,6 +771,13 @@ void begin() {
   buoyBar = prefs.getBool("buoyBar", legacyOn);
   buoyDesk = prefs.getBool("buoyDesk", legacyOn);
   alertDesk = prefs.getBool("alertDesk", true);
+  String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
+  for (int i = 0; i < (int)fv.length();) {
+    int nl = fv.indexOf('\n', i);
+    if (nl < 0) nl = fv.length();
+    if (nl > i) buoyFavs.push_back(fv.substring(i, nl));
+    i = nl + 1;
+  }
   prefs.end();
   for (int i = 0; i < (int)sn.length();) {
     int nl = sn.indexOf('\n', i);
@@ -1028,18 +1036,59 @@ String alertsStatus() {
 // ---------- NDBC buoy API ----------
 
 namespace {
+// Built-in list, north to south along the Florida Atlantic coast, then the Keys
 const BuoyPreset PRESETS[] = {
+    {"41112", "Offshore Fernandina Beach, FL"},
+    {"41117", "St. Augustine, FL"},
+    {"41070", "Ponce de Leon Inlet, FL"},
     {"41009", "Canaveral, 20 NM E of Cape Canaveral"},
-    {"41113", "Cape Canaveral Nearshore"},
-    {"41010", "Canaveral East, 120 NM E of Cape Canaveral"},
-    {"41114", "Fort Pierce, FL"},
     {"41012", "St. Augustine, 40 NM ENE"},
+    {"41113", "Cape Canaveral Nearshore, FL"},
+    {"41114", "Fort Pierce, FL"},
+    {"41122", "Hollywood Beach, FL"},
+    {"42095", "Satan Shoal, FL (Key West)"},
 };
+const size_t MAX_BUOY_FAVS = 8;
+
+void saveFavs() {  // caller holds mtx
+  String s;
+  for (const auto &f : buoyFavs) s += f + "\n";
+  prefs.begin("wx", false);
+  prefs.putString("bfav", s);
+  prefs.end();
+}
 }
 
 const BuoyPreset *buoyPresets(size_t &n) {
   n = sizeof(PRESETS) / sizeof(PRESETS[0]);
   return PRESETS;
+}
+
+bool isPreset(const String &id) {
+  for (const auto &p : PRESETS)
+    if (id == p.id) return true;
+  return false;
+}
+
+std::vector<String> buoyFavorites() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return buoyFavs;
+}
+
+void addBuoyFavorite(const String &id) {
+  if (id.isEmpty() || isPreset(id)) return;  // built-in buoys are already listed
+  std::lock_guard<std::mutex> lock(mtx);
+  buoyFavs.erase(std::remove(buoyFavs.begin(), buoyFavs.end(), id), buoyFavs.end());
+  buoyFavs.insert(buoyFavs.begin(), id);  // newest first
+  if (buoyFavs.size() > MAX_BUOY_FAVS) buoyFavs.resize(MAX_BUOY_FAVS);
+  saveFavs();
+}
+
+void removeBuoyFavorite(const String &id) {
+  std::lock_guard<std::mutex> lock(mtx);
+  size_t n = buoyFavs.size();
+  buoyFavs.erase(std::remove(buoyFavs.begin(), buoyFavs.end(), id), buoyFavs.end());
+  if (buoyFavs.size() != n) saveFavs();
 }
 
 String buoyName(const String &id) {

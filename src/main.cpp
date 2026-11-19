@@ -8,6 +8,7 @@
 #include "led.h"
 #include "net.h"
 #include "ota.h"
+#include "sysmon.h"
 #include "theme.h"
 #include "timesvc.h"
 #include "ui.h"
@@ -52,6 +53,7 @@ void setup() {
   weather::begin();
   drone::begin();
   ui::begin();
+  sysmon::begin();
 }
 
 void loop() {
@@ -62,6 +64,7 @@ void loop() {
   weather::loop();
   ota::loop();
   drone::loop();
+  sysmon::loop();
 
   if (!bootDone && (networkSettled() || millis() > BOOT_LED_MAX_MS)) {
     bootDone = true;

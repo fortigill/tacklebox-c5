@@ -133,6 +133,7 @@ src/drone.cpp       drone Remote ID: Wi-Fi sniffer, ODID decoder
 src/ble.cpp         BLE scanner, trackers, hunt, Remote ID adverts (NimBLE)
 src/hunt.h          shared RSSI averaging for hunt modes
 src/ota.cpp         over-the-air updates (ArduinoOTA)
+src/sysmon.cpp      CPU load per core (idle hooks)
 src/led.cpp         rear RGB LED (boot status: red, blinking red, green)
 src/weather.cpp     weather fetch (Open-Meteo), ZIP lookup, icon mapping
 src/wx_icons.c      generated weather icons (tools/gen_wx_icons.py)

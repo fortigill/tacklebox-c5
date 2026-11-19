@@ -3,6 +3,17 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.8.2] - 2026-11-19
+
+### Added
+- About screen: live **CPU load** per core ("CPU load: 8% radio core, 23% app core"), refreshed
+  every second. The line turns amber at 70% and red at 90%. Core 0 runs Wi-Fi and Bluetooth;
+  core 1 runs the UI and app loop.
+- `src/sysmon.*`: FreeRTOS idle hooks on both cores count the 1 ms ticks in which the idle task
+  ran. Load is the share of ticks without idle time over the last second. The hooks return true,
+  so the cores still sleep between interrupts. The figure reads slightly low (a mostly busy tick
+  with a brief idle counts as idle), which is fine for spotting trends.
+
 ## [0.8.1] - 2026-11-19
 
 ### Added

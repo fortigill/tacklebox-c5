@@ -14,6 +14,7 @@
 #include "drone.h"
 #include "net.h"
 #include "ota.h"
+#include "sysmon.h"
 #include "theme.h"
 #include "timesvc.h"
 #include "ui_icons.h"
@@ -65,6 +66,7 @@ lv_obj_t *deskBar = nullptr, *deskRow = nullptr, *deskMenu = nullptr;
 int deskLayoutKey = -1;  // bar + widget-row heights the layout was last done for
 int deskWaveKey = -1;    // buoy data version the wave texts were built from
 lv_obj_t *aboutUptime = nullptr;  // live uptime line on the About screen
+lv_obj_t *aboutCpu = nullptr;     // live CPU load line
 // Stock quote: status bar readout, desktop bubble, stock page
 lv_obj_t *deskBarStock = nullptr, *deskBarStockLbl = nullptr, *deskBarStockPct = nullptr;
 lv_obj_t *deskStock = nullptr, *deskStockSym = nullptr, *deskStockPrice = nullptr, *deskStockPct = nullptr;
@@ -249,6 +251,7 @@ void resetPtrs() {
   wxaList = wxaStatus = nullptr;
   deskWaveName = nullptr;
   aboutUptime = nullptr;
+  aboutCpu = nullptr;
   deskBarStock = deskBarStockLbl = deskBarStockPct = deskStock = deskStockSym = deskStockPrice = deskStockPct = nullptr;
   deskStockKey = -1;
   skName = skPrice = skChange = skDetail = skStatus = skTa = nullptr;
@@ -3499,6 +3502,18 @@ void refreshAbout() {
   if (d) snprintf(buf, sizeof(buf), "Uptime: %u d %02u:%02u:%02u", d, h, m, sec);
   else snprintf(buf, sizeof(buf), "Uptime: %02u:%02u:%02u", h, m, sec);
   setText(aboutUptime, buf);
+
+  // Core 0 runs Wi-Fi and Bluetooth, core 1 the UI and app loop
+  int c0 = sysmon::cpuLoad(0), c1 = sysmon::cpuLoad(1);
+  if (c0 < 0) snprintf(buf, sizeof(buf), "CPU load: measuring...");
+  else snprintf(buf, sizeof(buf), "CPU load: %d%% radio core, %d%% app core", c0, c1);
+  setText(aboutCpu, buf);
+  int worst = c0 > c1 ? c0 : c1;
+  lv_obj_set_style_text_color(aboutCpu,
+                              worst >= 90   ? lv_palette_main(LV_PALETTE_RED)
+                              : worst >= 70 ? lv_palette_main(LV_PALETTE_AMBER)
+                                            : theme::accent(),
+                              0);
 }
 
 void showAbout() {
@@ -3536,6 +3551,10 @@ void showAbout() {
   aboutUptime = lv_label_create(box);  // updated live by the UI poll
   lv_obj_set_style_text_color(aboutUptime, theme::accent(), 0);
   lv_label_set_text(aboutUptime, "");
+  aboutCpu = lv_label_create(box);
+  lv_label_set_long_mode(aboutCpu, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(aboutCpu, LV_PCT(100));
+  lv_label_set_text(aboutCpu, "");
 
   lv_obj_t *l = lv_label_create(box);
   lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);

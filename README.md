@@ -3,7 +3,7 @@
 LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/version.h` and
 [CHANGELOG.md](CHANGELOG.md).
 
-- **Desktop**: status bar with firmware version and a Wi-Fi icon (green = connected, amber =
+- **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
 - **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
 - **Drone Remote ID**: listens for standard Remote ID (including DJI's built-in Remote ID) on Wi-Fi
@@ -66,8 +66,8 @@ the password, then flash once over USB so the device knows it. If mDNS doesn't r
 `hostname` in `[ota]` to the device's IP (it's shown on the About screen). A change to the partition
 table (as in 0.1.0) always needs a USB flash.
 
-Every OTA push has to be approved on the device. A "Firmware update" pop-up offers **Accept update**
-or **Do not allow**, with a 30-second countdown. If nobody taps Accept, the update is blocked, the
+Every OTA push has to be approved on the device. A "Firmware update" pop-up offers **Accept**
+or **Decline**, with a 30-second countdown. If nobody taps Accept, the update is blocked, the
 upload fails on the computer, and the current firmware keeps running. USB flashing isn't affected.
 Stock espota.py gives up after 10 s, so `pio run -e cyd-ota` uses a copy with a 45 s wait.
 `tools/espota_patch.py` generates it in `.pio/` at build time.

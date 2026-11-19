@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.6.4] - 2026-11-19
+
+### Changed
+- The connected Wi-Fi icon is blue again. The green wasn't bright enough on this panel.
+- The OTA approval buttons now just say **Accept** and **Decline**.
+
 ## [0.6.3] - 2026-11-19
 
 ### Changed

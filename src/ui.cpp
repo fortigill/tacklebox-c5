@@ -448,7 +448,7 @@ void refreshDesktop() {
   lv_color_t color;
   lv_opa_t opa = LV_OPA_COVER;
   switch (net::state()) {
-    case net::State::Connected: color = lv_palette_main(LV_PALETTE_GREEN); break;
+    case net::State::Connected: color = lv_palette_main(LV_PALETTE_BLUE); break;
     case net::State::Connecting:
     case net::State::Lost: color = lv_palette_main(LV_PALETTE_AMBER); break;
     default:
@@ -2738,7 +2738,7 @@ volatile int otaAnswer = -1;  // -1 waiting, 0 refused, 1 accepted
 }
 
 bool ui::otaAsk(unsigned sizeKB, uint32_t timeoutMs) {
-  static const char *btns[] = {"Accept update", "Do not allow", ""};
+  static const char *btns[] = {"Accept", "Decline", ""};
   char msg[160];
   snprintf(msg, sizeof(msg),
            "Someone on your network is pushing new firmware (%u KB) to this device.\n\n"

@@ -17,7 +17,8 @@
 namespace {
 
 enum class Screen {
-  Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate, Ble, BleDetail
+  Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
+  Ble, BleDetail, BleIgnored, BleHunt
 };
 
 const int HEADER_H = 40;
@@ -39,14 +40,26 @@ lv_obj_t *wifiForgetBtn = nullptr;
 lv_obj_t *pwTa = nullptr;
 lv_obj_t *calH = nullptr, *calV = nullptr, *calRing = nullptr, *calMsg = nullptr;
 lv_obj_t *bleList = nullptr, *bleStatus = nullptr, *bleToggle = nullptr, *bleDetail = nullptr;
+lv_obj_t *huntRssiLbl = nullptr, *huntArrowLbl = nullptr, *huntStateLbl = nullptr;
+lv_obj_t *huntBar = nullptr, *huntChart = nullptr;
+lv_chart_series_t *huntSer = nullptr;
 
 // BLE scanner state
-const uint32_t BLE_LIST_REFRESH_MS = 2000;
+const uint32_t BLE_LIST_REFRESH_MS = 1500;
 const size_t BLE_MAX_ROWS = 30;
 const uint32_t BLE_MIN_FREE_HEAP = 20000;  // stop adding rows below this
 std::vector<String> bleRowAddrs;
 String bleDetailAddr;
 uint32_t bleLastFill = 0;
+ble::Mode bleLastMode = ble::Mode::Idle;
+
+// Hunt mode
+const uint32_t HUNT_LOST_MS = 4000;     // no report for this long = signal lost
+const size_t HUNT_TREND_SPAN = 3;       // compare against the value 3 samples back
+const float HUNT_TREND_DB = 2.0f;       // change needed to call it closer/farther
+const uint16_t HUNT_CHART_POINTS = 40;
+std::vector<float> huntHist;
+uint32_t huntLastSamples = 0;
 
 int deskIconState = -1;  // last state the desktop icon was styled for
 net::ScanState lastScanSt = net::ScanState::Idle;
@@ -76,6 +89,8 @@ void showDisplay();
 void showCalibration(bool firstRun);
 void showBle();
 void showBleDetail();
+void showBleIgnored();
+void showBleHunt();
 
 // ---------- helpers ----------
 
@@ -85,6 +100,8 @@ void resetPtrs() {
   pwTa = nullptr;
   calH = calV = calRing = calMsg = nullptr;
   bleList = bleStatus = bleToggle = bleDetail = nullptr;
+  huntRssiLbl = huntArrowLbl = huntStateLbl = huntBar = huntChart = nullptr;
+  huntSer = nullptr;
   deskIconState = -1;
 }
 
@@ -468,13 +485,21 @@ String bleTitle(const ble::Device &d) {
   return d.addr;
 }
 
-void bleUpdateStatus(size_t count) {
+void bleUpdateStatus() {
   if (!bleStatus) return;
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%s  -  %u device%s", ble::scanning() ? "Scanning" : "Stopped",
-           (unsigned)count, count == 1 ? "" : "s");
+  char buf[80];
+  size_t n = ble::count();
+  size_t ign = ble::ignoredCount();
+  if (ble::mode() == ble::Mode::Scan) {
+    snprintf(buf, sizeof(buf), "Scanning... %lus  -  %u found",
+             (unsigned long)((ble::scanRemainingMs() + 999) / 1000), (unsigned)n);
+  } else if (!ble::everScanned()) {
+    snprintf(buf, sizeof(buf), "Tap Start to scan (%lus)", (unsigned long)ble::SCAN_SECS);
+  } else {
+    snprintf(buf, sizeof(buf), "%u found  -  %u ignored", (unsigned)n, (unsigned)ign);
+  }
   setText(bleStatus, buf);
-  setText(lv_obj_get_child(bleToggle, 0), ble::scanning() ? "Stop" : "Start");
+  setText(lv_obj_get_child(bleToggle, 0), ble::mode() == ble::Mode::Scan ? "Stop" : "Start");
 }
 
 void onBleRowClicked(lv_event_t *e) {
@@ -497,11 +522,13 @@ void bleFill() {
 
   size_t total = 0;
   auto devs = ble::snapshot(BLE_MAX_ROWS, &total);
-  bleUpdateStatus(total);
+  bleUpdateStatus();
 
   if (devs.empty()) {
-    lv_list_add_text(bleList, ble::scanning() ? "Listening for devices..." : "No devices");
-    return;
+    const char *msg = ble::mode() == ble::Mode::Scan ? "Listening for devices..."
+                      : ble::everScanned()           ? "No devices found"
+                                                     : "Nothing scanned yet";
+    lv_list_add_text(bleList, msg);
   }
   for (size_t i = 0; i < devs.size(); i++) {
     // LVGL crashes if an allocation fails, so stop while there's headroom
@@ -519,7 +546,26 @@ void bleFill() {
     bleRowAddrs.push_back(d.addr);
     lv_obj_add_event_cb(b, onBleRowClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
+
+  size_t ign = ble::ignoredCount();
+  if (ign) {
+    char t[40];
+    snprintf(t, sizeof(t), "Ignored devices (%u)", (unsigned)ign);
+    lv_obj_t *b = lv_list_add_btn(bleList, LV_SYMBOL_EYE_CLOSE, t);
+    lv_obj_set_style_text_opa(b, LV_OPA_70, 0);
+    lv_obj_add_event_cb(b, [](lv_event_t *) { showBleIgnored(); }, LV_EVENT_CLICKED, nullptr);
+  }
   lv_obj_scroll_to_y(bleList, y, LV_ANIM_OFF);
+}
+
+void pollBle() {
+  ble::Mode m = ble::mode();
+  bleUpdateStatus();
+  // Refresh rows live while scanning, plus once when the scan finishes
+  if ((m == ble::Mode::Scan && millis() - bleLastFill >= BLE_LIST_REFRESH_MS) ||
+      (m != bleLastMode && m == ble::Mode::Idle))
+    bleFill();
+  bleLastMode = m;
 }
 
 void showBle() {
@@ -533,20 +579,24 @@ void showBle() {
       },
       btnW);
 
-  bleToggle = flatBtn(hdr, "Stop", btnW, 32);
+  bleToggle = flatBtn(hdr, "Start", btnW, 32);
   lv_obj_align(bleToggle, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_add_event_cb(
       bleToggle,
       [](lv_event_t *) {
-        if (ble::scanning()) ble::stop();
-        else ble::start();
-        bleUpdateStatus(bleRowAddrs.size());
+        if (ble::mode() == ble::Mode::Scan) {
+          ble::stop();
+        } else {
+          setText(bleStatus, "Starting Bluetooth...");
+          lv_refr_now(nullptr);  // Bluetooth start blocks briefly; show the message first
+          if (!ble::startScan()) setText(bleStatus, "Bluetooth failed to start");
+        }
         bleFill();
       },
       LV_EVENT_CLICKED, nullptr);
 
   bleStatus = lv_label_create(scr);
-  lv_label_set_text(bleStatus, "Starting Bluetooth...");
+  lv_label_set_text(bleStatus, "");
   lv_obj_align(bleStatus, LV_ALIGN_TOP_LEFT, 8, HEADER_H + 7);
 
   const int listY = HEADER_H + 28;
@@ -555,25 +605,17 @@ void showBle() {
   lv_obj_align(bleList, LV_ALIGN_TOP_MID, 0, listY);
 
   load(scr, Screen::Ble);
-
-  // Bluetooth init blocks for a moment, so let the screen draw first
-  lv_timer_t *t = lv_timer_create(
-      [](lv_timer_t *) {
-        if (!ble::start()) {
-          setText(bleStatus, "Bluetooth failed to start");
-          return;
-        }
-        bleFill();
-      },
-      50, nullptr);
-  lv_timer_set_repeat_count(t, 1);
+  bleLastMode = ble::mode();
+  bleFill();
 }
+
+// --- device detail ---
 
 void refreshBleDetail() {
   if (!bleDetail) return;
   ble::Device d;
   if (!ble::find(bleDetailAddr, d)) {
-    setText(bleDetail, "Device no longer seen.");
+    setText(bleDetail, "Device no longer in the list.");
     return;
   }
   char mfg[40] = "-";
@@ -592,14 +634,11 @@ void refreshBleDetail() {
            "TX power: %s\n"
            "Manufacturer: %s\n"
            "Service: %s\n"
-           "Last seen: %lus ago\n"
-           "First seen: %lus ago\n"
-           "Adverts: %lu",
+           "Last seen: %lus ago",
            d.name.length() ? d.name.c_str() : "-", d.addr.c_str(),
            d.randomAddr ? "random" : "public", d.rssi, tx, mfg,
            d.service.length() ? d.service.c_str() : "-",
-           (unsigned long)((millis() - d.lastSeen) / 1000),
-           (unsigned long)((millis() - d.firstSeen) / 1000), (unsigned long)d.seenCount);
+           (unsigned long)((millis() - d.lastSeen) / 1000));
   setText(bleDetail, buf);
 }
 
@@ -609,9 +648,10 @@ void showBleDetail() {
   String title = ble::find(bleDetailAddr, d) ? bleTitle(d) : bleDetailAddr;
   makeHeader(scr, title.c_str(), [](lv_event_t *) { showBle(); });
 
+  const int btnRowH = 48;
   lv_obj_t *box = lv_obj_create(scr);
-  lv_obj_set_size(box, W(), H() - HEADER_H);
-  lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_size(box, W(), H() - HEADER_H - btnRowH);
+  lv_obj_align(box, LV_ALIGN_TOP_MID, 0, HEADER_H);
   lv_obj_set_style_radius(box, 0, 0);
   lv_obj_set_style_border_width(box, 0, 0);
 
@@ -620,8 +660,188 @@ void showBleDetail() {
   lv_obj_set_width(bleDetail, LV_PCT(100));
   lv_label_set_text(bleDetail, "");
 
+  int bw = (W() - 24) / 2;
+  lv_obj_t *hunt = flatBtn(scr, LV_SYMBOL_GPS "  Hunt", bw, 38);
+  lv_obj_align(hunt, LV_ALIGN_BOTTOM_LEFT, 8, -5);
+  lv_obj_set_style_bg_color(hunt, lv_palette_main(LV_PALETTE_GREEN), 0);
+  lv_obj_add_event_cb(hunt, [](lv_event_t *) { showBleHunt(); }, LV_EVENT_CLICKED, nullptr);
+
+  lv_obj_t *ign = flatBtn(scr, LV_SYMBOL_EYE_CLOSE "  Ignore", bw, 38);
+  lv_obj_align(ign, LV_ALIGN_BOTTOM_RIGHT, -8, -5);
+  lv_obj_set_style_bg_color(ign, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_add_event_cb(
+      ign,
+      [](lv_event_t *) {
+        ble::Device d;
+        String name = ble::find(bleDetailAddr, d) ? bleTitle(d) : String("");
+        ble::ignore(bleDetailAddr, name);
+        showBle();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
   load(scr, Screen::BleDetail);
   refreshBleDetail();
+}
+
+// --- ignored devices ---
+
+void onUnignoreClicked(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  auto list = ble::ignoredList();
+  if (i < list.size()) ble::unignore(list[i].addr);
+  showBleIgnored();
+}
+
+void showBleIgnored() {
+  lv_obj_t *scr = newScreen();
+  const int btnW = 76;
+  lv_obj_t *hdr = makeHeader(scr, "Ignored", [](lv_event_t *) { showBle(); }, btnW);
+
+  lv_obj_t *clr = flatBtn(hdr, "Clear", btnW, 32);
+  lv_obj_align(clr, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_set_style_bg_color(clr, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_add_event_cb(clr, [](lv_event_t *) { ble::clearIgnored(); showBleIgnored(); },
+                      LV_EVENT_CLICKED, nullptr);
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  auto ign = ble::ignoredList();
+  if (ign.empty()) {
+    lv_list_add_text(list, "No ignored devices");
+  } else {
+    lv_list_add_text(list, "Tap a device to stop ignoring it");
+  }
+  for (size_t i = 0; i < ign.size(); i++) {
+    String t = ign[i].name.length() && ign[i].name != ign[i].addr
+                   ? ign[i].name + "  " + ign[i].addr
+                   : ign[i].addr;
+    lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EYE_CLOSE, t.c_str());
+    lv_obj_add_event_cb(b, onUnignoreClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+
+  load(scr, Screen::BleIgnored);
+}
+
+// --- hunt mode ---
+
+// Restyle only on change; setting a style forces a redraw
+void setHuntArrow(const char *sym, lv_palette_t pal) {
+  if (strcmp(lv_label_get_text(huntArrowLbl), sym) == 0) return;
+  lv_label_set_text(huntArrowLbl, sym);
+  lv_obj_set_style_text_color(huntArrowLbl, lv_palette_main(pal), 0);
+}
+
+void refreshHunt() {
+  if (!huntRssiLbl) return;
+  ble::HuntInfo h = ble::hunt();
+  uint32_t age = millis() - h.lastSeen;
+
+  if (h.samples == 0 || age > HUNT_LOST_MS) {
+    setText(huntStateLbl, h.samples == 0 ? "Searching..." : "Signal lost - keep moving");
+    setHuntArrow(LV_SYMBOL_REFRESH, LV_PALETTE_GREY);
+    if (h.samples == 0) setText(huntRssiLbl, "--");
+    return;
+  }
+  if (h.samples == huntLastSamples) return;  // nothing new
+  huntLastSamples = h.samples;
+
+  // Trend: compare with the smoothed value a few samples ago
+  huntHist.push_back(h.smooth);
+  if (huntHist.size() > HUNT_TREND_SPAN + 1) huntHist.erase(huntHist.begin());
+  float delta = huntHist.back() - huntHist.front();
+
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%d", (int)lroundf(h.smooth));
+  setText(huntRssiLbl, buf);
+
+  const char *arrow, *state;
+  lv_palette_t pal;
+  if (huntHist.size() < 2) {
+    arrow = LV_SYMBOL_MINUS; state = "Locked on"; pal = LV_PALETTE_GREY;
+  } else if (delta >= HUNT_TREND_DB) {
+    arrow = LV_SYMBOL_UP; state = "Getting closer"; pal = LV_PALETTE_GREEN;
+  } else if (delta <= -HUNT_TREND_DB) {
+    arrow = LV_SYMBOL_DOWN; state = "Moving away"; pal = LV_PALETTE_RED;
+  } else {
+    arrow = LV_SYMBOL_MINUS; state = "Steady"; pal = LV_PALETTE_GREY;
+  }
+  setHuntArrow(arrow, pal);
+  char st[48];
+  snprintf(st, sizeof(st), "%s  (raw %d dBm)", state, h.rssi);
+  setText(huntStateLbl, st);
+
+  lv_bar_set_value(huntBar, net::signalPercent((int32_t)lroundf(h.smooth)), LV_ANIM_ON);
+  lv_chart_set_next_value(huntChart, huntSer, (lv_coord_t)lroundf(h.smooth));
+}
+
+void showBleHunt() {
+  lv_obj_t *scr = newScreen();
+  ble::Device d;
+  String title = ble::find(bleDetailAddr, d) ? bleTitle(d) : bleDetailAddr;
+  String hdrTitle = String(LV_SYMBOL_GPS " ") + title;
+  makeHeader(scr, hdrTitle.c_str(), [](lv_event_t *) {
+    ble::stop();
+    showBleDetail();
+  });
+
+  lv_obj_t *col = lv_obj_create(scr);
+  lv_obj_remove_style_all(col);
+  lv_obj_set_size(col, W(), H() - HEADER_H);
+  lv_obj_align(col, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(col, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_all(col, 6, 0);
+  lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+
+  // RSSI number + unit + trend arrow on one row
+  lv_obj_t *row = lv_obj_create(col);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+  lv_obj_set_style_pad_column(row, 10, 0);
+
+  huntRssiLbl = lv_label_create(row);
+  lv_obj_set_style_text_font(huntRssiLbl, &lv_font_montserrat_48, 0);
+  lv_label_set_text(huntRssiLbl, "--");
+  lv_obj_t *unit = lv_label_create(row);
+  lv_label_set_text(unit, "dBm");
+  lv_obj_set_style_pad_bottom(unit, 8, 0);
+  huntArrowLbl = lv_label_create(row);
+  lv_obj_set_style_text_font(huntArrowLbl, &lv_font_montserrat_48, 0);
+  lv_label_set_text(huntArrowLbl, LV_SYMBOL_REFRESH);
+
+  huntStateLbl = lv_label_create(col);
+  lv_label_set_text(huntStateLbl, "Searching...");
+
+  huntBar = lv_bar_create(col);
+  lv_obj_set_size(huntBar, W() - 30, 12);
+  lv_bar_set_range(huntBar, 0, 100);
+
+  int chartH = H() - HEADER_H - 150;
+  if (chartH < 50) chartH = 50;
+  huntChart = lv_chart_create(col);
+  lv_obj_set_size(huntChart, W() - 20, chartH);
+  lv_chart_set_type(huntChart, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(huntChart, HUNT_CHART_POINTS);
+  lv_chart_set_update_mode(huntChart, LV_CHART_UPDATE_MODE_SHIFT);
+  lv_chart_set_range(huntChart, LV_CHART_AXIS_PRIMARY_Y, -100, -30);
+  lv_chart_set_div_line_count(huntChart, 3, 0);
+  lv_obj_set_style_size(huntChart, 0, LV_PART_INDICATOR);  // no point markers
+  huntSer = lv_chart_add_series(huntChart, lv_palette_main(LV_PALETTE_GREEN),
+                                LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_all_value(huntChart, huntSer, LV_CHART_POINT_NONE);
+
+  huntHist.clear();
+  huntLastSamples = 0;
+  load(scr, Screen::BleHunt);
+
+  setText(huntStateLbl, "Starting...");
+  lv_refr_now(nullptr);
+  if (!ble::startHunt(bleDetailAddr)) setText(huntStateLbl, "Bluetooth failed to start");
 }
 
 // ---------- Wi-Fi settings ----------
@@ -897,10 +1117,9 @@ void poll(lv_timer_t *) {
     case Screen::Desktop: refreshDesktop(); break;
     case Screen::Wifi: refreshWifi(); break;
     case Screen::Connecting: pollConnecting(); break;
-    case Screen::Ble:
-      if (millis() - bleLastFill >= BLE_LIST_REFRESH_MS) bleFill();
-      break;
+    case Screen::Ble: pollBle(); break;
     case Screen::BleDetail: refreshBleDetail(); break;
+    case Screen::BleHunt: refreshHunt(); break;
     default: break;
   }
 }

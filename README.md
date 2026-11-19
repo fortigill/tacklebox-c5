@@ -9,7 +9,10 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,
   credentials saved in NVS with auto-reconnect on boot, **Forget** to clear them. Note: the password
   is stored unencrypted in flash.
-- **Bluetooth scanner**: live list of nearby BLE devices with signal strength. Tap one for details.
+- **Bluetooth scanner**: tap **Start** for an 8-second scan of nearby BLE devices. Tap a device for
+  details, **Ignore** it (hidden from future scans, saved), or **Hunt** it. Hunt shows a live signal
+  readout, a closer/farther arrow and a history graph to help you find it. Phones that use rotating
+  random addresses can't be ignored permanently, and a hunt loses them when the address changes.
 - **Display & touch**: landscape/portrait (plus flipped variants), red/blue swap for panels that show
   blue as orange, and touch calibration.
 

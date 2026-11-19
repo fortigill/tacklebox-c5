@@ -26,6 +26,7 @@
 // Fonts (built-in Montserrat includes LV_SYMBOL_* icons such as WIFI)
 #define LV_FONT_MONTSERRAT_14  1
 #define LV_FONT_MONTSERRAT_20  1
+#define LV_FONT_MONTSERRAT_48  1   // hunt mode RSSI readout
 #define LV_FONT_DEFAULT        &lv_font_montserrat_14
 
 // Widgets we use
@@ -38,6 +39,8 @@
 #define LV_USE_MSGBOX    1
 #define LV_USE_SPINNER   1
 #define LV_USE_ARC       1
+#define LV_USE_BAR       1
+#define LV_USE_CHART     1
 
 #define LV_USE_THEME_DEFAULT   1
 #define LV_THEME_DEFAULT_DARK  1

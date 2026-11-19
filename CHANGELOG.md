@@ -3,6 +3,25 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.5] - 2026-11-18
+
+### Changed
+- The Bluetooth scanner no longer scans when the screen opens. **Start** runs one 8-second scan and
+  then stops, and the results stay listed. Tap **Start** again to rescan, which clears the previous
+  results. Bluetooth itself is only started the first time you scan.
+
+### Added
+- **Ignore** button on a device's detail screen. Ignored devices are hidden from all future scans,
+  and the list is saved in NVS across reboots (max 60). "Ignored devices (N)" at the bottom of the
+  scan list opens the list: tap an entry to un-ignore it, or **Clear** to remove them all.
+- **Hunt** mode from a device's detail screen, to help find a device:
+  - Rescans every second and tracks only that device.
+  - Shows a large smoothed RSSI readout and a trend arrow: green up = getting closer, red down =
+    moving away, grey dash = steady.
+  - Shows a signal strength bar and a 40-sample signal history graph.
+  - Says "Signal lost" after 4 s without a report.
+- LVGL: Montserrat 48 font, bar and chart widgets enabled.
+
 ## [0.0.4] - 2026-11-18
 
 ### Fixed

@@ -3,9 +3,13 @@
 #include <Arduino.h>
 #include <vector>
 
-// BLE scanner: continuous active scan in short cycles, devices tracked by
-// address, forgotten after 60 s without an advertisement.
+// BLE scanner with three modes:
+//   Idle  - radio not scanning (default; Bluetooth is started on first use)
+//   Scan  - one timed scan; found devices are collected (ignored ones skipped)
+//   Hunt  - track a single device's RSSI with 1 s scan cycles
 namespace ble {
+
+enum class Mode { Idle, Scan, Hunt };
 
 struct Device {
   String addr;
@@ -22,14 +26,42 @@ struct Device {
   uint32_t seenCount = 0;
 };
 
-bool start();      // initializes Bluetooth on first use; false if that failed
-void stop();
-bool scanning();
-void loop();       // call from loop()
+struct HuntInfo {
+  uint32_t samples = 0;  // increments with every report from the target
+  int rssi = 0;          // last raw reading
+  float smooth = 0;      // smoothed RSSI (exponential moving average)
+  uint32_t lastSeen = 0;
+};
 
-// Strongest maxCount devices, strongest first; total receives the full count.
-std::vector<Device> snapshot(size_t maxCount, size_t *total);
+struct IgnoredDevice {
+  String addr;
+  String name;
+};
+
+const uint32_t SCAN_SECS = 8;
+
+// Scanning
+bool startScan();            // clears previous results; false if Bluetooth failed
+bool startHunt(const String &addr);
+void stop();
+Mode mode();
+uint32_t scanRemainingMs();  // during Scan
+bool everScanned();
+void loop();                 // call from loop()
+
+// Results
+size_t count();
+std::vector<Device> snapshot(size_t maxCount, size_t *total);  // strongest first
 bool find(const String &addr, Device &out);
+HuntInfo hunt();
+
+// Ignore list (saved in NVS)
+void ignore(const String &addr, const String &name);
+void unignore(const String &addr);
+void clearIgnored();
+size_t ignoredCount();
+std::vector<IgnoredDevice> ignoredList();
+
 const char *vendorName(uint16_t mfgId);  // nullptr if unknown
 
 }  // namespace ble

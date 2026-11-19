@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_timer.h>
 #include <lvgl.h>
 
 #include <algorithm>
@@ -63,6 +64,7 @@ lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr, *deskWaveName = nullptr;
 lv_obj_t *deskBar = nullptr, *deskRow = nullptr, *deskMenu = nullptr;
 int deskLayoutKey = -1;  // bar + widget-row heights the layout was last done for
 int deskWaveKey = -1;    // buoy data version the wave texts were built from
+lv_obj_t *aboutUptime = nullptr;  // live uptime line on the About screen
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
 int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
@@ -203,6 +205,7 @@ void resetPtrs() {
   deskDroneState = -1;
   wxaList = wxaStatus = nullptr;
   deskWaveName = nullptr;
+  aboutUptime = nullptr;
   deskBar = deskRow = deskMenu = nullptr;
   deskLayoutKey = -1;
   deskWaveKey = -1;
@@ -3107,13 +3110,29 @@ void showConnecting() {
 
 // ---------- About ----------
 
+void refreshAbout() {
+  if (!aboutUptime) return;
+  // esp_timer counts microseconds in 64 bits, so it doesn't wrap after 49
+  // days like millis()
+  uint64_t s = (uint64_t)esp_timer_get_time() / 1000000ULL;
+  unsigned d = (unsigned)(s / 86400), h = (unsigned)(s / 3600 % 24), m = (unsigned)(s / 60 % 60),
+           sec = (unsigned)(s % 60);
+  char buf[48];
+  if (d) snprintf(buf, sizeof(buf), "Uptime: %u d %02u:%02u:%02u", d, h, m, sec);
+  else snprintf(buf, sizeof(buf), "Uptime: %02u:%02u:%02u", h, m, sec);
+  setText(aboutUptime, buf);
+}
+
 void showAbout() {
   lv_obj_t *scr = newScreen();
   makeHeader(scr, "About", [](lv_event_t *) { showMenu(); });
 
+  const int btnRowH = 50;
   lv_obj_t *box = lv_obj_create(scr);
-  lv_obj_set_size(box, W(), H() - HEADER_H);
-  lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_size(box, W(), H() - HEADER_H - btnRowH);
+  lv_obj_align(box, LV_ALIGN_TOP_MID, 0, HEADER_H);
+  lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(box, 2, 0);
   lv_obj_set_style_radius(box, 0, 0);
   lv_obj_set_style_border_width(box, 0, 0);
 
@@ -3136,12 +3155,37 @@ void showAbout() {
            up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-",
            ota::ready() ? (String(ota::hostname()) + ".local").c_str() : "waiting for Wi-Fi");
 
+  aboutUptime = lv_label_create(box);  // updated live by the UI poll
+  lv_obj_set_style_text_color(aboutUptime, theme::accent(), 0);
+  lv_label_set_text(aboutUptime, "");
+
   lv_obj_t *l = lv_label_create(box);
   lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(l, LV_PCT(100));
   lv_label_set_text(l, buf);
 
+  // Soft reboot, with a confirmation
+  lv_obj_t *rb = flatBtn(scr, LV_SYMBOL_REFRESH "  Restart device", W() - 16, 40);
+  lv_obj_align(rb, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_bg_color(rb, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_add_event_cb(
+      rb,
+      [](lv_event_t *) {
+        confirmBox("Restart device?", "The device will reboot and reconnect to Wi-Fi. Settings are kept.",
+                   "Restart", [](lv_event_t *) {
+                     Serial.println("[ui] restart requested from About");
+                     lv_obj_t *m = lv_msgbox_create(nullptr, "Restarting...", "See you in a few seconds.",
+                                                    nullptr, false);
+                     lv_obj_center(m);
+                     lv_refr_now(nullptr);
+                     delay(400);  // let the message show and the serial log flush
+                     ESP.restart();
+                   });
+      },
+      LV_EVENT_CLICKED, nullptr);
+
   load(scr, Screen::About);
+  refreshAbout();
 }
 
 // ---------- refresh timer ----------
@@ -3239,6 +3283,7 @@ void poll(lv_timer_t *) {
     case Screen::Weather: refreshWeather(); break;
     case Screen::WxAlerts: pollWxAlerts(); break;
     case Screen::Buoy: refreshBuoyScreen(); break;
+    case Screen::About: refreshAbout(); break;
     default: break;
   }
 }

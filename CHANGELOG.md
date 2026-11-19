@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.16] - 2026-11-19
+
+### Added
+- About screen:
+  - A live **uptime** counter ("Uptime: 1 d 03:14:07"). It uses the 64-bit `esp_timer`, so it
+    doesn't wrap after 49 days like `millis()`.
+  - A **Restart device** button that asks for confirmation, shows "Restarting..." and then
+    soft-reboots (`ESP.restart()`). Settings are kept. The next boot logs
+    `reset reason: software restart`.
+
 ## [0.7.15] - 2026-11-19
 
 ### Added

@@ -23,6 +23,8 @@ const uint32_t ALERTS_REFRESH_MS = 5UL * 60 * 1000;
 const size_t MAX_ALERTS = 8;
 const size_t MAX_DESC = 900, MAX_INSTR = 450;
 const size_t MAX_SNOOZED = 16;
+const uint32_t ALERTS_BOOT_DELAY_MS = 30000;  // first NWS check waits until boot has settled
+const uint32_t TLS_MIN_BLOCK = 36 * 1024;     // skip HTTPS when RAM is too tight for TLS
 const uint16_t HTTP_TIMEOUT_MS = 8000;
 
 std::mutex mtx;
@@ -202,6 +204,11 @@ String clip(const char *s, size_t max) {
 }
 
 bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
+  if (ESP.getMaxAllocHeap() < TLS_MIN_BLOCK) {
+    why = String("skipped, low memory (") + ESP.getMaxAllocHeap() / 1024 +
+          " KB free block). Bluetooth tools hold RAM until reboot";
+    return false;
+  }
   // Same declaration order rule as httpGet(): clients must outlive `http`
   WiFiClientSecure tls;
   HTTPClient http;
@@ -225,8 +232,10 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
   }
   // Keep only the fields we show; alert texts can be long
   JsonDocument filter;
+  // The long "description"/"instruction" texts (several KB each) are left out:
+  // holding them alongside the TLS session ran the heap dry.
   for (const char *k : {"id", "event", "headline", "severity", "urgency", "certainty", "areaDesc", "onset",
-                        "expires", "ends", "description", "instruction", "senderName", "status"})
+                        "expires", "ends", "senderName", "status"})
     filter["features"][0]["properties"][k] = true;
   JsonDocument doc;
   DeserializationError e = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
@@ -458,7 +467,8 @@ void loop() {
   if (taskRunning || !configured() || net::state() != net::State::Connected) return;
   uint8_t flags = 0;
   if (force || !attempted || millis() - lastAttempt >= (lastOk ? REFRESH_MS : RETRY_MS)) flags |= DO_FORECAST;
-  if (alForce || !alAttempted || millis() - alLastAttempt >= (alLastOk ? ALERTS_REFRESH_MS : RETRY_MS))
+  if (millis() >= ALERTS_BOOT_DELAY_MS &&
+      (alForce || !alAttempted || millis() - alLastAttempt >= (alLastOk ? ALERTS_REFRESH_MS : RETRY_MS)))
     flags |= DO_ALERTS;
   if (flags) {
     force = alForce = false;
@@ -654,7 +664,9 @@ String alertsStatus() {
   std::lock_guard<std::mutex> lock(mtx);
   if (zipCode.isEmpty()) return "Set a ZIP code to monitor NWS alerts.";
   if (alertsErr.length()) return "NWS update failed: " + alertsErr;
-  if (!alertsFetchedMs) return "Checking the National Weather Service...";
+  if (!alertsFetchedMs)
+    return millis() < ALERTS_BOOT_DELAY_MS ? "First NWS check 30 s after startup..."
+                                           : "Checking the National Weather Service...";
   char b[64];
   snprintf(b, sizeof(b), "NWS checked %lu min ago, every 5 min",
            (unsigned long)((millis() - alertsFetchedMs) / 60000));

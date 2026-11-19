@@ -2188,6 +2188,8 @@ void showWxAlertDetail() {
   para(a.description, theme::text(), false);
   if (a.instruction.length()) para("What to do: " + a.instruction, theme::accent(), false);
   para(a.sender, theme::text(), true);
+  if (a.description.isEmpty())  // long texts aren't downloaded (RAM); point to the source
+    para("Full text and safety instructions: weather.gov or a NOAA weather radio.", theme::accent(), true);
 
   lv_obj_t *sz = flatBtn(scr, a.snoozed ? LV_SYMBOL_BELL "  Unsnooze" : LV_SYMBOL_MUTE "  Snooze alert",
                          W() - 16, 38);

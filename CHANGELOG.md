@@ -3,6 +3,28 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.4] - 2026-11-19
+
+### Reverted
+- 0.5.1-0.5.3 (Bluetooth unloading via `NimBLEDevice::deinit`, the streaming alert parsers, the
+  smaller LVGL draw buffers). The board became unstable with them. The code is back to 0.5.0 plus
+  the changes below.
+
+### Changed
+- NWS alerts are lighter and gentler:
+  - The first check waits until 30 s after boot, so it doesn't compete with startup, Wi-Fi and the
+    first forecast download.
+  - The long `description`/`instruction` texts (several KB each) are no longer downloaded, since
+    holding them during the TLS session ran out of memory. Alerts keep the event, headline,
+    severity/urgency/certainty, onset/end time, areas and issuing office. The detail page points to
+    weather.gov for the full text.
+  - HTTPS isn't attempted when the largest free block is under 36 KB (e.g. after Bluetooth tools
+    have been used). The status explains the skip instead of showing "connection refused".
+
+### Notes
+- Open-Meteo, the forecast source, has no official warnings. NWS (`api.weather.gov`) remains the
+  free official source for US alerts, and it is HTTPS-only.
+
 ## [0.5.0] - 2026-11-19
 
 ### Added

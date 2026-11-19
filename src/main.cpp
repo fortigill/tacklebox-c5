@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
+#include "ble.h"
 #include "display.h"
 #include "net.h"
 #include "ui.h"
@@ -17,5 +18,6 @@ void setup() {
 void loop() {
   lv_timer_handler();
   net::loop();
+  ble::loop();
   delay(5);
 }

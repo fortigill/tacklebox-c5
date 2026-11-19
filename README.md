@@ -5,11 +5,13 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Display & touch, About this device.
+- **Menu**: Network settings, Bluetooth scanner, Display & touch, About this device.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,
   credentials saved in NVS with auto-reconnect on boot, **Forget** to clear them. Note: the password
   is stored unencrypted in flash.
-- **Display & touch**: landscape/portrait (plus flipped variants) and touch calibration.
+- **Bluetooth scanner**: live list of nearby BLE devices with signal strength. Tap one for details.
+- **Display & touch**: landscape/portrait (plus flipped variants), red/blue swap for panels that show
+  blue as orange, and touch calibration.
 
 ## Board
 
@@ -65,6 +67,7 @@ include/lv_conf.h   LVGL config
 src/version.h       firmware version
 src/main.cpp        setup/loop
 src/display.cpp     TFT + touch drivers, rotation, calibration
+src/ble.cpp         BLE scanner (device tracking, vendor lookup)
 src/net.cpp         Wi-Fi scan/connect/save (non-blocking state machine)
 src/ui.cpp          screens
 ```

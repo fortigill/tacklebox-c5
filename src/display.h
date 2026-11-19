@@ -21,6 +21,10 @@ void begin();
 uint8_t rotation();
 void setRotation(uint8_t r);  // applies immediately and saves to NVS
 
+// Some CYD panels have red and blue swapped (blue shows as orange).
+bool swapRedBlue();
+void setSwapRedBlue(bool on);  // applies immediately and saves to NVS
+
 bool hasCalibration();
 // Fits raw->screen mapping from the samples. Saves and applies it if the
 // worst-case error is acceptable. maxErrPx receives the worst error.

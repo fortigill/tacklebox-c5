@@ -3,6 +3,20 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.3] - 2026-11-18
+
+### Added
+- Bluetooth LE scanner (**Menu > Bluetooth scanner**): continuous active scan, devices listed
+  strongest first with RSSI. Rows show the device name, a manufacturer label (Apple, Samsung, Google,
+  etc.) or the address. Tap a device for live details: address type, RSSI, TX power, manufacturer ID,
+  service UUID, first and last seen, and advert count. Start/Stop button; scanning stops when you
+  leave the screen. Devices drop off after 60 s without an advertisement (max 150 tracked).
+- **Display & touch > Swap red/blue** for panels that show blue as orange (saved across reboots).
+
+### Notes
+- The ESP32 requires Wi-Fi modem sleep while Bluetooth is active, so opening the scanner turns Wi-Fi
+  power save back on until the next reboot.
+
 ## [0.0.2] - 2026-11-18
 
 ### Fixed

@@ -49,6 +49,7 @@ lv_disp_t *disp = nullptr;
 lv_indev_drv_t indevDrv;
 
 uint8_t rot = display::LANDSCAPE;
+bool swapRB = false;
 Cal cal{};
 bool calValid = false;
 
@@ -81,6 +82,13 @@ void applyRotation() {
 void flushCb(lv_disp_drv_t *drv, const lv_area_t *a, lv_color_t *px) {
   uint32_t w = a->x2 - a->x1 + 1;
   uint32_t h = a->y2 - a->y1 + 1;
+  if (swapRB) {  // RGB565: exchange the 5-bit red and blue fields
+    uint16_t *p = (uint16_t *)&px->full;
+    for (uint32_t i = 0, n = w * h; i < n; i++) {
+      uint16_t c = p[i];
+      p[i] = ((c & 0x001F) << 11) | (c & 0x07E0) | (c >> 11);
+    }
+  }
   tft.startWrite();
   tft.setAddrWindow(a->x1, a->y1, w, h);
   tft.pushColors((uint16_t *)&px->full, w * h, true);
@@ -126,6 +134,7 @@ bool solve3(const double m[3][3], const double v[3], double out[3]) {
 void display::begin() {
   prefs.begin("disp", true);
   rot = prefs.getUChar("rot", LANDSCAPE) & 3;
+  swapRB = prefs.getBool("swaprb", false);
   if (prefs.getBytesLength("cal") == sizeof(Cal)) {
     prefs.getBytes("cal", &cal, sizeof(Cal));
     calValid = (cal.magic == CAL_MAGIC);
@@ -176,6 +185,16 @@ void display::setRotation(uint8_t r) {
   lv_disp_drv_update(disp, &dispDrv);
   prefs.begin("disp", false);
   prefs.putUChar("rot", rot);
+  prefs.end();
+}
+
+bool display::swapRedBlue() { return swapRB; }
+
+void display::setSwapRedBlue(bool on) {
+  swapRB = on;
+  lv_obj_invalidate(lv_scr_act());  // redraw everything with the new mapping
+  prefs.begin("disp", false);
+  prefs.putBool("swaprb", swapRB);
   prefs.end();
 }
 

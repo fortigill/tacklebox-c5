@@ -6,6 +6,7 @@
 
 #include <vector>
 
+#include "ble.h"
 #include "display.h"
 #include "net.h"
 #include "version.h"
@@ -15,7 +16,9 @@
 
 namespace {
 
-enum class Screen { Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate };
+enum class Screen {
+  Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate, Ble, BleDetail
+};
 
 const int HEADER_H = 40;
 
@@ -35,6 +38,14 @@ lv_obj_t *wifiScanBtn = nullptr;
 lv_obj_t *wifiForgetBtn = nullptr;
 lv_obj_t *pwTa = nullptr;
 lv_obj_t *calH = nullptr, *calV = nullptr, *calRing = nullptr, *calMsg = nullptr;
+lv_obj_t *bleList = nullptr, *bleStatus = nullptr, *bleToggle = nullptr, *bleDetail = nullptr;
+
+// BLE scanner state
+const uint32_t BLE_LIST_REFRESH_MS = 2000;
+const size_t BLE_MAX_ROWS = 60;
+std::vector<String> bleRowAddrs;
+String bleDetailAddr;
+uint32_t bleLastFill = 0;
 
 int deskIconState = -1;  // last state the desktop icon was styled for
 net::ScanState lastScanSt = net::ScanState::Idle;
@@ -62,6 +73,8 @@ void showConnecting();
 void showAbout();
 void showDisplay();
 void showCalibration(bool firstRun);
+void showBle();
+void showBleDetail();
 
 // ---------- helpers ----------
 
@@ -70,6 +83,7 @@ void resetPtrs() {
   wifiStatusLbl = wifiList = wifiScanBtn = wifiForgetBtn = nullptr;
   pwTa = nullptr;
   calH = calV = calRing = calMsg = nullptr;
+  bleList = bleStatus = bleToggle = bleDetail = nullptr;
   deskIconState = -1;
 }
 
@@ -245,6 +259,9 @@ void showMenu() {
   lv_obj_add_event_cb(b, [](lv_event_t *) { wifiBack = Screen::Menu; showWifi(); },
                       LV_EVENT_CLICKED, nullptr);
 
+  b = lv_list_add_btn(list, LV_SYMBOL_BLUETOOTH, "Bluetooth scanner");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showBle(); }, LV_EVENT_CLICKED, nullptr);
+
   b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Display & touch");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showDisplay(); }, LV_EVENT_CLICKED, nullptr);
 
@@ -285,6 +302,17 @@ void showDisplay() {
     if (sel) lv_obj_add_state(b, LV_STATE_CHECKED);
     lv_obj_add_event_cb(b, onRotationClicked, LV_EVENT_CLICKED, (void *)(intptr_t)o.rot);
   }
+
+  lv_list_add_text(list, "Colors");
+  lv_obj_t *cb = lv_list_add_btn(list, display::swapRedBlue() ? LV_SYMBOL_OK : nullptr,
+                                 "Swap red/blue");
+  lv_obj_add_event_cb(
+      cb,
+      [](lv_event_t *) {
+        display::setSwapRedBlue(!display::swapRedBlue());
+        showDisplay();
+      },
+      LV_EVENT_CLICKED, nullptr);
 
   lv_list_add_text(list, "Touch");
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Calibrate touch screen");
@@ -428,6 +456,164 @@ void showCalibration(bool firstRun) {
   load(scr, Screen::Calibrate);
   calRestart(nullptr);
   calTimer = lv_timer_create(calTick, 15, nullptr);
+}
+
+// ---------- Bluetooth scanner ----------
+
+String bleTitle(const ble::Device &d) {
+  if (d.name.length()) return d.name;
+  const char *v = d.hasMfg ? ble::vendorName(d.mfgId) : nullptr;
+  if (v) return String(v) + " device";
+  return d.addr;
+}
+
+void bleUpdateStatus(size_t count) {
+  if (!bleStatus) return;
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%s  -  %u device%s", ble::scanning() ? "Scanning" : "Stopped",
+           (unsigned)count, count == 1 ? "" : "s");
+  setText(bleStatus, buf);
+  setText(lv_obj_get_child(bleToggle, 0), ble::scanning() ? "Stop" : "Start");
+}
+
+void onBleRowClicked(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= bleRowAddrs.size()) return;
+  bleDetailAddr = bleRowAddrs[i];
+  showBleDetail();
+}
+
+void bleFill() {
+  if (!bleList) return;
+  // Don't rebuild under the stylus: it would cancel a tap or scroll in progress
+  lv_indev_t *in = lv_indev_get_next(nullptr);
+  if (in && in->proc.state == LV_INDEV_STATE_PRESSED) return;
+  bleLastFill = millis();
+
+  auto devs = ble::snapshot();
+  bleUpdateStatus(devs.size());
+
+  lv_coord_t y = lv_obj_get_scroll_y(bleList);
+  lv_obj_clean(bleList);
+  bleRowAddrs.clear();
+
+  if (devs.empty()) {
+    lv_list_add_text(bleList, ble::scanning() ? "Listening for devices..." : "No devices");
+    return;
+  }
+  size_t n = devs.size() < BLE_MAX_ROWS ? devs.size() : BLE_MAX_ROWS;
+  for (size_t i = 0; i < n; i++) {
+    const auto &d = devs[i];
+    lv_obj_t *b = lv_list_add_btn(bleList, LV_SYMBOL_BLUETOOTH, bleTitle(d).c_str());
+    lv_obj_t *r = lv_label_create(b);
+    lv_label_set_text_fmt(r, "%d dBm", d.rssi);
+    lv_obj_set_style_text_opa(r, LV_OPA_60, 0);
+    bleRowAddrs.push_back(d.addr);
+    lv_obj_add_event_cb(b, onBleRowClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  lv_obj_scroll_to_y(bleList, y, LV_ANIM_OFF);
+}
+
+void showBle() {
+  lv_obj_t *scr = newScreen();
+  const int btnW = 76;
+  lv_obj_t *hdr = makeHeader(
+      scr, "Bluetooth",
+      [](lv_event_t *) {
+        ble::stop();
+        showMenu();
+      },
+      btnW);
+
+  bleToggle = flatBtn(hdr, "Stop", btnW, 32);
+  lv_obj_align(bleToggle, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_add_event_cb(
+      bleToggle,
+      [](lv_event_t *) {
+        if (ble::scanning()) ble::stop();
+        else ble::start();
+        bleUpdateStatus(bleRowAddrs.size());
+        bleFill();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  bleStatus = lv_label_create(scr);
+  lv_label_set_text(bleStatus, "Starting Bluetooth...");
+  lv_obj_align(bleStatus, LV_ALIGN_TOP_LEFT, 8, HEADER_H + 7);
+
+  const int listY = HEADER_H + 28;
+  bleList = lv_list_create(scr);
+  lv_obj_set_size(bleList, W(), H() - listY);
+  lv_obj_align(bleList, LV_ALIGN_TOP_MID, 0, listY);
+
+  load(scr, Screen::Ble);
+
+  // Bluetooth init blocks for a moment, so let the screen draw first
+  lv_timer_t *t = lv_timer_create(
+      [](lv_timer_t *) {
+        if (!ble::start()) {
+          setText(bleStatus, "Bluetooth failed to start");
+          return;
+        }
+        bleFill();
+      },
+      50, nullptr);
+  lv_timer_set_repeat_count(t, 1);
+}
+
+void refreshBleDetail() {
+  if (!bleDetail) return;
+  ble::Device d;
+  if (!ble::find(bleDetailAddr, d)) {
+    setText(bleDetail, "Device no longer seen.");
+    return;
+  }
+  char mfg[40] = "-";
+  if (d.hasMfg) {
+    const char *v = ble::vendorName(d.mfgId);
+    snprintf(mfg, sizeof(mfg), "%s (0x%04X)", v ? v : "unknown", d.mfgId);
+  }
+  char tx[16] = "-";
+  if (d.hasTx) snprintf(tx, sizeof(tx), "%d dBm", d.tx);
+
+  char buf[384];
+  snprintf(buf, sizeof(buf),
+           "Name: %s\n"
+           "Address: %s (%s)\n"
+           "RSSI: %d dBm\n"
+           "TX power: %s\n"
+           "Manufacturer: %s\n"
+           "Service: %s\n"
+           "Last seen: %lus ago\n"
+           "First seen: %lus ago\n"
+           "Adverts: %lu",
+           d.name.length() ? d.name.c_str() : "-", d.addr.c_str(),
+           d.randomAddr ? "random" : "public", d.rssi, tx, mfg,
+           d.service.length() ? d.service.c_str() : "-",
+           (unsigned long)((millis() - d.lastSeen) / 1000),
+           (unsigned long)((millis() - d.firstSeen) / 1000), (unsigned long)d.seenCount);
+  setText(bleDetail, buf);
+}
+
+void showBleDetail() {
+  lv_obj_t *scr = newScreen();
+  ble::Device d;
+  String title = ble::find(bleDetailAddr, d) ? bleTitle(d) : bleDetailAddr;
+  makeHeader(scr, title.c_str(), [](lv_event_t *) { showBle(); });
+
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H);
+  lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+
+  bleDetail = lv_label_create(box);
+  lv_label_set_long_mode(bleDetail, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(bleDetail, LV_PCT(100));
+  lv_label_set_text(bleDetail, "");
+
+  load(scr, Screen::BleDetail);
+  refreshBleDetail();
 }
 
 // ---------- Wi-Fi settings ----------
@@ -703,6 +889,10 @@ void poll(lv_timer_t *) {
     case Screen::Desktop: refreshDesktop(); break;
     case Screen::Wifi: refreshWifi(); break;
     case Screen::Connecting: pollConnecting(); break;
+    case Screen::Ble:
+      if (millis() - bleLastFill >= BLE_LIST_REFRESH_MS) bleFill();
+      break;
+    case Screen::BleDetail: refreshBleDetail(); break;
     default: break;
   }
 }

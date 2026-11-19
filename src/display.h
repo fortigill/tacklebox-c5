@@ -1,6 +1,32 @@
 #pragma once
 
+#include <stdint.h>
+
 namespace display {
-// Initializes the TFT, the XPT2046 touch controller and LVGL (landscape 320x240).
+
+// Rotation values follow TFT_eSPI: 0 = portrait, 1 = landscape,
+// 2 = portrait (flipped), 3 = landscape (flipped).
+enum Rotation : uint8_t { PORTRAIT = 0, LANDSCAPE = 1, PORTRAIT_FLIP = 2, LANDSCAPE_FLIP = 3 };
+
+// One calibration sample: where the target was drawn (screen coords in the
+// current rotation) and the raw XPT2046 reading the stylus produced there.
+struct CalPoint {
+  int16_t sx, sy;
+  int16_t rx, ry;
+};
+
+// Initializes TFT, touch and LVGL. Loads saved rotation and calibration.
 void begin();
-}
+
+uint8_t rotation();
+void setRotation(uint8_t r);  // applies immediately and saves to NVS
+
+bool hasCalibration();
+// Fits raw->screen mapping from the samples. Saves and applies it if the
+// worst-case error is acceptable. maxErrPx receives the worst error.
+bool calibrate(const CalPoint *pts, int n, float *maxErrPx);
+
+// Raw touch reading (no calibration applied). Returns false if not pressed.
+bool readRaw(int16_t &x, int16_t &y);
+
+}  // namespace display

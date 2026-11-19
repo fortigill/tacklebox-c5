@@ -35,6 +35,10 @@ void begin() {
   WiFi.persistent(false);  // we store credentials ourselves
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  // Flicker fix: with modem sleep on, the radio wakes in bursts every beacon
+  // interval. Those current spikes sag the CYD's 3.3 V rail and the backlight
+  // visibly pulses. Keeping the radio awake makes the current draw steady.
+  WiFi.setSleep(false);
 
   prefs.begin("wifi", true);
   String s = prefs.getString("ssid", "");

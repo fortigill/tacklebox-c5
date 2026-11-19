@@ -6,21 +6,25 @@
 
 #include <vector>
 
+#include "display.h"
 #include "net.h"
+#include "version.h"
 
 // Note: the built-in Montserrat fonts only contain ASCII + LV_SYMBOL_* icons,
 // so keep UI strings ASCII-only.
 
 namespace {
 
-enum class Screen { Desktop, Menu, Wifi, Password, Connecting, About };
+enum class Screen { Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate };
 
-const int W = 320;
-const int H = 240;
 const int HEADER_H = 40;
 
+int W() { return lv_disp_get_hor_res(nullptr); }
+int H() { return lv_disp_get_ver_res(nullptr); }
+
 Screen cur = Screen::Desktop;
-Screen wifiBack = Screen::Menu;  // where "back" goes from Wi-Fi settings
+Screen wifiBack = Screen::Menu;   // where "back" goes from Wi-Fi settings
+Screen calReturn = Screen::Desktop;
 
 // Widgets of the current screen (reset whenever the screen changes)
 lv_obj_t *deskWifiIcon = nullptr;
@@ -30,12 +34,25 @@ lv_obj_t *wifiList = nullptr;
 lv_obj_t *wifiScanBtn = nullptr;
 lv_obj_t *wifiForgetBtn = nullptr;
 lv_obj_t *pwTa = nullptr;
+lv_obj_t *calH = nullptr, *calV = nullptr, *calRing = nullptr, *calMsg = nullptr;
 
+int deskIconState = -1;  // last state the desktop icon was styled for
 net::ScanState lastScanSt = net::ScanState::Idle;
 std::vector<String> listSsids;
 std::vector<bool> listSecure;
 String targetSsid;
 bool targetSecure = true;
+
+// Calibration state
+const int CAL_POINTS = 4;
+const int CAL_MARGIN = 24;
+const int CAL_SETTLE_SAMPLES = 3;   // discard while the stylus settles
+lv_timer_t *calTimer = nullptr;
+display::CalPoint calPts[CAL_POINTS];
+int calIdx = 0;
+bool calWaitRelease = true;
+int calDownTicks = 0, calUpTicks = 0;
+int32_t calSumX = 0, calSumY = 0;
 
 void showDesktop();
 void showMenu();
@@ -43,6 +60,8 @@ void showWifi();
 void showPassword();
 void showConnecting();
 void showAbout();
+void showDisplay();
+void showCalibration(bool firstRun);
 
 // ---------- helpers ----------
 
@@ -50,13 +69,26 @@ void resetPtrs() {
   deskWifiIcon = deskWifiLbl = nullptr;
   wifiStatusLbl = wifiList = wifiScanBtn = wifiForgetBtn = nullptr;
   pwTa = nullptr;
+  calH = calV = calRing = calMsg = nullptr;
+  deskIconState = -1;
 }
 
 void setText(lv_obj_t *lbl, const char *txt) {
   if (lbl && strcmp(lv_label_get_text(lbl), txt) != 0) lv_label_set_text(lbl, txt);
 }
 
+// Only touch the HIDDEN flag when it actually changes (adding it always invalidates)
+void setHidden(lv_obj_t *o, bool hide) {
+  if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) == hide) return;
+  if (hide) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
 lv_obj_t *newScreen() {
+  if (calTimer) {
+    lv_timer_del(calTimer);
+    calTimer = nullptr;
+  }
   resetPtrs();
   lv_obj_t *s = lv_obj_create(nullptr);
   lv_obj_clear_flag(s, LV_OBJ_FLAG_SCROLLABLE);
@@ -78,9 +110,11 @@ lv_obj_t *flatBtn(lv_obj_t *parent, const char *txt, int w, int h) {
   return b;
 }
 
-lv_obj_t *makeHeader(lv_obj_t *scr, const char *title, lv_event_cb_t backCb) {
+// rightReserve: space kept free on the right for a header button
+lv_obj_t *makeHeader(lv_obj_t *scr, const char *title, lv_event_cb_t backCb,
+                     int rightReserve = 0) {
   lv_obj_t *h = lv_obj_create(scr);
-  lv_obj_set_size(h, W, HEADER_H);
+  lv_obj_set_size(h, W(), HEADER_H);
   lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_radius(h, 0, 0);
   lv_obj_set_style_border_width(h, 0, 0);
@@ -97,7 +131,7 @@ lv_obj_t *makeHeader(lv_obj_t *scr, const char *title, lv_event_cb_t backCb) {
   lv_obj_t *t = lv_label_create(h);
   lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);
   lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(t, 170);
+  lv_obj_set_width(t, W() - titleX - 12 - rightReserve);
   lv_label_set_text(t, title);
   lv_obj_align(t, LV_ALIGN_LEFT_MID, titleX, 0);
   return h;
@@ -105,7 +139,7 @@ lv_obj_t *makeHeader(lv_obj_t *scr, const char *title, lv_event_cb_t backCb) {
 
 void errorBox(const char *title, const char *msg) {
   lv_obj_t *m = lv_msgbox_create(nullptr, title, msg, nullptr, true);  // modal, on top layer
-  lv_obj_set_width(m, 260);
+  lv_obj_set_width(m, W() - 40);
   lv_obj_center(m);
 }
 
@@ -114,31 +148,40 @@ void errorBox(const char *title, const char *msg) {
 void refreshDesktop() {
   if (!deskWifiIcon) return;
   char buf[96];
-  lv_color_t color;
-  lv_opa_t opa = LV_OPA_COVER;
+  int state = (int)net::state();
 
   switch (net::state()) {
     case net::State::Connected:
-      color = lv_palette_main(LV_PALETTE_GREEN);
       snprintf(buf, sizeof(buf), "%s  |  %s", net::ssid().c_str(), net::ip().c_str());
       break;
     case net::State::Connecting:
-      color = lv_palette_main(LV_PALETTE_AMBER);
       snprintf(buf, sizeof(buf), "Connecting to %s...", net::ssid().c_str());
       break;
     case net::State::Lost:
-      color = lv_palette_main(LV_PALETTE_AMBER);
       snprintf(buf, sizeof(buf), "Reconnecting to %s...", net::ssid().c_str());
       break;
     default:
+      snprintf(buf, sizeof(buf), "Wi-Fi not connected");
+      break;
+  }
+  setText(deskWifiLbl, buf);
+
+  // Restyle only on change: setting a style invalidates (redraws) the widget
+  if (state == deskIconState) return;
+  deskIconState = state;
+  lv_color_t color;
+  lv_opa_t opa = LV_OPA_COVER;
+  switch (net::state()) {
+    case net::State::Connected: color = lv_palette_main(LV_PALETTE_GREEN); break;
+    case net::State::Connecting:
+    case net::State::Lost: color = lv_palette_main(LV_PALETTE_AMBER); break;
+    default:
       color = lv_palette_main(LV_PALETTE_GREY);
       opa = LV_OPA_40;
-      snprintf(buf, sizeof(buf), "Wi-Fi not connected");
       break;
   }
   lv_obj_set_style_text_color(deskWifiIcon, color, 0);
   lv_obj_set_style_text_opa(deskWifiIcon, opa, 0);
-  setText(deskWifiLbl, buf);
 }
 
 void showDesktop() {
@@ -146,7 +189,7 @@ void showDesktop() {
 
   // Status bar
   lv_obj_t *bar = lv_obj_create(scr);
-  lv_obj_set_size(bar, W, 36);
+  lv_obj_set_size(bar, W(), 36);
   lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_radius(bar, 0, 0);
   lv_obj_set_style_border_width(bar, 0, 0);
@@ -154,7 +197,7 @@ void showDesktop() {
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t *name = lv_label_create(bar);
-  lv_label_set_text(name, "CYD");
+  lv_label_set_text(name, "CYD  v" FW_VERSION);
   lv_obj_align(name, LV_ALIGN_LEFT_MID, 6, 0);
 
   // Wi-Fi icon: a transparent button so it's an easy stylus target
@@ -178,6 +221,9 @@ void showDesktop() {
   lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
 
   deskWifiLbl = lv_label_create(scr);
+  lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(deskWifiLbl, W() - 16);
+  lv_obj_set_style_text_align(deskWifiLbl, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(deskWifiLbl, "");
   lv_obj_align(deskWifiLbl, LV_ALIGN_BOTTOM_MID, 0, -10);
 
@@ -192,17 +238,196 @@ void showMenu() {
   makeHeader(scr, "Menu", [](lv_event_t *) { showDesktop(); });
 
   lv_obj_t *list = lv_list_create(scr);
-  lv_obj_set_size(list, W, H - HEADER_H);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
 
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_WIFI, "Network settings");
   lv_obj_add_event_cb(b, [](lv_event_t *) { wifiBack = Screen::Menu; showWifi(); },
                       LV_EVENT_CLICKED, nullptr);
 
+  b = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Display & touch");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showDisplay(); }, LV_EVENT_CLICKED, nullptr);
+
   b = lv_list_add_btn(list, LV_SYMBOL_SETTINGS, "About this device");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showAbout(); }, LV_EVENT_CLICKED, nullptr);
 
   load(scr, Screen::Menu);
+}
+
+// ---------- Display & touch ----------
+
+void onRotationClicked(lv_event_t *e) {
+  uint8_t r = (uint8_t)(intptr_t)lv_event_get_user_data(e);
+  if (r == display::rotation()) return;
+  display::setRotation(r);
+  showDisplay();  // rebuild for the new dimensions
+}
+
+void showDisplay() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Display & touch", [](lv_event_t *) { showMenu(); });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_list_add_text(list, "Orientation");
+  struct Opt { uint8_t rot; const char *name; };
+  static const Opt opts[] = {
+      {display::LANDSCAPE, "Landscape"},
+      {display::PORTRAIT, "Portrait"},
+      {display::LANDSCAPE_FLIP, "Landscape (flipped)"},
+      {display::PORTRAIT_FLIP, "Portrait (flipped)"},
+  };
+  for (const auto &o : opts) {
+    bool sel = o.rot == display::rotation();
+    lv_obj_t *b = lv_list_add_btn(list, sel ? LV_SYMBOL_OK : nullptr, o.name);
+    if (sel) lv_obj_add_state(b, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(b, onRotationClicked, LV_EVENT_CLICKED, (void *)(intptr_t)o.rot);
+  }
+
+  lv_list_add_text(list, "Touch");
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Calibrate touch screen");
+  lv_obj_add_event_cb(
+      b, [](lv_event_t *) { calReturn = Screen::Display; showCalibration(false); },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::Display);
+}
+
+// ---------- Touch calibration ----------
+
+void calTarget(int i, int16_t &x, int16_t &y) {
+  int w = W(), h = H();
+  switch (i) {
+    case 0: x = CAL_MARGIN;         y = CAL_MARGIN;         break;
+    case 1: x = w - 1 - CAL_MARGIN; y = CAL_MARGIN;         break;
+    case 2: x = w - 1 - CAL_MARGIN; y = h - 1 - CAL_MARGIN; break;
+    default: x = CAL_MARGIN;        y = h - 1 - CAL_MARGIN; break;
+  }
+}
+
+void calPlaceTarget() {
+  int16_t x, y;
+  calTarget(calIdx, x, y);
+  lv_obj_set_pos(calH, x - 15, y - 1);
+  lv_obj_set_pos(calV, x - 1, y - 15);
+  lv_obj_set_pos(calRing, x - 9, y - 9);
+  lv_label_set_text_fmt(calMsg, "Tap the center of the cross\nwith the stylus  (%d/%d)",
+                        calIdx + 1, CAL_POINTS);
+}
+
+void calRestart(const char *why) {
+  calIdx = 0;
+  calWaitRelease = true;
+  calDownTicks = calUpTicks = 0;
+  calSumX = calSumY = 0;
+  calPlaceTarget();
+  if (why) lv_label_set_text_fmt(calMsg, "%s\nTap the cross again  (1/%d)", why, CAL_POINTS);
+}
+
+void calTick(lv_timer_t *) {
+  int16_t rx, ry;
+  bool down = display::readRaw(rx, ry);
+
+  if (calWaitRelease) {  // ignore a stylus that's already down
+    if (!down) calWaitRelease = false;
+    return;
+  }
+
+  if (down) {
+    calUpTicks = 0;
+    if (++calDownTicks > CAL_SETTLE_SAMPLES) {
+      calSumX += rx;
+      calSumY += ry;
+    }
+    return;
+  }
+
+  // Debounce release: resistive panels can drop out for a sample mid-press
+  if (calDownTicks == 0 || ++calUpTicks < 2) return;
+
+  int used = calDownTicks - CAL_SETTLE_SAMPLES;
+  int32_t sumX = calSumX, sumY = calSumY;
+  calDownTicks = calUpTicks = 0;
+  calSumX = calSumY = 0;
+  if (used < 3) return;  // too brief to trust; wait for another tap
+
+  int16_t sx, sy;
+  calTarget(calIdx, sx, sy);
+  calPts[calIdx] = {sx, sy, (int16_t)(sumX / used), (int16_t)(sumY / used)};
+  Serial.printf("[cal] point %d screen=(%d,%d) raw=(%d,%d)\n", calIdx, sx, sy,
+                calPts[calIdx].rx, calPts[calIdx].ry);
+
+  if (++calIdx < CAL_POINTS) {
+    calPlaceTarget();
+    return;
+  }
+
+  float err = 0;
+  if (!display::calibrate(calPts, CAL_POINTS, &err)) {
+    char why[64];
+    snprintf(why, sizeof(why), "Taps didn't line up (off by %d px).", (int)err);
+    calRestart(why);
+    return;
+  }
+
+  // Success: stop sampling, confirm, then leave
+  lv_timer_del(calTimer);
+  calTimer = nullptr;
+  setHidden(calH, true);
+  setHidden(calV, true);
+  setHidden(calRing, true);
+  char done[64];  // LVGL's printf has no float support, so format here
+  snprintf(done, sizeof(done), LV_SYMBOL_OK " Calibration saved\n(accuracy %.1f px)", err);
+  lv_label_set_text(calMsg, done);
+  lv_timer_t *t = lv_timer_create(
+      [](lv_timer_t *) {
+        if (calReturn == Screen::Display) showDisplay();
+        else showDesktop();
+      },
+      1200, nullptr);
+  lv_timer_set_repeat_count(t, 1);
+}
+
+lv_obj_t *calBar(lv_obj_t *parent, int w, int h) {
+  lv_obj_t *o = lv_obj_create(parent);
+  lv_obj_remove_style_all(o);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_bg_color(o, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  return o;
+}
+
+void showCalibration(bool firstRun) {
+  lv_obj_t *scr = newScreen();
+  lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+  lv_obj_t *title = lv_label_create(scr);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+  lv_label_set_text(title, firstRun ? "Touch setup" : "Touch calibration");
+  lv_obj_align(title, LV_ALIGN_CENTER, 0, -40);
+
+  calMsg = lv_label_create(scr);
+  lv_obj_set_style_text_align(calMsg, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(calMsg, W() - 70);
+  lv_label_set_long_mode(calMsg, LV_LABEL_LONG_WRAP);
+  lv_obj_align(calMsg, LV_ALIGN_CENTER, 0, 10);
+
+  calRing = lv_obj_create(scr);
+  lv_obj_remove_style_all(calRing);
+  lv_obj_set_size(calRing, 18, 18);
+  lv_obj_set_style_radius(calRing, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(calRing, 2, 0);
+  lv_obj_set_style_border_color(calRing, lv_color_white(), 0);
+  lv_obj_clear_flag(calRing, LV_OBJ_FLAG_CLICKABLE);
+  calH = calBar(scr, 30, 2);
+  calV = calBar(scr, 2, 30);
+
+  load(scr, Screen::Calibrate);
+  calRestart(nullptr);
+  calTimer = lv_timer_create(calTick, 15, nullptr);
 }
 
 // ---------- Wi-Fi settings ----------
@@ -281,9 +506,7 @@ void refreshWifi() {
       break;
   }
   setText(wifiStatusLbl, buf);
-
-  if (net::savedSsid().length()) lv_obj_clear_flag(wifiForgetBtn, LV_OBJ_FLAG_HIDDEN);
-  else lv_obj_add_flag(wifiForgetBtn, LV_OBJ_FLAG_HIDDEN);
+  setHidden(wifiForgetBtn, net::savedSsid().isEmpty());
 
   net::ScanState s = net::scanState();
   if (s == net::ScanState::Running) lv_obj_add_state(wifiScanBtn, LV_STATE_DISABLED);
@@ -297,19 +520,23 @@ void refreshWifi() {
 
 void showWifi() {
   lv_obj_t *scr = newScreen();
-  lv_obj_t *hdr = makeHeader(scr, "Wi-Fi", [](lv_event_t *) {
-    if (wifiBack == Screen::Desktop) showDesktop();
-    else showMenu();
-  });
+  const int scanW = 84;
+  lv_obj_t *hdr = makeHeader(
+      scr, "Wi-Fi",
+      [](lv_event_t *) {
+        if (wifiBack == Screen::Desktop) showDesktop();
+        else showMenu();
+      },
+      scanW);
 
-  wifiScanBtn = flatBtn(hdr, LV_SYMBOL_REFRESH " Scan", 84, 32);
+  wifiScanBtn = flatBtn(hdr, LV_SYMBOL_REFRESH " Scan", scanW, 32);
   lv_obj_align(wifiScanBtn, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_add_event_cb(wifiScanBtn, [](lv_event_t *) { net::startScan(); }, LV_EVENT_CLICKED,
                       nullptr);
 
   wifiStatusLbl = lv_label_create(scr);
   lv_label_set_long_mode(wifiStatusLbl, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(wifiStatusLbl, 230);
+  lv_obj_set_width(wifiStatusLbl, W() - 90);
   lv_label_set_text(wifiStatusLbl, "");
   lv_obj_align(wifiStatusLbl, LV_ALIGN_TOP_LEFT, 8, HEADER_H + 9);
 
@@ -321,7 +548,7 @@ void showWifi() {
 
   const int listY = HEADER_H + 32;
   wifiList = lv_list_create(scr);
-  lv_obj_set_size(wifiList, W, H - listY);
+  lv_obj_set_size(wifiList, W(), H() - listY);
   lv_obj_align(wifiList, LV_ALIGN_TOP_MID, 0, listY);
 
   load(scr, Screen::Wifi);
@@ -343,7 +570,7 @@ void showPassword() {
   lv_textarea_set_password_mode(pwTa, true);
   lv_textarea_set_placeholder_text(pwTa, "Password");
   lv_textarea_set_max_length(pwTa, 63);
-  lv_obj_set_width(pwTa, W - 8 - 56);
+  lv_obj_set_width(pwTa, W() - 8 - 56);
   lv_obj_align(pwTa, LV_ALIGN_TOP_LEFT, 4, HEADER_H + 4);
   lv_obj_add_state(pwTa, LV_STATE_FOCUSED);  // show cursor
 
@@ -359,8 +586,10 @@ void showPassword() {
       },
       LV_EVENT_CLICKED, nullptr);
 
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
   lv_obj_t *kb = lv_keyboard_create(scr);
-  lv_obj_set_size(kb, W, H - HEADER_H - 50);
+  lv_obj_set_size(kb, W(), kbH);
   lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_keyboard_set_textarea(kb, pwTa);
   lv_obj_add_event_cb(
@@ -417,7 +646,7 @@ void showConnecting() {
 
   lv_obj_t *l = lv_label_create(scr);
   lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(l, W - 20);
+  lv_obj_set_width(l, W() - 20);
   lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text_fmt(l, "Connecting to %s...", targetSsid.c_str());
   lv_obj_align(l, LV_ALIGN_CENTER, 0, 24);
@@ -436,23 +665,33 @@ void showAbout() {
   lv_obj_t *scr = newScreen();
   makeHeader(scr, "About", [](lv_event_t *) { showMenu(); });
 
-  char buf[320];
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H);
+  lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+
+  char buf[384];
   bool up = net::state() == net::State::Connected;
+  uint16_t rev = ESP.getChipRevision();  // e.g. 301 = v3.1
   snprintf(buf, sizeof(buf),
-           "Chip:   %s rev %d, %d cores @ %lu MHz\n"
-           "Flash:  %lu KB\n"
-           "Heap:   %lu KB free\n"
-           "MAC:    %s\n"
-           "Wi-Fi:  %s\n"
-           "IP:     %s",
-           ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
+           "Firmware: v%s (%s)\n"
+           "Chip: %s v%u.%u\n"
+           "CPU: %d cores @ %lu MHz\n"
+           "Flash: %lu KB\n"
+           "Free heap: %lu KB\n"
+           "MAC: %s\n"
+           "Wi-Fi: %s\n"
+           "IP: %s",
+           FW_VERSION, __DATE__, ESP.getChipModel(), rev / 100, rev % 100, ESP.getChipCores(),
            (unsigned long)ESP.getCpuFreqMHz(), (unsigned long)(ESP.getFlashChipSize() / 1024),
            (unsigned long)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
            up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-");
 
-  lv_obj_t *l = lv_label_create(scr);
+  lv_obj_t *l = lv_label_create(box);
+  lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(l, LV_PCT(100));
   lv_label_set_text(l, buf);
-  lv_obj_align(l, LV_ALIGN_TOP_LEFT, 10, HEADER_H + 10);
 
   load(scr, Screen::About);
 }
@@ -468,9 +707,27 @@ void poll(lv_timer_t *) {
   }
 }
 
+// Holding the stylus on the screen during boot forces recalibration
+bool touchHeldAtBoot() {
+  int16_t x, y;
+  int hits = 0;
+  for (int i = 0; i < 10; i++) {
+    if (display::readRaw(x, y)) hits++;
+    delay(20);
+  }
+  return hits >= 7;
+}
+
 }  // namespace
 
 void ui::begin() {
   lv_timer_create(poll, 300, nullptr);
-  showDesktop();
+  bool force = touchHeldAtBoot();
+  if (!display::hasCalibration() || force) {
+    if (force) Serial.println("[ui] touch held at boot: recalibrating");
+    calReturn = Screen::Desktop;
+    showCalibration(!display::hasCalibration());
+  } else {
+    showDesktop();
+  }
 }

@@ -1,8 +1,10 @@
 #include "drone.h"
 
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <math.h>
+#include <time.h>
 
 #include <algorithm>
 #include <mutex>
@@ -249,6 +251,108 @@ void onBleMessage(const uint8_t *msg, size_t len, const char *addr, int rssi) {
   });
 }
 
+// ---------- watch log (persisted in NVS) ----------
+
+const size_t LOG_MAX = 40;
+const uint32_t LOG_SAVE_MIN_MS = 5UL * 60 * 1000;  // throttle flash writes for updates
+
+std::vector<LogEntry> logv;
+bool logDirty = false;
+uint32_t logLastSave = 0;
+uint32_t logNew = 0;
+String logNewTitle;
+Preferences logPrefs;
+
+uint32_t epochNow() {
+  time_t t = time(nullptr);
+  return t > 1700000000 ? (uint32_t)t : 0;  // 0 = clock not set yet
+}
+
+void logLoad() {
+  logPrefs.begin("drone", false);
+  size_t n = logPrefs.isKey("log") ? logPrefs.getBytesLength("log") : 0;
+  if (n && n % sizeof(LogEntry) == 0 && n / sizeof(LogEntry) <= LOG_MAX) {
+    logv.resize(n / sizeof(LogEntry));
+    logPrefs.getBytes("log", logv.data(), n);
+  }
+  logPrefs.end();
+  Serial.printf("[rid] watch log: %u drones\n", (unsigned)logv.size());
+}
+
+void logSave() {  // caller holds mtx
+  logPrefs.begin("drone", false);
+  if (logv.empty()) logPrefs.remove("log");
+  else logPrefs.putBytes("log", logv.data(), logv.size() * sizeof(LogEntry));
+  logPrefs.end();
+  logDirty = false;
+  logLastSave = millis();
+}
+
+void copyStr(char *dst, size_t n, const String &s) {
+  strncpy(dst, s.c_str(), n - 1);
+  dst[n - 1] = 0;
+}
+
+// Fold drones heard since `since` into the log (holds mtx)
+void logMerge(uint32_t since) {
+  bool added = false;
+  uint32_t now = epochNow();
+  for (const auto &d : drones) {
+    if ((int32_t)(d.lastSeen - since) < 0) continue;
+    // Match by Remote ID first (BLE addresses can rotate), then by MAC
+    auto it = std::find_if(logv.begin(), logv.end(), [&](const LogEntry &e) {
+      return d.uasId.length() ? d.uasId == e.id : d.key == e.key;
+    });
+    if (it == logv.end()) {
+      if (logv.size() >= LOG_MAX) {  // drop the entry heard longest ago
+        logv.erase(std::min_element(logv.begin(), logv.end(), [](const LogEntry &a, const LogEntry &b) {
+          return a.last < b.last;
+        }));
+      }
+      LogEntry e = {};
+      e.first = now;
+      e.rssiMax = -127;
+      logv.push_back(e);
+      it = logv.end() - 1;
+      added = true;
+      logNew++;
+      logNewTitle = d.uasId.length() ? d.uasId : d.key;
+      Serial.printf("[rid] watch: new drone %s\n", logNewTitle.c_str());
+    }
+    copyStr(it->key, sizeof(it->key), d.key);
+    if (d.uasId.length()) copyStr(it->id, sizeof(it->id), d.uasId);
+    it->idType = d.idType;
+    it->uaType = d.uaType;
+    it->transport = (uint8_t)d.transport;
+    it->last = now;
+    it->sightings++;
+    it->rssiLast = d.rssi;
+    if (d.rssi > it->rssiMax) it->rssiMax = d.rssi;
+    if (isDji(d)) it->flags |= LOG_DJI;
+    if (d.status == 3) it->flags |= LOG_EMERGENCY;
+    if (d.hasLoc) {
+      it->flags |= LOG_HAS_LOC;
+      it->lat = (int32_t)lround(d.lat * 1e7);
+      it->lon = (int32_t)lround(d.lon * 1e7);
+      it->alt = isnan(d.altGeo) ? INT16_MIN : (int16_t)lroundf(d.altGeo);
+    }
+    if (d.hasOp) {
+      it->flags |= LOG_HAS_OP;
+      it->opLat = (int32_t)lround(d.opLat * 1e7);
+      it->opLon = (int32_t)lround(d.opLon * 1e7);
+    }
+    logDirty = true;
+  }
+  if (added || (logDirty && millis() - logLastSave > LOG_SAVE_MIN_MS)) logSave();
+}
+
+// ---------- radio on/off and modes ----------
+
+Mode md = Mode::Off;
+bool burst = false;             // watch: currently in the scanning part of the cycle
+uint32_t phaseEnd = 0;
+uint32_t burstStart = 0;
+
 void updateLed() {
   uint32_t now = millis();
   bool recent = false;
@@ -257,22 +361,20 @@ void updateLed() {
     for (const auto &d : drones)
       if (now - d.lastSeen < STALE_MS) recent = true;
   }
-  int want = recent ? 2 : 1;  // 1 = scanning, 2 = drone nearby
+  // 1 = scanning, 2 = drone nearby, 3 = watch resting
+  int want = !active ? 3 : (recent ? 2 : 1);
   if (want == ledState) return;
   ledState = want;
-  if (recent) led::blink(led::Color::Blue, 250);
+  if (want == 3) led::set(led::Color::Cyan);
+  else if (recent) led::blink(led::Color::Blue, 250);
   else led::set(led::Color::Blue);
 }
 
-}  // namespace
-
-bool start() {
-  if (active) return true;
+void radioOn() {
+  if (active) return;
   net::suspend();  // promiscuous channel hopping needs the station disconnected
   {
     std::lock_guard<std::mutex> lock(mtx);
-    drones.clear();
-    frameCount = 0;
     active = true;
   }
   wifi_promiscuous_filter_t filt = {};
@@ -283,35 +385,106 @@ bool start() {
   hopIdx = 0;
   nextHop = 0;
   channel = 0;  // force the first hop to set the channel
-  ledState = -1;
-
-  bool bleOk = ble::startRid(onBleMessage);
-  if (!bleOk) Serial.println("[rid] Bluetooth unavailable, Wi-Fi only");
-  Serial.println("[rid] scanner started");
-  return true;
+  if (!ble::startRid(onBleMessage)) Serial.println("[rid] Bluetooth unavailable, Wi-Fi only");
 }
 
-void stop() {
+void radioOff() {
   if (!active) return;
   {
     std::lock_guard<std::mutex> lock(mtx);
     active = false;
-    huntKey = "";
-    huntChannel = 0;
   }
   esp_wifi_set_promiscuous(false);
   ble::stop();
   net::resume();
-  led::set(led::Color::Green);
-  Serial.println("[rid] scanner stopped, Wi-Fi resuming");
 }
 
-bool running() { return active; }
+void resetSession() {
+  std::lock_guard<std::mutex> lock(mtx);
+  drones.clear();
+  frameCount = 0;
+  huntKey = "";
+  huntChannel = 0;
+}
+
+}  // namespace
+
+void begin() { logLoad(); }
+
+bool startScan() {
+  stop();
+  resetSession();
+  md = Mode::Scan;
+  ledState = -1;
+  radioOn();
+  Serial.println("[rid] continuous scan started");
+  return true;
+}
+
+bool startWatch() {
+  stop();
+  resetSession();
+  md = Mode::Watch;
+  ledState = -1;
+  burst = true;
+  burstStart = millis();
+  phaseEnd = burstStart + WATCH_SCAN_MS;
+  radioOn();
+  Serial.println("[rid] drone watch started");
+  return true;
+}
+
+void stop() {
+  if (md == Mode::Off) return;
+  if (md == Mode::Watch && active) {  // keep what the interrupted burst heard
+    std::lock_guard<std::mutex> lock(mtx);
+    logMerge(burstStart);
+  }
+  radioOff();
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    huntKey = "";
+    huntChannel = 0;
+    if (logDirty) logSave();
+  }
+  md = Mode::Off;
+  burst = false;
+  led::set(led::Color::Green);
+  Serial.println("[rid] stopped, Wi-Fi resuming");
+}
+
+Mode mode() { return md; }
+bool running() { return md != Mode::Off; }
+bool radioActive() { return active; }
+
+uint32_t phaseRemainingMs() {
+  if (md != Mode::Watch) return 0;
+  int32_t left = (int32_t)(phaseEnd - millis());
+  return left > 0 ? left : 0;
+}
 
 void loop() {
-  if (!active) return;
+  if (md == Mode::Off) return;
   uint32_t now = millis();
-  if ((int32_t)(now - nextHop) >= 0) {
+
+  if (md == Mode::Watch && (int32_t)(now - phaseEnd) >= 0) {
+    if (burst) {  // scan finished: log what we heard, rest with Wi-Fi back on
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        logMerge(burstStart);
+      }
+      radioOff();
+      burst = false;
+      phaseEnd = now + WATCH_REST_MS;
+    } else {      // rest finished: next scan
+      burst = true;
+      burstStart = now;
+      phaseEnd = now + WATCH_SCAN_MS;
+      radioOn();
+    }
+  }
+
+  if (active && (int32_t)(now - nextHop) >= 0) {
     uint8_t want = huntChannel ? huntChannel : HOP_SEQ[hopIdx];
     if (!huntChannel) hopIdx = (hopIdx + 1) % HOP_LEN;
     if (want != channel) {
@@ -329,6 +502,54 @@ void loop() {
     lastLed = now;
     updateLed();
   }
+}
+
+// ---------- watch log API ----------
+
+std::vector<LogEntry> watchLog() {
+  std::vector<LogEntry> out;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    out = logv;
+  }
+  std::sort(out.begin(), out.end(), [](const LogEntry &a, const LogEntry &b) { return a.last > b.last; });
+  return out;
+}
+
+bool logFind(const String &key, LogEntry &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  for (const auto &e : logv) {
+    if (key == e.key) {
+      out = e;
+      return true;
+    }
+  }
+  return false;
+}
+
+void logDelete(const String &key) {
+  std::lock_guard<std::mutex> lock(mtx);
+  logv.erase(std::remove_if(logv.begin(), logv.end(), [&](const LogEntry &e) { return key == e.key; }),
+             logv.end());
+  logSave();
+}
+
+void logClear() {
+  std::lock_guard<std::mutex> lock(mtx);
+  logv.clear();
+  logSave();
+}
+
+size_t logCount() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return logv.size();
+}
+
+uint32_t logNewCount() { return logNew; }
+
+String logNewestTitle() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return logNewTitle;
 }
 
 std::vector<Drone> list() {

@@ -5,11 +5,13 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
-- **Drone Remote ID**: **Start** listens for standard Remote ID (including DJI's built-in Remote ID)
-  on Wi-Fi beacons, Wi-Fi NaN and Bluetooth 4 until you tap **Stop**. It shows ID, position,
-  altitude, speed, operator location and distance, and has a signal hunt. Wi-Fi is paused while it
-  runs.
+- **Menu** (a drawer over the desktop; tap outside it to close): Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
+- **Drone Remote ID**: listens for standard Remote ID (including DJI's built-in Remote ID) on Wi-Fi
+  beacons, Wi-Fi NaN and Bluetooth 4.
+  - **Scan** runs nonstop until you tap **Stop**, with live ID, position, altitude, speed, operator
+    location/distance and a signal hunt. Wi-Fi is paused while it runs.
+  - **Watch** scans 5 s every 30 s, with Wi-Fi back in between, and keeps a **log** of every drone
+    seen (saved until you delete it).
 - **Tracker detector**: **Watch** scans every 30 s for AirTag/Find My, Tile, SmartTag and Google
   Find My trackers. One that stays with you for 10+ min turns red and triggers a warning. Tap it to
   hunt it.

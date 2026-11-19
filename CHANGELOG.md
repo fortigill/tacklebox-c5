@@ -3,6 +3,33 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.4.0] - 2026-11-19
+
+### Added
+- **Drone Watch** mode in **Drone RID**: a repeating cycle of 5 s scanning and 25 s resting, until
+  stopped.
+  - Wi-Fi reconnects during each rest, so the clock, weather and OTA keep working. It is only paused
+    during the 5 s scans.
+  - Every drone heard goes into a **watch log saved in NVS**, which survives reboots until you delete
+    it. Each entry records the ID (DJI labeled), aircraft type, first/last seen time, how many watch
+    scans it was heard in, last position and altitude, operator position and distance, last/best
+    signal, transport and MAC. Entries are matched by Remote ID, then by MAC. Up to 40 are kept, and
+    the oldest is dropped when full.
+  - **Log** screen with per-entry detail, **Delete from log**, and **Delete all**, each with a
+    confirmation.
+  - A pop-up on any screen when Watch logs a drone it hasn't seen before.
+  - Rear LED: cyan while Watch rests, blue while it scans, blinking blue while a drone is heard.
+  - Flash writes are throttled: immediately for a new drone, otherwise at most every 5 min and on
+    stop.
+- Drone RID screen now has **Scan** (continuous, as before) | **Watch** | **Log (n)** buttons.
+  Hunting by signal requires Scan mode.
+- `timesvc::formatEpoch()` for stored timestamps (follows the 12/24 h setting).
+
+### Changed
+- The **main menu is a drawer** that slides over the live desktop. It covers about half the screen
+  (two-thirds in portrait) and keeps the status bar (weather, clock, Wi-Fi) visible. Tap the dimmed
+  area to close it. Back buttons that used to go to the menu reopen the drawer.
+
 ## [0.3.1] - 2026-11-18
 
 ### Fixed

@@ -24,7 +24,7 @@ namespace {
 enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
-  WifiAnalyzer, Trackers, Ota, Drones, DroneDetail
+  WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail
 };
 
 const int HEADER_H = 40;
@@ -40,6 +40,7 @@ Screen calReturn = Screen::Desktop;
 lv_obj_t *deskWifiIcon = nullptr;
 lv_obj_t *deskWifiLbl = nullptr;
 lv_obj_t *deskClock = nullptr;
+lv_obj_t *deskScr = nullptr, *menuScrim = nullptr;  // desktop screen + menu drawer overlay
 lv_obj_t *deskWx = nullptr, *deskWxImg = nullptr;
 lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
 lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
@@ -96,6 +97,10 @@ lv_obj_t *otaBar = nullptr, *otaPct = nullptr, *otaMsg = nullptr;
 // Drone Remote ID
 const uint32_t DRONE_REFRESH_MS = 1000;
 lv_obj_t *drnList = nullptr, *drnStatus = nullptr, *drnToggle = nullptr, *drnDetail = nullptr;
+lv_obj_t *drnWatchBtn = nullptr, *drnLogBtn = nullptr;
+std::vector<String> drnLogKeys;
+String drnLogKey;
+uint32_t drnSeenNew = 0;  // watch-log "new drone" counter already alerted
 std::vector<String> drnRowKeys;
 String drnDetailKey;
 String huntDroneKey;
@@ -138,6 +143,7 @@ int32_t calSumX = 0, calSumY = 0;
 
 void showDesktop();
 void showMenu();
+void openMenu();
 void showWifi();
 void showPassword();
 void showConnecting();
@@ -152,6 +158,8 @@ void showWifiAnalyzer();
 void showTrackers();
 void showDrones();
 void showDroneDetail();
+void showDroneLog();
+void showDroneLogDetail();
 void showDateTime();
 void showTimeZone();
 void showWeather();
@@ -161,6 +169,7 @@ void showWeatherZip();
 
 void resetPtrs() {
   deskWifiIcon = deskWifiLbl = deskClock = nullptr;
+  deskScr = menuScrim = nullptr;
   deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
   deskTemp = TempW();
   wxTemp = TempW();
@@ -176,7 +185,7 @@ void resetPtrs() {
   wfaList = wfaStatus = wfaScanBtn = nullptr;
   trkList = trkStatus = trkToggle = nullptr;
   otaBar = otaPct = otaMsg = nullptr;
-  drnList = drnStatus = drnToggle = drnDetail = nullptr;
+  drnList = drnStatus = drnToggle = drnDetail = drnWatchBtn = drnLogBtn = nullptr;
   deskIconState = -1;
 }
 
@@ -425,11 +434,13 @@ void showDesktop() {
   lv_label_set_text(deskWifiIcon, LV_SYMBOL_WIFI);
   lv_obj_center(deskWifiIcon);
 
+  deskScr = scr;
+
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);
   lv_obj_set_style_text_font(lv_obj_get_child(mb, 0), &lv_font_montserrat_20, 0);
   lv_obj_align(mb, LV_ALIGN_CENTER, 0, 4);
-  lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(mb, [](lv_event_t *) { openMenu(); }, LV_EVENT_CLICKED, nullptr);
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -444,14 +455,15 @@ void showDesktop() {
 
 // ---------- Main menu ----------
 
-void showMenu() {
-  lv_obj_t *scr = newScreen();
-  makeHeader(scr, "Menu", [](lv_event_t *) { showDesktop(); });
+// Main menu: a drawer over the live desktop. It covers about half the
+// screen and leaves the status bar visible; tap the dimmed area to close.
+void closeMenu() {
+  if (!menuScrim) return;
+  lv_obj_del_async(menuScrim);  // may be called from the scrim's own event
+  menuScrim = nullptr;
+}
 
-  lv_obj_t *list = lv_list_create(scr);
-  lv_obj_set_size(list, W(), H() - HEADER_H);
-  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
-
+void addMenuItems(lv_obj_t *list) {
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_WIFI, "Network settings");
   lv_obj_add_event_cb(
       b,
@@ -490,7 +502,51 @@ void showMenu() {
   b = lv_list_add_btn(list, LV_SYMBOL_SETTINGS, "About this device");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showAbout(); }, LV_EVENT_CLICKED, nullptr);
 
-  load(scr, Screen::Menu);
+}
+
+void openMenu() {
+  if (!deskScr || menuScrim) return;
+  const int top = 36;  // status bar height
+  menuScrim = lv_obj_create(deskScr);
+  lv_obj_remove_style_all(menuScrim);
+  lv_obj_set_size(menuScrim, W(), H() - top);
+  lv_obj_set_pos(menuScrim, 0, top);
+  lv_obj_set_style_bg_color(menuScrim, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(menuScrim, LV_OPA_40, 0);
+  lv_obj_add_flag(menuScrim, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(menuScrim, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(
+      menuScrim,
+      [](lv_event_t *e) {
+        if (lv_event_get_target(e) == menuScrim) closeMenu();  // tap outside the panel
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  int pw = W() >= 300 ? W() / 2 + 10 : W() * 2 / 3;  // portrait needs a bit more for labels
+  lv_obj_t *panel = lv_list_create(menuScrim);
+  lv_obj_set_size(panel, pw, H() - top);
+  lv_obj_set_pos(panel, 0, 0);
+  lv_obj_set_style_radius(panel, 0, 0);
+  lv_obj_set_style_shadow_width(panel, 16, 0);
+  lv_obj_set_style_shadow_opa(panel, LV_OPA_50, 0);
+  lv_list_add_text(panel, "Menu");
+  addMenuItems(panel);
+
+  // Slide in from the left
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, panel);
+  lv_anim_set_values(&a, -pw, 0);
+  lv_anim_set_time(&a, 160);
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+  lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_x((lv_obj_t *)o, v); });
+  lv_anim_start(&a);
+}
+
+// "Back to the menu" from any screen: desktop with the drawer open
+void showMenu() {
+  showDesktop();
+  openMenu();
 }
 
 // ---------- Display & touch ----------
@@ -1185,7 +1241,9 @@ void onDroneClicked(lv_event_t *e) {
 void drnUpdateStatus() {
   if (!drnStatus) return;
   char buf[96];
-  if (drone::running()) {
+  drone::Mode m = drone::mode();
+  unsigned secs = (unsigned)((drone::phaseRemainingMs() + 999) / 1000);
+  if (m == drone::Mode::Scan) {
     auto ds = drone::list();
     size_t live = 0;
     for (const auto &d : ds)
@@ -1193,11 +1251,19 @@ void drnUpdateStatus() {
     snprintf(buf, sizeof(buf), "Scanning ch %u + BT  -  %u drone%s  -  %lu msgs",
              drone::currentChannel(), (unsigned)live, live == 1 ? "" : "s",
              (unsigned long)drone::frames());
+  } else if (m == drone::Mode::Watch) {
+    snprintf(buf, sizeof(buf), drone::radioActive() ? "Watch: scanning (%us left)  -  %u logged"
+                                                    : "Watch: next scan in %us  -  %u logged",
+             secs, (unsigned)drone::logCount());
   } else {
-    snprintf(buf, sizeof(buf), "Stopped. Tap Start to scan (pauses Wi-Fi)");
+    snprintf(buf, sizeof(buf), "Scan = nonstop.  Watch = 5 s every 30 s, logged.");
   }
   setText(drnStatus, buf);
-  setText(lv_obj_get_child(drnToggle, 0), drone::running() ? "Stop" : "Start");
+  setText(lv_obj_get_child(drnToggle, 0), m == drone::Mode::Scan ? LV_SYMBOL_STOP " Stop" : "Scan");
+  setText(lv_obj_get_child(drnWatchBtn, 0), m == drone::Mode::Watch ? LV_SYMBOL_STOP " Stop" : "Watch");
+  char lb[20];
+  snprintf(lb, sizeof(lb), "Log (%u)", (unsigned)drone::logCount());
+  setText(lv_obj_get_child(drnLogBtn, 0), lb);
 }
 
 void drnFill() {
@@ -1212,7 +1278,7 @@ void drnFill() {
   drnRowKeys.clear();
   if (ds.empty()) {
     lv_list_add_text(drnList, drone::running() ? "Listening for Remote ID broadcasts..."
-                                               : "No drones detected");
+                                               : "No drones detected this session");
   }
   for (size_t i = 0; i < ds.size(); i++) {
     const auto &d = ds[i];
@@ -1237,33 +1303,59 @@ void pollDrones() {
 
 void showDrones() {
   lv_obj_t *scr = newScreen();
-  const int btnW = 76;
-  // Back leaves the scanner running: it only stops when you tap Stop
-  lv_obj_t *hdr = makeHeader(scr, "Drone RID", [](lv_event_t *) { showMenu(); }, btnW);
-  drnToggle = flatBtn(hdr, "Start", btnW, 32);
-  lv_obj_align(drnToggle, LV_ALIGN_RIGHT_MID, 0, 0);
+  // Back leaves Scan/Watch running: they only stop when you tap Stop
+  makeHeader(scr, "Drone RID", [](lv_event_t *) { showMenu(); });
+
+  // [Scan] [Watch] [Log (n)]
+  const int rowY = HEADER_H + 4, btnH = 34;
+  int bw = (W() - 16) / 3;
+  drnToggle = flatBtn(scr, "Scan", bw, btnH);
+  lv_obj_align(drnToggle, LV_ALIGN_TOP_LEFT, 4, rowY);
   lv_obj_add_event_cb(
       drnToggle,
       [](lv_event_t *) {
-        if (drone::running()) {
+        if (drone::mode() == drone::Mode::Scan) {
           drone::stop();
         } else {
           setText(drnStatus, "Starting...");
           lv_refr_now(nullptr);
-          drone::start();
+          drone::startScan();
         }
         drnUpdateStatus();
         drnFill();
       },
       LV_EVENT_CLICKED, nullptr);
 
+  drnWatchBtn = flatBtn(scr, "Watch", bw, btnH);
+  lv_obj_align(drnWatchBtn, LV_ALIGN_TOP_MID, 0, rowY);
+  lv_obj_set_style_bg_color(drnWatchBtn, theme::accent(), 0);
+  lv_obj_add_event_cb(
+      drnWatchBtn,
+      [](lv_event_t *) {
+        if (drone::mode() == drone::Mode::Watch) {
+          drone::stop();
+        } else {
+          setText(drnStatus, "Starting...");
+          lv_refr_now(nullptr);
+          drone::startWatch();
+        }
+        drnUpdateStatus();
+        drnFill();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  drnLogBtn = flatBtn(scr, "Log", bw, btnH);
+  lv_obj_align(drnLogBtn, LV_ALIGN_TOP_RIGHT, -4, rowY);
+  lv_obj_set_style_bg_color(drnLogBtn, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_add_event_cb(drnLogBtn, [](lv_event_t *) { showDroneLog(); }, LV_EVENT_CLICKED, nullptr);
+
   drnStatus = lv_label_create(scr);
   lv_label_set_long_mode(drnStatus, LV_LABEL_LONG_DOT);
   lv_obj_set_width(drnStatus, W() - 12);
   lv_label_set_text(drnStatus, "");
-  lv_obj_align(drnStatus, LV_ALIGN_TOP_LEFT, 6, HEADER_H + 7);
+  lv_obj_align(drnStatus, LV_ALIGN_TOP_LEFT, 6, rowY + btnH + 4);
 
-  const int listY = HEADER_H + 28;
+  const int listY = rowY + btnH + 24;
   drnList = lv_list_create(scr);
   lv_obj_set_size(drnList, W(), H() - listY);
   lv_obj_align(drnList, LV_ALIGN_TOP_MID, 0, listY);
@@ -1346,8 +1438,9 @@ void showDroneDetail() {
   lv_obj_add_event_cb(
       hunt,
       [](lv_event_t *) {
-        if (!drone::running()) {
-          errorBox("Scanner stopped", "Start the drone scanner to hunt by signal.");
+        if (drone::mode() != drone::Mode::Scan) {
+          errorBox("Use Scan mode", "Hunting needs the continuous Scan mode (Watch only listens "
+                                    "5 s out of every 30 s).");
           return;
         }
         drone::Drone d;
@@ -1361,6 +1454,150 @@ void showDroneDetail() {
 
   load(scr, Screen::DroneDetail);
   refreshDroneDetail();
+}
+
+// --- drone watch log ---
+
+String logTitle(const drone::LogEntry &e) {
+  String t = e.id[0] ? String(e.id) : String(e.key);
+  if (e.flags & drone::LOG_DJI) t = "DJI  " + t;
+  return t;
+}
+
+void onLogRowClicked(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= drnLogKeys.size()) return;
+  drnLogKey = drnLogKeys[i];
+  showDroneLogDetail();
+}
+
+void confirmBox(const char *title, const char *msg, const char *yes, lv_event_cb_t onYes) {
+  static const char *btns[3];
+  btns[0] = yes;
+  btns[1] = "Cancel";
+  btns[2] = "";
+  lv_obj_t *m = lv_msgbox_create(nullptr, title, msg, btns, false);
+  lv_obj_set_width(m, W() - 40);
+  lv_obj_center(m);
+  lv_obj_add_event_cb(
+      m,
+      [](lv_event_t *e) {
+        lv_obj_t *box = lv_event_get_current_target(e);
+        bool confirmed = lv_msgbox_get_active_btn(box) == 0;
+        lv_event_cb_t cb = (lv_event_cb_t)lv_event_get_user_data(e);
+        lv_msgbox_close_async(box);  // deleting inside its own event is unsafe
+        if (confirmed && cb) cb(e);
+      },
+      LV_EVENT_VALUE_CHANGED, (void *)onYes);
+}
+
+void showDroneLog() {
+  lv_obj_t *scr = newScreen();
+  const int btnW = 76;
+  lv_obj_t *hdr = makeHeader(scr, "Drone log", [](lv_event_t *) { showDrones(); }, btnW);
+  lv_obj_t *clr = flatBtn(hdr, LV_SYMBOL_TRASH " All", btnW, 32);
+  lv_obj_align(clr, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_set_style_bg_color(clr, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_add_event_cb(
+      clr,
+      [](lv_event_t *) {
+        if (!drone::logCount()) return;
+        confirmBox("Delete log?", "Remove every drone from the watch log?", "Delete all",
+                   [](lv_event_t *) {
+                     drone::logClear();
+                     showDroneLog();
+                   });
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  auto lg = drone::watchLog();
+  drnLogKeys.clear();
+  if (lg.empty()) lv_list_add_text(list, "No drones logged yet. Start Watch to log drones.");
+  else lv_list_add_text(list, "Kept until you delete them. Tap for details.");
+  for (size_t i = 0; i < lg.size(); i++) {
+    const auto &e = lg[i];
+    lv_obj_t *b = lv_list_add_btn(list, (e.flags & drone::LOG_EMERGENCY) ? LV_SYMBOL_WARNING : LV_SYMBOL_GPS,
+                                  logTitle(e).c_str());
+    char when[32], right[48];
+    timesvc::formatEpoch(e.last, when, sizeof(when));
+    snprintf(right, sizeof(right), "x%u  %s", e.sightings, e.last ? when : "");
+    lv_obj_t *r = lv_label_create(b);
+    lv_label_set_text(r, right);
+    lv_obj_set_style_text_opa(r, LV_OPA_70, 0);
+    drnLogKeys.push_back(e.key);
+    lv_obj_add_event_cb(b, onLogRowClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  load(scr, Screen::DroneLog);
+}
+
+void showDroneLogDetail() {
+  lv_obj_t *scr = newScreen();
+  drone::LogEntry e;
+  if (!drone::logFind(drnLogKey, e)) {
+    showDroneLog();
+    return;
+  }
+  makeHeader(scr, logTitle(e).c_str(), [](lv_event_t *) { showDroneLog(); });
+
+  const int btnRowH = 48;
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H - btnRowH);
+  lv_obj_align(box, LV_ALIGN_TOP_MID, 0, HEADER_H);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+
+  char first[32], last[32], pos[48] = "-", op[48] = "-", sep[24] = "-";
+  timesvc::formatEpoch(e.first, first, sizeof(first));
+  timesvc::formatEpoch(e.last, last, sizeof(last));
+  if (e.flags & drone::LOG_HAS_LOC) snprintf(pos, sizeof(pos), "%.6f, %.6f", e.lat * 1e-7, e.lon * 1e-7);
+  if (e.flags & drone::LOG_HAS_OP) snprintf(op, sizeof(op), "%.6f, %.6f", e.opLat * 1e-7, e.opLon * 1e-7);
+  if ((e.flags & drone::LOG_HAS_LOC) && (e.flags & drone::LOG_HAS_OP))
+    snprintf(sep, sizeof(sep), "%s",
+             fmtDist(drone::distanceM(e.lat * 1e-7, e.lon * 1e-7, e.opLat * 1e-7, e.opLon * 1e-7)).c_str());
+  String alt = e.alt == INT16_MIN ? String("-") : fmtAlt(e.alt);
+
+  char buf[640];
+  snprintf(buf, sizeof(buf),
+           "ID: %s\n"
+           "ID type: %s%s\n"
+           "Aircraft: %s\n"
+           "First seen: %s\n"
+           "Last seen: %s\n"
+           "Seen in: %u watch scan%s\n"
+           "Last position: %s\n"
+           "Last altitude: %s\n"
+           "Operator at: %s\n"
+           "Operator distance: %s\n"
+           "Signal: last %d dBm, best %d dBm\n"
+           "Via: %s\n"
+           "MAC: %s%s",
+           e.id[0] ? e.id : "-", drone::idTypeName(e.idType), (e.flags & drone::LOG_DJI) ? " (DJI)" : "",
+           drone::uaTypeName(e.uaType), first, last, e.sightings, e.sightings == 1 ? "" : "s", pos,
+           alt.c_str(), op, sep, e.rssiLast, e.rssiMax, drone::transportName((drone::Transport)e.transport),
+           e.key, (e.flags & drone::LOG_EMERGENCY) ? "\nReported an EMERGENCY status" : "");
+  lv_obj_t *l = lv_label_create(box);
+  lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(l, LV_PCT(100));
+  lv_label_set_text(l, buf);
+
+  lv_obj_t *del = flatBtn(scr, LV_SYMBOL_TRASH "  Delete from log", W() - 16, 38);
+  lv_obj_align(del, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_bg_color(del, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_add_event_cb(
+      del,
+      [](lv_event_t *) {
+        confirmBox("Delete entry?", "Remove this drone from the watch log?", "Delete", [](lv_event_t *) {
+          drone::logDelete(drnLogKey);
+          showDroneLog();
+        });
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::DroneLogDetail);
 }
 
 // ---------- Wi-Fi analyzer ----------
@@ -2202,6 +2439,14 @@ void showAbout() {
 // ---------- refresh timer ----------
 
 void poll(lv_timer_t *) {
+  // Drone Watch logged a new drone: tell the user whatever screen they're on
+  if (drone::logNewCount() != drnSeenNew) {
+    drnSeenNew = drone::logNewCount();
+    String msg = String("Drone Watch logged a new drone:\n") + drone::logNewestTitle() +
+                 "\n\nSee Drone RID > Log.";
+    errorBox(LV_SYMBOL_WARNING " Drone detected", msg.c_str());
+  }
+
   switch (cur) {
     case Screen::Desktop: refreshDesktop(); break;
     case Screen::Wifi: refreshWifi(); break;

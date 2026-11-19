@@ -142,6 +142,24 @@ void formatTime(char *buf, size_t n) {
   }
 }
 
+void formatEpoch(uint32_t epoch, char *buf, size_t n) {
+  if (!epoch) {
+    snprintf(buf, n, "unknown (clock not set)");
+    return;
+  }
+  time_t t = epoch;
+  struct tm tm;
+  localtime_r(&t, &tm);
+  char day[12];
+  strftime(day, sizeof(day), "%b %d", &tm);
+  if (h24) {
+    snprintf(buf, n, "%s %02d:%02d", day, tm.tm_hour, tm.tm_min);
+  } else {
+    int h = tm.tm_hour % 12;
+    snprintf(buf, n, "%s %d:%02d %s", day, h ? h : 12, tm.tm_min, tm.tm_hour < 12 ? "AM" : "PM");
+  }
+}
+
 void formatDate(char *buf, size_t n) {
   if (!valid()) {
     snprintf(buf, n, "Date not set");

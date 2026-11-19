@@ -37,6 +37,7 @@ void setup() {
   net::begin();
   timesvc::begin();
   weather::begin();
+  drone::begin();
   ui::begin();
 }
 

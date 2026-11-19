@@ -31,5 +31,6 @@ void setZone(size_t index);
 // Formatting helpers; return "--:--" / "" style placeholders until valid()
 void formatTime(char *buf, size_t n);  // "3:07 PM" or "15:07"
 void formatDate(char *buf, size_t n);  // "Wed Nov 18 2026"
+void formatEpoch(uint32_t epoch, char *buf, size_t n);  // "Nov 19 8:15 AM" (0 -> "unknown")
 
 }  // namespace timesvc

@@ -5,7 +5,10 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Bluetooth scanner, Date & time, Display & touch, About this device.
+- **Menu**: Network settings, Bluetooth scanner, Weather, Date & time, Display & touch, About this device.
+- **Weather**: set a ZIP code under **Menu > Weather**. The status bar then shows today's forecast
+  icon and the current temperature (F or C). Data comes from Open-Meteo (no API key) and refreshes
+  every 15 min. Regenerate the icons with `python3 tools/gen_wx_icons.py`.
 - **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
   bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,
@@ -73,6 +76,8 @@ src/version.h       firmware version
 src/main.cpp        setup/loop
 src/display.cpp     TFT + touch drivers, rotation, calibration
 src/ble.cpp         BLE scanner (device tracking, vendor lookup)
+src/weather.cpp     weather fetch (Open-Meteo), ZIP lookup, icon mapping
+src/wx_icons.c      generated weather icons (tools/gen_wx_icons.py)
 src/timesvc.cpp     NTP sync, time zone, 12/24 h formatting
 src/net.cpp         Wi-Fi scan/connect/save (non-blocking state machine)
 src/ui.cpp          screens

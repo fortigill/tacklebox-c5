@@ -7,6 +7,7 @@
 #include "timesvc.h"
 #include "ui.h"
 #include "version.h"
+#include "weather.h"
 
 void setup() {
   Serial.begin(115200);
@@ -14,6 +15,7 @@ void setup() {
   display::begin();
   net::begin();
   timesvc::begin();
+  weather::begin();
   ui::begin();
 }
 
@@ -22,5 +24,6 @@ void loop() {
   net::loop();
   ble::loop();
   timesvc::loop();
+  weather::loop();
   delay(5);
 }

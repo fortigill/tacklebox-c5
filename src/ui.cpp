@@ -11,6 +11,7 @@
 #include "net.h"
 #include "timesvc.h"
 #include "version.h"
+#include "weather.h"
 
 // Note: the built-in Montserrat fonts only contain ASCII + LV_SYMBOL_* icons,
 // so keep UI strings ASCII-only.
@@ -19,7 +20,7 @@ namespace {
 
 enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
-  Ble, BleDetail, BleIgnored, BleHunt, DateTime, TimeZone
+  Ble, BleDetail, BleIgnored, BleHunt, DateTime, TimeZone, Weather, WeatherZip
 };
 
 const int HEADER_H = 40;
@@ -35,6 +36,17 @@ Screen calReturn = Screen::Desktop;
 lv_obj_t *deskWifiIcon = nullptr;
 lv_obj_t *deskWifiLbl = nullptr;
 lv_obj_t *deskClock = nullptr;
+lv_obj_t *deskWx = nullptr, *deskWxImg = nullptr;
+lv_obj_t *wxImg = nullptr, *wxPlace = nullptr, *wxDesc = nullptr, *wxDetail = nullptr;
+lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
+
+// Temperature readout: number, a drawn degree ring (the built-in fonts have
+// no degree sign) and the unit letter
+struct TempW {
+  lv_obj_t *num = nullptr, *unit = nullptr;
+};
+TempW deskTemp, wxTemp;
+Screen wxBack = Screen::Menu;
 lv_obj_t *dtTime = nullptr, *dtDate = nullptr, *dtStatus = nullptr;
 lv_obj_t *wifiStatusLbl = nullptr;
 lv_obj_t *wifiList = nullptr;
@@ -96,11 +108,16 @@ void showBleIgnored();
 void showBleHunt();
 void showDateTime();
 void showTimeZone();
+void showWeather();
+void showWeatherZip();
 
 // ---------- helpers ----------
 
 void resetPtrs() {
   deskWifiIcon = deskWifiLbl = deskClock = nullptr;
+  deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
+  deskTemp = TempW();
+  wxTemp = TempW();
   dtTime = dtDate = dtStatus = nullptr;
   wifiStatusLbl = wifiList = wifiScanBtn = wifiForgetBtn = nullptr;
   pwTa = nullptr;
@@ -181,6 +198,51 @@ void errorBox(const char *title, const char *msg) {
   lv_obj_center(m);
 }
 
+TempW makeTemp(lv_obj_t *parent, const lv_font_t *font, int ring) {
+  TempW t;
+  lv_obj_t *box = lv_obj_create(parent);
+  lv_obj_remove_style_all(box);
+  lv_obj_set_size(box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(box, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_column(box, ring / 3 + 1, 0);
+  lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+  t.num = lv_label_create(box);
+  lv_obj_set_style_text_font(t.num, font, 0);
+  lv_label_set_text(t.num, "--");
+
+  lv_obj_t *deg = lv_obj_create(box);
+  lv_obj_remove_style_all(deg);
+  lv_obj_set_size(deg, ring, ring);
+  lv_obj_set_style_radius(deg, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(deg, ring >= 10 ? 3 : 2, 0);
+  lv_obj_set_style_border_color(deg, lv_color_white(), 0);
+  lv_obj_set_style_border_opa(deg, LV_OPA_COVER, 0);
+  lv_obj_set_style_translate_y(deg, ring / 2, 0);
+  lv_obj_clear_flag(deg, LV_OBJ_FLAG_CLICKABLE);
+
+  t.unit = lv_label_create(box);
+  lv_obj_set_style_text_font(t.unit, font, 0);
+  lv_label_set_text(t.unit, weather::useF() ? "F" : "C");
+  return t;
+}
+
+void setTemp(TempW &t, bool valid, float c) {
+  if (!t.num) return;
+  char buf[8];
+  if (valid) snprintf(buf, sizeof(buf), "%d", weather::temp(c));
+  else snprintf(buf, sizeof(buf), "--");
+  setText(t.num, buf);
+  setText(t.unit, weather::useF() ? "F" : "C");
+}
+
+// Set an image only when it changes (setting it always redraws)
+void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
+  if (img && lv_img_get_src(img) != src) lv_img_set_src(img, src);
+}
+
 // ---------- Desktop ----------
 
 void refreshDesktop() {
@@ -208,6 +270,12 @@ void refreshDesktop() {
   timesvc::formatTime(clk, sizeof(clk));
   setText(deskClock, clk);
 
+  weather::Data wx = weather::data();
+  setHidden(deskWx, !weather::configured());
+  if (wx.valid) setImg(deskWxImg, weather::icon(wx, false));
+  setHidden(deskWxImg, !wx.valid);
+  setTemp(deskTemp, wx.valid, wx.tempC);
+
   // Restyle only on change: setting a style invalidates (redraws) the widget
   if (state == deskIconState) return;
   deskIconState = state;
@@ -229,23 +297,57 @@ void refreshDesktop() {
 void showDesktop() {
   lv_obj_t *scr = newScreen();
 
-  // Status bar
+  // Status bar: [CYD] .......... [weather] [clock] [wifi], right-aligned row.
+  // Portrait is only 240 px wide, so it gets the smaller font.
+  bool narrow = W() < 300;
+  const lv_font_t *barFont = narrow ? &lv_font_montserrat_14 : &lv_font_montserrat_20;
+
   lv_obj_t *bar = lv_obj_create(scr);
   lv_obj_set_size(bar, W(), 36);
   lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_radius(bar, 0, 0);
   lv_obj_set_style_border_width(bar, 0, 0);
-  lv_obj_set_style_pad_all(bar, 2, 0);
+  lv_obj_set_style_pad_hor(bar, 6, 0);
+  lv_obj_set_style_pad_ver(bar, 2, 0);
+  lv_obj_set_style_pad_column(bar, narrow ? 6 : 10, 0);
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-  lv_obj_t *name = lv_label_create(bar);
-  lv_label_set_text(name, "CYD v" FW_VERSION);
-  lv_obj_align(name, LV_ALIGN_LEFT_MID, 6, 0);
+  if (!narrow) {
+    lv_obj_t *name = lv_label_create(bar);
+    lv_label_set_text(name, "CYD");
+    lv_obj_set_flex_grow(name, 1);  // pushes everything else to the right
+  }
+
+  // Weather: icon + temperature; tap for the weather screen
+  deskWx = lv_obj_create(bar);
+  lv_obj_remove_style_all(deskWx);
+  lv_obj_set_size(deskWx, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(deskWx, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(deskWx, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(deskWx, 4, 0);
+  lv_obj_add_flag(deskWx, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(deskWx, 6);
+  lv_obj_add_event_cb(deskWx, [](lv_event_t *) { wxBack = Screen::Desktop; showWeather(); },
+                      LV_EVENT_CLICKED, nullptr);
+  deskWxImg = lv_img_create(deskWx);
+  lv_obj_clear_flag(deskWxImg, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(deskWxImg, LV_OBJ_FLAG_HIDDEN);
+  deskTemp = makeTemp(deskWx, barFont, narrow ? 5 : 6);
+
+  // Clock; tap it for Date & time settings
+  deskClock = lv_label_create(bar);
+  lv_obj_set_style_text_font(deskClock, barFont, 0);
+  lv_label_set_text(deskClock, "--:--");
+  lv_obj_add_flag(deskClock, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(deskClock, 8);
+  lv_obj_add_event_cb(deskClock, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED,
+                      nullptr);
 
   // Wi-Fi icon: a transparent button so it's an easy stylus target
   lv_obj_t *wb = lv_btn_create(bar);
-  lv_obj_set_size(wb, 52, 32);
-  lv_obj_align(wb, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_set_size(wb, narrow ? 40 : 46, 32);
   lv_obj_set_style_bg_opa(wb, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(wb, 0, 0);
   lv_obj_set_style_bg_opa(wb, LV_OPA_20, LV_STATE_PRESSED);
@@ -255,16 +357,6 @@ void showDesktop() {
   lv_obj_set_style_text_font(deskWifiIcon, &lv_font_montserrat_20, 0);
   lv_label_set_text(deskWifiIcon, LV_SYMBOL_WIFI);
   lv_obj_center(deskWifiIcon);
-
-  // Clock just left of the Wi-Fi icon; tap it for Date & time settings
-  deskClock = lv_label_create(bar);
-  lv_obj_set_style_text_font(deskClock, &lv_font_montserrat_20, 0);
-  lv_label_set_text(deskClock, "--:--");
-  lv_obj_align(deskClock, LV_ALIGN_RIGHT_MID, -56, 0);
-  lv_obj_add_flag(deskClock, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_ext_click_area(deskClock, 8);
-  lv_obj_add_event_cb(deskClock, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED,
-                      nullptr);
 
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);
@@ -299,6 +391,10 @@ void showMenu() {
 
   b = lv_list_add_btn(list, LV_SYMBOL_BLUETOOTH, "Bluetooth scanner");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showBle(); }, LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_TINT, "Weather");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { wxBack = Screen::Menu; showWeather(); },
+                      LV_EVENT_CLICKED, nullptr);
 
   b = lv_list_add_btn(list, LV_SYMBOL_BELL, "Date & time");
   lv_obj_add_event_cb(b, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED, nullptr);
@@ -902,6 +998,174 @@ void showBleHunt() {
   if (!ble::startHunt(bleDetailAddr)) setText(huntStateLbl, "Bluetooth failed to start");
 }
 
+// ---------- Weather ----------
+
+void refreshWeather() {
+  if (!wxStatus) return;
+  weather::Data d = weather::data();
+  bool cfg = weather::configured();
+
+  setHidden(wxImg, !d.valid);
+  if (d.valid) setImg(wxImg, weather::icon(d, true));
+  setTemp(wxTemp, d.valid, d.tempC);
+
+  String place = weather::place();
+  setText(wxPlace, cfg ? (place.length() ? place.c_str() : weather::zip().c_str())
+                       : "No location set");
+
+  char buf[160];
+  if (d.valid) {
+    snprintf(buf, sizeof(buf), "Now: %s", weather::describe(d.code));
+    setText(wxDesc, buf);
+    snprintf(buf, sizeof(buf),
+             "Today: %s\nHigh %d / Low %d %s\nWind %d %s (gusts to %d)\nChance of rain %d%%",
+             weather::describe(d.dayCode), weather::temp(d.hiC), weather::temp(d.loC),
+             weather::useF() ? "F" : "C", weather::wind(d.windKmh), weather::windUnit(),
+             weather::wind(d.windMaxKmh), d.precipPct);
+    setText(wxDetail, buf);
+  } else {
+    setText(wxDesc, cfg ? "" : "Tap ZIP code below to set your location.");
+    setText(wxDetail, "");
+  }
+
+  switch (weather::status()) {
+    case weather::Status::Busy:
+      snprintf(buf, sizeof(buf), "Updating...");
+      break;
+    case weather::Status::Error:
+      snprintf(buf, sizeof(buf), "Update failed: %s", weather::lastError().c_str());
+      break;
+    default:
+      if (!cfg) buf[0] = 0;
+      else if (net::state() != net::State::Connected) snprintf(buf, sizeof(buf), "Waiting for Wi-Fi");
+      else if (d.valid)
+        snprintf(buf, sizeof(buf), "Updated %lu min ago - Open-Meteo",
+                 (unsigned long)((millis() - d.fetchedMs) / 60000));
+      else snprintf(buf, sizeof(buf), "Waiting for first update");
+  }
+  setText(wxStatus, buf);
+}
+
+void showWeather() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Weather", [](lv_event_t *) {
+    if (wxBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_set_style_pad_row(card, 4, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *top = lv_obj_create(card);
+  lv_obj_remove_style_all(top);
+  lv_obj_set_size(top, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(top, 12, 0);
+  wxImg = lv_img_create(top);
+  lv_obj_add_flag(wxImg, LV_OBJ_FLAG_HIDDEN);
+  wxTemp = makeTemp(top, &lv_font_montserrat_48, 12);
+
+  wxPlace = lv_label_create(card);
+  lv_obj_set_style_text_font(wxPlace, &lv_font_montserrat_20, 0);
+  lv_label_set_text(wxPlace, "");
+  wxDesc = lv_label_create(card);
+  lv_label_set_text(wxDesc, "");
+  wxDetail = lv_label_create(card);
+  lv_label_set_text(wxDetail, "");
+  wxStatus = lv_label_create(card);
+  lv_obj_set_style_text_opa(wxStatus, LV_OPA_60, 0);
+  lv_label_set_long_mode(wxStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(wxStatus, LV_PCT(100));
+  lv_label_set_text(wxStatus, "");
+
+  String z = weather::zip();
+  String zt = String("ZIP code: ") + (z.length() ? z : String("not set"));
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_GPS, zt.c_str());
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showWeatherZip(); }, LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_LOOP,
+                      weather::useF() ? "Units: Fahrenheit (tap for Celsius)"
+                                      : "Units: Celsius (tap for Fahrenheit)");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        weather::setUseF(!weather::useF());
+        showWeather();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (!weather::configured()) {
+          errorBox("No location", "Set a ZIP code first.");
+          return;
+        }
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get the weather.");
+          return;
+        }
+        weather::refresh();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  load(scr, Screen::Weather);
+  refreshWeather();
+}
+
+void showWeatherZip() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "ZIP code", [](lv_event_t *) { showWeather(); });
+
+  wxZipTa = lv_textarea_create(scr);
+  lv_textarea_set_one_line(wxZipTa, true);
+  lv_textarea_set_accepted_chars(wxZipTa, "0123456789");
+  lv_textarea_set_max_length(wxZipTa, 5);
+  lv_textarea_set_placeholder_text(wxZipTa, "5-digit ZIP");
+  lv_textarea_set_text(wxZipTa, weather::zip().c_str());
+  lv_obj_set_width(wxZipTa, W() - 8);
+  lv_obj_align(wxZipTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
+  lv_obj_add_state(wxZipTa, LV_STATE_FOCUSED);
+
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_NUMBER);
+  lv_obj_set_size(kb, W(), kbH);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(kb, wxZipTa);
+  lv_obj_add_event_cb(
+      kb,
+      [](lv_event_t *e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        if (code == LV_EVENT_CANCEL) {
+          showWeather();
+        } else if (code == LV_EVENT_READY) {
+          String z = lv_textarea_get_text(wxZipTa);
+          if (z.length() != 5) {
+            errorBox("Invalid ZIP", "Enter a 5-digit ZIP code.");
+            return;
+          }
+          weather::setZip(z);
+          showWeather();
+        }
+      },
+      LV_EVENT_ALL, nullptr);
+
+  load(scr, Screen::WeatherZip);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -1294,6 +1558,7 @@ void poll(lv_timer_t *) {
     case Screen::BleDetail: refreshBleDetail(); break;
     case Screen::BleHunt: refreshHunt(); break;
     case Screen::DateTime: refreshDateTime(); break;
+    case Screen::Weather: refreshWeather(); break;
     default: break;
   }
 }

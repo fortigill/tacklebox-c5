@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.5.8] - 2026-11-19
+
+### Changed
+- Freed 15 KB of heap by dropping LVGL's second draw buffer. `flushCb()` sends pixels
+  synchronously, so the second buffer was never in use. The display looks and behaves the same.
+- Diagnostics: the NWS alert download logs free heap and the largest block before TLS, after the
+  reply, and the all-time minimum.
+
+### Notes
+- Under investigation: the board times out waiting for NWS ("read Timeout") while a Mac sending
+  identical headers gets the reply in 0.2 s. Low heap during the TLS session is suspected (Wi-Fi
+  receive buffers can't be allocated).
+
 ## [0.5.7] - 2026-11-19
 
 ### Fixed

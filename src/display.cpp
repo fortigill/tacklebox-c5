@@ -48,8 +48,7 @@ XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 Preferences prefs;
 
 lv_disp_draw_buf_t drawBuf;
-lv_color_t *buf1 = nullptr;
-lv_color_t *buf2 = nullptr;
+lv_color_t *buf1 = nullptr;  // single LVGL draw buffer
 lv_disp_drv_t dispDrv;
 lv_disp_t *disp = nullptr;
 lv_indev_drv_t indevDrv;
@@ -179,13 +178,15 @@ void display::begin() {
   ts.setRotation(0);  // raw readings; calibration handles orientation
 
   lv_init();
+  // One buffer: flushCb() pushes pixels synchronously, so a second buffer was
+  // never drawn into while the first was being sent. It only cost 15 KB of
+  // heap that the HTTPS downloads need.
   buf1 = (lv_color_t *)heap_caps_malloc(BUF_PX * sizeof(lv_color_t), MALLOC_CAP_DMA);
-  buf2 = (lv_color_t *)heap_caps_malloc(BUF_PX * sizeof(lv_color_t), MALLOC_CAP_DMA);
-  if (!buf1 || !buf2) {
+  if (!buf1) {
     Serial.println("[display] draw buffer allocation failed");
     while (true) delay(1000);
   }
-  lv_disp_draw_buf_init(&drawBuf, buf1, buf2, BUF_PX);
+  lv_disp_draw_buf_init(&drawBuf, buf1, nullptr, BUF_PX);
 
   lv_disp_drv_init(&dispDrv);
   applyRotation();

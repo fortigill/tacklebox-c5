@@ -236,6 +236,8 @@ bool downloadAlerts(float la, float lo, String &why) {
   http.setReuse(false);  // ask the server to close when done
   char url[128];
   snprintf(url, sizeof(url), "https://api.weather.gov/alerts/active?point=%.4f,%.4f", la, lo);
+  Serial.printf("[wx] NWS: before TLS free %lu, largest block %lu\n", (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)ESP.getMaxAllocHeap());
   if (!http.begin(tls, url)) {
     why = "bad URL";
     return false;
@@ -244,8 +246,9 @@ bool downloadAlerts(float la, float lo, String &why) {
   http.addHeader("Accept", "application/geo+json");
   const uint32_t t0 = millis();
   int code = http.GET();
-  Serial.printf("[wx] NWS replied %d after %lu ms, size %d\n", code, (unsigned long)(millis() - t0),
-                http.getSize());
+  Serial.printf("[wx] NWS replied %d after %lu ms, size %d; free %lu, largest block %lu, min ever %lu\n",
+                code, (unsigned long)(millis() - t0), http.getSize(), (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)ESP.getMaxAllocHeap(), (unsigned long)ESP.getMinFreeHeap());
   if (code != 200) {
     why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
     http.end();

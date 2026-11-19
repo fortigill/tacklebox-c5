@@ -3,7 +3,7 @@
 LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/version.h` and
 [CHANGELOG.md](CHANGELOG.md).
 
-- **Desktop**: status bar with firmware version and a Wi-Fi icon (green = connected, amber =
+- **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
 - **Menu**: Network settings, Display & touch, About this device.
 - **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,

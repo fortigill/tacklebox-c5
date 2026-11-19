@@ -3,6 +3,18 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.2] - 2026-11-18
+
+### Fixed
+- Desktop Wi-Fi icon stayed grey although the board was connected. The connection tracker only
+  recognized a link during its own connect attempt; if the attempt timed out and the Arduino 3.x
+  core joined anyway, the state stuck at "failed". The tracker now follows the radio's actual link
+  state, and credentials from that attempt are still saved if the late join succeeds.
+
+### Changed
+- Connected Wi-Fi icon is now blue (was green).
+- Wi-Fi state transitions are logged to serial (`[net] state A -> B`).
+
 ## [0.0.1] - 2026-11-18
 
 ### Added

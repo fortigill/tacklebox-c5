@@ -15,6 +15,7 @@ static ScanState scanSt = ScanState::Idle;
 static State st = State::Idle;
 
 static String curSsid;
+static String pendSsid;  // network of the last user-initiated connect
 static String pendPass;
 static bool pendSave = false;
 static uint32_t connectStart = 0;
@@ -55,6 +56,7 @@ void begin() {
 void connect(const String &ssid, const String &pass, bool save) {
   WiFi.disconnect(false, false);
   curSsid = ssid;
+  pendSsid = ssid;
   pendPass = pass;
   pendSave = save;
   WiFi.begin(ssid.c_str(), pass.length() ? pass.c_str() : nullptr);  // DHCP by default
@@ -65,6 +67,7 @@ void connect(const String &ssid, const String &pass, bool save) {
 void cancel() {
   WiFi.disconnect(false, false);
   pendPass = "";
+  pendSave = false;
   st = State::Idle;
 }
 
@@ -118,31 +121,34 @@ void loop() {
 
   wl_status_t ws = WiFi.status();
   uint32_t elapsed = millis() - connectStart;
+  State prev = st;
 
-  switch (st) {
-    case State::Connecting:
-      if (ws == WL_CONNECTED) {
-        st = State::Connected;
-        if (pendSave) saveCreds(curSsid, pendPass);
-        pendPass = "";
-        Serial.printf("[net] connected to '%s', IP %s\n", curSsid.c_str(),
-                      WiFi.localIP().toString().c_str());
-      } else if (elapsed > CONNECT_TIMEOUT_MS ||
-                 (elapsed > 2000 && ws == WL_CONNECT_FAILED)) {
-        Serial.printf("[net] failed to connect to '%s' (status %d)\n", curSsid.c_str(), ws);
-        WiFi.disconnect(false, false);
-        pendPass = "";
-        st = State::Failed;
-      }
-      break;
-    case State::Connected:
-      if (ws != WL_CONNECTED) st = State::Lost;  // auto-reconnect will keep trying
-      break;
-    case State::Lost:
-      if (ws == WL_CONNECTED) st = State::Connected;
-      break;
-    default:
-      break;
+  // The radio's real link state wins over our bookkeeping: the Arduino 3.x
+  // core can finish joining after we've given up (auto-reconnect), so an
+  // Idle/Failed/Lost state with a live link means we're connected.
+  if (ws == WL_CONNECTED && st != State::Connected) {
+    st = State::Connected;
+    String actual = WiFi.SSID();
+    if (actual.length()) curSsid = actual;
+    if (pendSave && curSsid == pendSsid) saveCreds(curSsid, pendPass);
+    pendSave = false;
+    pendPass = "";
+  } else if (st == State::Connecting &&
+             (elapsed > CONNECT_TIMEOUT_MS || (elapsed > 2000 && ws == WL_CONNECT_FAILED))) {
+    Serial.printf("[net] failed to connect to '%s' (status %d)\n", curSsid.c_str(), ws);
+    WiFi.disconnect(false, false);
+    st = State::Failed;
+    // keep pendSave/pendPass: if the core still joins, we save then
+  } else if (st == State::Connected && ws != WL_CONNECTED) {
+    st = State::Lost;  // auto-reconnect will keep trying
+  }
+
+  if (st != prev) {
+    static const char *names[] = {"Idle", "Connecting", "Connected", "Lost", "Failed"};
+    Serial.printf("[net] state %s -> %s (wifi status %d)", names[(int)prev], names[(int)st], ws);
+    if (st == State::Connected)
+      Serial.printf(", '%s' IP %s", curSsid.c_str(), WiFi.localIP().toString().c_str());
+    Serial.println();
   }
 }
 

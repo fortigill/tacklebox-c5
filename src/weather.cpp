@@ -217,20 +217,9 @@ bool fetchAlerts(float la, float lo, std::vector<Alert> &out, String &why) {
   }
   http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
   http.addHeader("Accept", "application/geo+json");
-  uint32_t heap = ESP.getFreeHeap(), block = ESP.getMaxAllocHeap();
   int code = http.GET();
   if (code != 200) {
-    if (code < 0) {
-      // HTTPClient reports any failed connect (incl. a TLS handshake) as
-      // "connection refused"; add the TLS library's own reason and memory
-      char tlsErr[80] = "";
-      tls.lastError(tlsErr, sizeof(tlsErr));
-      why = http.errorToString(code);
-      if (tlsErr[0]) why += String(" (TLS: ") + tlsErr + ")";
-      why += String(", free RAM ") + heap / 1024 + " KB, largest block " + block / 1024 + " KB";
-    } else {
-      why = String("HTTP ") + code;
-    }
+    why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
     http.end();
     return false;
   }

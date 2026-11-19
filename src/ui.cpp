@@ -936,7 +936,7 @@ void showBle() {
   lv_obj_t *hdr = makeHeader(
       scr, "Bluetooth",
       [](lv_event_t *) {
-        ble::release();
+        ble::stop();
         showMenu();
       },
       btnW);
@@ -1862,7 +1862,7 @@ void showTrackers() {
       scr, "Trackers",
       [](lv_event_t *) {
         trkWatching = false;
-        ble::release();
+        ble::stop();
         showMenu();
       },
       btnW);

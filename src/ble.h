@@ -63,9 +63,6 @@ bool startScan();            // clears previous results; false if Bluetooth fail
 bool startHunt(const String &addr);
 bool startRid(RidSink sink);  // continuous scan feeding drone Remote ID messages
 void stop();
-// Stop and unload the Bluetooth stack to give its RAM (~50 KB) back, e.g. so
-// HTTPS (NWS alerts, which need ~40 KB for TLS) works. Restarts on next use.
-void release();
 Mode mode();
 uint32_t scanRemainingMs();  // during Scan
 bool everScanned();

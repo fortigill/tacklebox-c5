@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.0.8] - 2026-11-18
+
+### Fixed
+- Crash and reboot loop right after each weather update (`assert failed: pbuf_free ... p->ref > 0`).
+  In the HTTP helper, `HTTPClient` was declared before the `WiFiClient`/`WiFiClientSecure` it uses.
+  Locals are destroyed in reverse order, so `~HTTPClient()` called `stop()` on a client that had
+  already been destroyed, which corrupted lwIP's TCP state. The clients are now declared first.
+- `Preferences ... NOT_FOUND` errors on first boot. Namespaces are now opened read-write (which
+  creates them), and keys are checked with `isKey()` before string reads.
+
 ## [0.0.7] - 2026-11-18
 
 ### Added

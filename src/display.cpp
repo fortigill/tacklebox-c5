@@ -149,7 +149,7 @@ bool solve3(const double m[3][3], const double v[3], double out[3]) {
 }  // namespace
 
 void display::begin() {
-  prefs.begin("disp", true);
+  prefs.begin("disp", false);  // read-write: creates the namespace on first boot
   rot = prefs.getUChar("rot", LANDSCAPE) & 3;
   swapRB = prefs.getBool("swaprb", false);
   blPct = clampBrightness(prefs.getUChar("bl", 100));

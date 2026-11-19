@@ -39,8 +39,8 @@ Preferences prefs;
 void loadIgnored() {
   if (ignoredLoaded) return;
   ignoredLoaded = true;
-  prefs.begin("ble", true);
-  String s = prefs.getString("ign", "");
+  prefs.begin("ble", false);  // read-write: creates the namespace on first use
+  String s = prefs.isKey("ign") ? prefs.getString("ign") : String();
   prefs.end();
   int start = 0;
   while (start < (int)s.length()) {

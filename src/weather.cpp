@@ -45,11 +45,15 @@ volatile bool locDirty = false;  // task resolved a location; save it from loop(
 // server refuses or redirects.
 bool httpGet(const String &hostAndPath, String &body, String &why) {
   for (int secure = 0; secure < 2; secure++) {
+    // Declaration order matters: locals are destroyed in reverse, and
+    // ~HTTPClient() calls stop() on its client. The clients must outlive
+    // `http`, or that stop() runs on a destroyed object and corrupts lwIP
+    // (assert in pbuf_free).
+    WiFiClient plain;
+    WiFiClientSecure tls;
     HTTPClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setConnectTimeout(HTTP_TIMEOUT_MS);
-    WiFiClient plain;
-    WiFiClientSecure tls;
     bool ok;
     if (secure) {
       tls.setInsecure();  // public, read-only data; skip CA bundle to save RAM
@@ -211,9 +215,9 @@ void startFetch() {
 }  // namespace
 
 void begin() {
-  prefs.begin("wx", true);
-  zipCode = prefs.getString("zip", "");
-  placeName = prefs.getString("place", "");
+  prefs.begin("wx", false);  // read-write: creates the namespace on first boot
+  zipCode = prefs.isKey("zip") ? prefs.getString("zip") : String();
+  placeName = prefs.isKey("place") ? prefs.getString("place") : String();
   lat = prefs.getFloat("lat", 0);
   lon = prefs.getFloat("lon", 0);
   haveLoc = prefs.getBool("loc", false) && zipCode.length();

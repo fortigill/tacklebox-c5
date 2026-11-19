@@ -67,8 +67,10 @@ void startSntp() {
 }  // namespace
 
 void begin() {
-  prefs.begin("time", true);
-  String tz = prefs.getString("tz", ZONES[DEFAULT_ZONE].tz);
+  // Read-write open creates the namespace on first boot; read-only on a
+  // missing namespace/key just logs NOT_FOUND errors.
+  prefs.begin("time", false);
+  String tz = prefs.isKey("tz") ? prefs.getString("tz") : String(ZONES[DEFAULT_ZONE].tz);
   h24 = prefs.getBool("h24", false);
   prefs.end();
   zone = DEFAULT_ZONE;

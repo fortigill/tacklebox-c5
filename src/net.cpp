@@ -41,9 +41,9 @@ void begin() {
   // visibly pulses. Keeping the radio awake makes the current draw steady.
   WiFi.setSleep(false);
 
-  prefs.begin("wifi", true);
-  String s = prefs.getString("ssid", "");
-  String p = prefs.getString("pass", "");
+  prefs.begin("wifi", false);  // read-write: creates the namespace on first boot
+  String s = prefs.isKey("ssid") ? prefs.getString("ssid") : String();
+  String p = prefs.isKey("pass") ? prefs.getString("pass") : String();
   prefs.end();
   saved = s;
 

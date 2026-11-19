@@ -25,7 +25,7 @@ LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/v
   New alerts pop up and make the desktop weather icon flash until snoozed. **Weather > Active
   alerts** lists them with full details until they expire.
 - **Buoy data**: the wave height from one NOAA NDBC buoy (feet and inches, or meters in Celsius
-  mode), shown with a wave icon in the status bar next to the weather and as a larger readout on the
+  mode), shown with a wave icon in the status bar (left of the weather) and as a larger tappable bubble on the
   desktop. Each has its own switch on the buoy page, so you can have both, either or neither. With
   both off the buoy isn't polled. The default buoy is 41009, 20 NM east of Cape Canaveral. Tap
   either reading, or **Weather > Buoy data**, for the full observation: wave direction and periods,

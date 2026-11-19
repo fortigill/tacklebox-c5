@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.7.2] - 2026-11-19
+
+### Changed
+- The status bar wave reading now sits to the left of the temperature and weather icon instead
+  of between the weather and the clock.
+- The desktop wave and alert readouts are now separate rounded "bubbles" with a border, a small
+  ">" and press feedback, so they read as buttons.
+
+### Fixed
+- Overlapping text in the OTA "Firmware update" pop-up. The countdown was a second label that
+  LVGL's msgbox drew on top of the message. It's now part of the message text and reads
+  "Declining automatically in N s".
+
 ## [0.7.1] - 2026-11-19
 
 ### Added

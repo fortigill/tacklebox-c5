@@ -576,6 +576,8 @@ void showDesktop() {
     lv_obj_set_style_text_font(deskBarWaveLbl, barFont, 0);
     lv_label_set_text(deskBarWaveLbl, "--");
   }
+  // Order: waves, then temperature + weather icon, then drone/clock/Wi-Fi
+  lv_obj_move_to_index(deskBarWave, lv_obj_get_index(deskWx));
 
   // Drone Watch indicator: only shown while Watch runs; tap for Drone RID
   deskDrone = lv_img_create(bar);
@@ -627,23 +629,37 @@ void showDesktop() {
   lv_obj_set_size(wrow, W(), LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(wrow, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(wrow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(wrow, narrow ? 18 : 30, 0);
+  lv_obj_set_style_pad_column(wrow, narrow ? 10 : 20, 0);
   lv_obj_clear_flag(wrow, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, H() > W() ? 58 : 46);
+  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, H() > W() ? 54 : 41);
 
+  // Each widget is a rounded "bubble" (themed panel) that reacts to a press
   auto widget = [&](lv_event_cb_t cb) {
     lv_obj_t *w = lv_obj_create(wrow);
-    lv_obj_remove_style_all(w);
     lv_obj_set_size(w, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(w, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(w, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(w, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_radius(w, 16, 0);
+    lv_obj_set_style_border_width(w, 2, 0);
+    lv_obj_set_style_pad_hor(w, 12, 0);
+    lv_obj_set_style_pad_ver(w, 6, 0);
     lv_obj_set_style_pad_column(w, 6, 0);
+    lv_obj_set_style_border_color(w, theme::accent(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(w, theme::accent(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(w, LV_OPA_30, LV_STATE_PRESSED);
     lv_obj_set_style_text_font(w, &lv_font_montserrat_20, 0);
-    lv_obj_add_flag(w, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(w, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_ext_click_area(w, 10);
+    lv_obj_set_ext_click_area(w, 6);
     lv_obj_add_event_cb(w, cb, LV_EVENT_CLICKED, nullptr);
     return w;
+  };
+  // Small dimmed ">" at the end: "tap for more"
+  auto chevron = [](lv_obj_t *w) {
+    lv_obj_t *c = lv_label_create(w);
+    lv_obj_set_style_text_font(c, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_opa(c, LV_OPA_60, 0);
+    lv_label_set_text(c, LV_SYMBOL_RIGHT);
   };
 
   deskWave = widget([](lv_event_t *) {
@@ -657,6 +673,7 @@ void showDesktop() {
   lv_obj_clear_flag(wimg, LV_OBJ_FLAG_CLICKABLE);
   deskWaveLbl = lv_label_create(deskWave);
   lv_label_set_text(deskWaveLbl, "--");
+  chevron(deskWave);
 
   deskAlerts = widget([](lv_event_t *) {
     wxaBack = Screen::Desktop;
@@ -666,6 +683,7 @@ void showDesktop() {
   lv_label_set_text(aic, LV_SYMBOL_WARNING);
   deskAlertsLbl = lv_label_create(deskAlerts);
   lv_label_set_text(deskAlertsLbl, "");
+  chevron(deskAlerts);
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -3124,8 +3142,10 @@ bool ui::otaAsk(unsigned sizeKB, uint32_t timeoutMs) {
   lv_obj_center(m);
   lv_obj_t *bm = lv_msgbox_get_btns(m);
   lv_obj_set_height(bm, 48);  // big targets for the stylus
-  lv_obj_t *count = lv_label_create(lv_msgbox_get_content(m));
-  lv_obj_set_style_text_color(count, theme::accent(), 0);
+  // The countdown goes into the message label itself: a second label in the
+  // msgbox content isn't laid out below it and overlapped the text.
+  lv_obj_t *count = lv_msgbox_get_text(m);
+  const String base = msg;
   lv_obj_add_event_cb(
       m,
       [](lv_event_t *e) {
@@ -3145,8 +3165,8 @@ bool ui::otaAsk(unsigned sizeKB, uint32_t timeoutMs) {
     if (left != lastLeft) {
       lastLeft = left;
       char t[48];
-      snprintf(t, sizeof(t), "Refusing automatically in %d s", left);
-      lv_label_set_text(count, t);
+      snprintf(t, sizeof(t), "\n\nDeclining automatically in %d s", left);
+      lv_label_set_text(count, (base + t).c_str());
     }
     lv_timer_handler();
     delay(5);

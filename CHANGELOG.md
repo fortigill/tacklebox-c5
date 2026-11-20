@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.9.2] - 2026-11-19
+
+### Fixed
+- NFL scores failing with "bad scoreboard data: TooDeep". ArduinoJson's default nesting limit is
+  10, and it applies to the parts the filter skips too. ESPN's scoreboard nests player leaders
+  and links deeper than that. The scoreboard is now parsed with `NestingLimit(32)`.
+
+### Confirmed
+- 0.9.1 builds with 57 KB free in the OTA slot (NimBLE observer-only saved about 70 KB).
+
 ## [0.9.1] - 2026-11-19
 
 ### Fixed

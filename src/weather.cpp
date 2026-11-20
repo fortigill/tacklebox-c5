@@ -994,7 +994,11 @@ bool parseScoreboard(Stream &in, std::vector<Game> &out, String &why) {
   fp["score"] = true;
   fp["team"]["abbreviation"] = true;
   JsonDocument doc;
-  DeserializationError e = deserializeJson(doc, in, DeserializationOption::Filter(filter));
+  // ArduinoJson stops at 10 nesting levels by default, counting the parts the
+  // filter skips too, and ESPN nests player leaders/links deeper than that
+  // ("TooDeep"). 32 levels is plenty and costs little stack while skipping.
+  DeserializationError e = deserializeJson(doc, in, DeserializationOption::Filter(filter),
+                                           DeserializationOption::NestingLimit(32));
   if (e) {
     why = String("bad scoreboard data: ") + e.c_str();
     return false;

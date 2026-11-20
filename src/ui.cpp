@@ -757,7 +757,7 @@ void showDesktop() {
 
   if (!narrow) {
     lv_obj_t *name = lv_label_create(ext);
-    lv_label_set_text(name, "CYD");
+    lv_label_set_text(name, PRODUCT_SHORT);
     lv_obj_set_flex_grow(name, 1);  // pushes everything else to the right
   }
 
@@ -3852,6 +3852,18 @@ void showAbout() {
            (unsigned long)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
            up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-",
            ota::ready() ? (String(ota::hostname()) + ".local").c_str() : "waiting for Wi-Fi");
+
+  // Product name and slogan
+  lv_obj_t *pn = lv_label_create(box);
+  lv_obj_set_style_text_font(pn, &lv_font_montserrat_20, 0);
+  lv_label_set_long_mode(pn, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(pn, LV_PCT(100));
+  lv_label_set_text(pn, PRODUCT_NAME);
+  lv_obj_t *tl = lv_label_create(box);
+  lv_label_set_long_mode(tl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(tl, LV_PCT(100));
+  lv_obj_set_style_text_opa(tl, LV_OPA_70, 0);
+  lv_label_set_text(tl, PRODUCT_TAGLINE);
 
   aboutUptime = lv_label_create(box);  // updated live by the UI poll
   lv_obj_set_style_text_color(aboutUptime, theme::accent(), 0);

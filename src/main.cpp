@@ -33,7 +33,7 @@ void setup() {
   led::blink(led::Color::Red, 200);
 
   Serial.begin(115200);
-  Serial.printf("\nCYD UI v%s (built %s %s)\n", FW_VERSION, __DATE__, __TIME__);
+  Serial.printf("\n%s v%s (built %s %s)\n%s\n", PRODUCT_NAME, FW_VERSION, __DATE__, __TIME__, PRODUCT_TAGLINE);
   // Why did we (re)start? Helps tell crashes and watchdog resets from power-ons.
   const esp_reset_reason_t rr = esp_reset_reason();
   const char *why = rr == ESP_RST_POWERON  ? "power on"

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
+#include "version.h"
 #include <Update.h>
 
 #include "ble.h"
@@ -17,7 +18,7 @@
 namespace ota {
 namespace {
 
-const char *HOSTNAME = "cyd";
+const char *HOSTNAME = PRODUCT_HOSTNAME;
 bool started = false;
 int lastPct = -1;
 bool refused = false;

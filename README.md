@@ -1,11 +1,16 @@
-# CYD Touch UI (ESP32-2432S028R)
+# SaltyGills Tackle Box
 
-LVGL 8.3 touch UI for the 2.8" Cheap Yellow Display. Current version: see `src/version.h` and
-[CHANGELOG.md](CHANGELOG.md).
+*Lots of handy tools in one small box.*
+
+A stylus-driven LVGL 8.3 touch UI for the ESP32-2432S028R "Cheap Yellow Display" (2.8"). It packs
+weather with NWS alerts, NOAA buoy data, stocks, NFL scores, a drone Remote ID watcher, Bluetooth
+and Wi-Fi tools, and over-the-air updates into one small box. Current version: see `src/version.h`
+and [CHANGELOG.md](CHANGELOG.md).
 
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer, Weather, Date & time, Display & touch, About this device.
+- **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer,
+  Weather, Stocks, NFL scores, Date & time, Display & touch, About this device.
 - **Drone Remote ID**: listens for standard Remote ID (including DJI's built-in Remote ID) on Wi-Fi
   beacons, Wi-Fi NaN and Bluetooth 4.
   - **Scan** runs nonstop until you tap **Stop**, with live ID, position, altitude, speed, operator
@@ -92,7 +97,7 @@ pio device monitor -p /dev/cu.usbserial-3110
 pio run -e cyd-ota -t upload
 ```
 
-OTA uploads go to `cyd.local` with the password in the `[ota]` section of `platformio.ini`. Change
+OTA uploads go to `tacklebox.local` with the password in the `[ota]` section of `platformio.ini`. Change
 the password, then flash once over USB so the device knows it. If mDNS doesn't resolve, set
 `hostname` in `[ota]` to the device's IP (it's shown on the About screen). A change to the partition
 table (as in 0.1.0) always needs a USB flash.

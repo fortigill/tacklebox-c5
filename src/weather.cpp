@@ -414,7 +414,7 @@ bool downloadAlerts(float la, float lo, String &why) {
     why = "bad URL";
     return false;
   }
-  http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
+  http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal weather widget)");
   http.addHeader("Accept", "application/geo+json");
   const char *hdrs[] = {"Transfer-Encoding"};
   http.collectHeaders(hdrs, 1);
@@ -668,7 +668,7 @@ bool fetchBuoy(const String &station, Buoy &out, String &why) {
       why = "bad URL";
       return false;
     }
-    http.setUserAgent("CYD-UI/" FW_VERSION " (ESP32 touch display; personal weather widget)");
+    http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal weather widget)");
     int code = http.GET();
     Serial.printf("[buoy] %s %s -> %d (free %lu, largest block %lu)\n", secure ? "https" : "http", station.c_str(),
                   code, (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
@@ -796,7 +796,7 @@ bool downloadStocks(const std::vector<String> &syms, std::vector<String> &errs, 
       errs[i] = "bad URL";
       continue;
     }
-    http.setUserAgent("Mozilla/5.0 (compatible; CYD-UI/" FW_VERSION ")");
+    http.setUserAgent("Mozilla/5.0 (compatible; " PRODUCT_UA ")");
     http.collectHeaders(hdrs, 1);
     int code = http.GET();
     Serial.printf("[stock] %s -> %d (free %lu, largest block %lu)\n", syms[i].c_str(), code,
@@ -1056,7 +1056,7 @@ bool fetchNfl(std::vector<Game> &out, String &why) {
       why = "bad URL";
       return false;
     }
-    http.setUserAgent("Mozilla/5.0 (compatible; CYD-UI/" FW_VERSION ")");
+    http.setUserAgent("Mozilla/5.0 (compatible; " PRODUCT_UA ")");
     const char *hdrs[] = {"Transfer-Encoding"};
     http.collectHeaders(hdrs, 1);
     int code = http.GET();

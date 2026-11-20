@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <WiFi.h>
+#include "version.h"
 
 #include <algorithm>
 
@@ -47,6 +48,7 @@ String savedSsid() { return saved; }
 
 void begin() {
   WiFi.persistent(false);  // we store credentials ourselves
+  WiFi.setHostname(PRODUCT_HOSTNAME);  // shows up by name in the router's client list
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   // Flicker fix: with modem sleep on, the radio wakes in bursts every beacon

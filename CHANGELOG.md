@@ -3,6 +3,35 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.0.0] - 2026-11-19
+
+The project is now officially **SaltyGills Tackle Box**: *lots of handy tools in one small box.*
+
+### Changed
+- The name is used everywhere: the boot banner on serial ("SaltyGills Tackle Box v1.0.0" plus
+  the slogan), the About screen (name and slogan on top), the status bar label in landscape
+  ("Tackle Box"), the README, and the HTTP User-Agent (`SaltyGillsTackleBox/1.0.0`).
+- Network name: the device answers as **`tacklebox.local`** (was `cyd.local`) and sets its DHCP
+  hostname to `tacklebox`, so it shows up by name in the router's client list.
+  `platformio.ini` `[ota] hostname` is now `tacklebox.local`. The first upload of 1.0.0 still
+  has to go to the old name or IP (or over USB), because the board answers as `cyd.local` until
+  it runs 1.0.0.
+- New `version.h` constants: `PRODUCT_NAME`, `PRODUCT_SHORT`, `PRODUCT_TAGLINE`,
+  `PRODUCT_HOSTNAME`, `PRODUCT_UA`.
+
+### What's in the box (1.0.0)
+- Desktop with a status bar (stocks, NFL, waves, weather, drone icon, clock, Wi-Fi) that wraps to
+  a second row when it fills up, plus tappable widgets for waves, NWS alert count, stocks and
+  NFL scores.
+- Weather (Open-Meteo) with NWS alerts, pop-ups and snooze. NOAA NDBC buoys with favorites.
+  Stocks (up to 8 tickers). NFL scores for your team.
+- Drone Remote ID scan/watch (Wi-Fi beacon, NaN, BLE; DJI confirmed), BLE scanner with hunt,
+  tracker detector, Wi-Fi analyzer.
+- NTP clock (12/24 h, optional AM/PM), themes, rotation, brightness, calibration, OTA with
+  on-device approval, uptime and CPU load on the About screen, restart button.
+- Network downloads pause while Bluetooth tools run, and Bluetooth releases its memory 1 min
+  after the last tool stops.
+
 ## [0.9.3] - 2026-11-19
 
 ### Changed

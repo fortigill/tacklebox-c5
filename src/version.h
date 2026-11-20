@@ -1,4 +1,10 @@
 #pragma once
 
-// Bump this with every release and add an entry to CHANGELOG.md.
-#define FW_VERSION "0.9.3"
+// SaltyGills Tackle Box: lots of handy tools in one small box.
+// Bump FW_VERSION with every release and add an entry to CHANGELOG.md.
+#define FW_VERSION "1.0.0"
+#define PRODUCT_NAME "SaltyGills Tackle Box"
+#define PRODUCT_SHORT "Tackle Box"
+#define PRODUCT_TAGLINE "Lots of handy tools in one small box"
+#define PRODUCT_HOSTNAME "tacklebox"  // tacklebox.local for OTA and on the network
+#define PRODUCT_UA "SaltyGillsTackleBox/" FW_VERSION

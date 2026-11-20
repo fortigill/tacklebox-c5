@@ -3,6 +3,17 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [0.9.3] - 2026-11-19
+
+### Changed
+- The desktop NFL bubble has two lines (score and ">" on top, game clock / kickoff time / "Final"
+  below) instead of one wide line that was cut off at both screen edges. A detail that's still
+  too long ends in "...", and the second line hides when there's nothing to show (e.g.
+  "NFL: pick a team").
+
+### Confirmed
+- 0.9.2 reads the ESPN scoreboard (tonight's game shows).
+
 ## [0.9.2] - 2026-11-19
 
 ### Fixed

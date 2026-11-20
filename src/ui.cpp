@@ -647,6 +647,7 @@ void refreshDesktop() {
     }
     setText(deskNflScore, score.c_str());
     setText(deskNflDetail, detail.c_str());
+    setHidden(deskNflDetail, detail.isEmpty());
     // Live games in the accent color
     lv_color_t col = have && g.state == "in" ? theme::accent() : theme::text();
     lv_obj_set_style_text_color(deskNflScore, col, 0);
@@ -1006,21 +1007,32 @@ void showDesktop() {
   lv_label_set_text(deskStockPct, "");
   chevron(deskStock);
 
-  // NFL bubble, one line: score, game clock (small), ">"
+  // NFL bubble, two lines: score + ">" on top, game clock / kickoff below
   deskNfl = widget([](lv_event_t *) {
     nflBack = Screen::Desktop;
     showNfl();
   });
-  deskNflScore = lv_label_create(deskNfl);
+  lv_obj_set_flex_flow(deskNfl, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskNfl, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskNfl, 0, 0);
+  lv_obj_t *nline = lv_obj_create(deskNfl);
+  lv_obj_remove_style_all(nline);
+  lv_obj_set_size(nline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(nline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(nline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(nline, 6, 0);
+  lv_obj_clear_flag(nline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(nline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskNflScore = lv_label_create(nline);
   lv_label_set_text(deskNflScore, "");
+  chevron(nline);
   deskNflDetail = lv_label_create(deskNfl);
   lv_obj_set_style_text_font(deskNflDetail, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_opa(deskNflDetail, LV_OPA_80, 0);
   lv_label_set_long_mode(deskNflDetail, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_max_width(deskNflDetail, W() / 2 - 20, 0);
+  lv_obj_set_style_max_width(deskNflDetail, W() - 40, 0);  // long details end in "..."
   lv_obj_set_height(deskNflDetail, lv_font_get_line_height(&lv_font_montserrat_14));
   lv_label_set_text(deskNflDetail, "");
-  chevron(deskNfl);
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);

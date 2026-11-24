@@ -58,7 +58,21 @@ def volcano(n):
     return img
 
 
-ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22)]
+def plane(n):
+    """Airliner seen from above, nose up and to the right (taking off)."""
+    big = Image.new("L", (n, n), 0)
+    d = ImageDraw.Draw(big)
+    c = n / 2
+    pts = [  # nose up, drawn upright then rotated
+        (0.50, 0.04), (0.56, 0.12), (0.56, 0.38), (0.94, 0.58), (0.94, 0.66), (0.56, 0.56), (0.56, 0.80),
+        (0.68, 0.90), (0.68, 0.96), (0.50, 0.92), (0.32, 0.96), (0.32, 0.90), (0.44, 0.80), (0.44, 0.56),
+        (0.06, 0.66), (0.06, 0.58), (0.44, 0.38), (0.44, 0.12)]
+    d.polygon([(x * n, y * n) for x, y in pts], fill=255)
+    return big.rotate(-45, resample=Image.BICUBIC, center=(c, c))
+
+
+ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22),
+         ("plane", plane, 22)]
 
 
 def to_alpha4(img):

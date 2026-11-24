@@ -32,7 +32,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, FlightDetail, AirportCode
 };
 
 const int HEADER_H = 40;
@@ -110,6 +110,16 @@ String vcDetailTitle, vcDetailText;
 lv_color_t vcDetailColor;
 Screen volcBack = Screen::Menu;
 lv_obj_t *volcAlertBox = nullptr;  // level-change pop-up (top layer)
+// Airport flights: desktop bubble, page, event detail, airport code entry
+lv_obj_t *deskFlt = nullptr, *deskFltTop = nullptr, *deskFltDetail = nullptr;
+int deskFltKey = -1;
+lv_obj_t *flSummary = nullptr, *flStatus = nullptr, *flLiveBox = nullptr, *flDepBox = nullptr, *flArrBox = nullptr;
+lv_obj_t *flTa = nullptr;
+int flKey = -1;
+std::vector<weather::FlightEvent> flDepRows, flArrRows;
+weather::FlightEvent flDetail;
+bool flDetailDep = true;
+Screen fltBack = Screen::Menu;
 lv_obj_t *nfScore = nullptr, *nfTeams = nullptr, *nfDetail = nullptr, *nfStatus = nullptr, *nfGames = nullptr;
 uint32_t nfVer = 0;
 Screen nflBack = Screen::Menu;
@@ -260,6 +270,9 @@ void showQuakes();
 void showQuakeDetail();
 void showVolcanoes();
 void showVolcanoDetail();
+void showFlights();
+void showFlightDetail();
+void showAirportCode();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
 String nflScoreText(const weather::Game &g) {
@@ -386,6 +399,10 @@ void resetPtrs() {
   deskVolc = deskVolcTop = deskVolcDetail = deskVolcImg = nullptr;
   deskVolcKey = -1;
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
+  deskFlt = deskFltTop = deskFltDetail = nullptr;
+  deskFltKey = -1;
+  flSummary = flStatus = flLiveBox = flDepBox = flArrBox = flTa = nullptr;
+  flKey = -1;
   vcKey = -1;
   eqDay = nullptr;
   eqKey = -1;
@@ -604,13 +621,14 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc)
+      !deskVolc || !deskFlt)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
+              lv_obj_has_flag(deskFlt, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   int key = barH * 1000 + rowH;
   if (key == deskLayoutKey) return;
@@ -840,6 +858,36 @@ void refreshDesktop() {
     lv_obj_set_style_img_recolor(deskVolcImg, us.empty() ? theme::text() : volcColor(us[0].color), 0);
     setText(deskVolcDetail, detail.c_str());
     setHidden(deskVolcDetail, detail.isEmpty());
+  }
+
+  // Flights bubble: "DAB 12 out 11 in", then an airliner on approach, or the
+  // latest takeoff/landing
+  bool deskFltOn = weather::showFlightDesk();
+  setHidden(deskFlt, !deskFltOn);
+  int fltKey = (int)(weather::flightsVersion() * 4096 + (millis() / 60000) % 4096);
+  if (deskFltOn && fltKey != deskFltKey) {
+    deskFltKey = fltKey;
+    char top[40];
+    snprintf(top, sizeof(top), "%s %d out %d in", weather::airportCode().c_str(), weather::flightsDepToday(),
+             weather::flightsArrToday());
+    String detail;
+    auto live = weather::liveFlights();
+    const weather::LiveFlight *inb = nullptr;
+    for (const auto &l : live)
+      if (l.phase == 1 && (!inb || l.distNm < inb->distNm)) inb = &l;
+    if (inb) {
+      char b[48];
+      snprintf(b, sizeof(b), "Inbound: %s, %.0f nm", inb->flight, inb->distNm);
+      detail = b;
+    } else {
+      auto d = weather::flightDepartures(), a = weather::flightArrivals();
+      bool useDep = !d.empty() && (a.empty() || d[0].time >= a[0].time);
+      const weather::FlightEvent *e = useDep ? &d[0] : (!a.empty() ? &a[0] : nullptr);
+      if (e) detail = String(e->flight) + (useDep ? " took off " : " landed ") + agoText(e->time);
+    }
+    setText(deskFltTop, top);
+    setText(deskFltDetail, detail.c_str());
+    setHidden(deskFltDetail, detail.isEmpty());
   }
 
   if (deskAlerts) {
@@ -1309,6 +1357,38 @@ void showDesktop() {
   lv_obj_set_height(deskVolcDetail, lv_font_get_line_height(&lv_font_montserrat_14));
   lv_label_set_text(deskVolcDetail, "");
 
+  // Flights bubble: plane icon + counts, then inbound / latest movement
+  deskFlt = widget([](lv_event_t *) {
+    fltBack = Screen::Desktop;
+    showFlights();
+  });
+  lv_obj_set_flex_flow(deskFlt, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskFlt, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskFlt, 0, 0);
+  lv_obj_t *fline = lv_obj_create(deskFlt);
+  lv_obj_remove_style_all(fline);
+  lv_obj_set_size(fline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(fline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(fline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(fline, 6, 0);
+  lv_obj_clear_flag(fline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(fline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  lv_obj_t *fimg = lv_img_create(fline);
+  lv_img_set_src(fimg, &ui_plane);
+  lv_obj_set_style_img_recolor_opa(fimg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(fimg, theme::accent(), 0);
+  lv_obj_clear_flag(fimg, LV_OBJ_FLAG_CLICKABLE);
+  deskFltTop = lv_label_create(fline);
+  lv_label_set_text(deskFltTop, "--");
+  chevron(fline);
+  deskFltDetail = lv_label_create(deskFlt);
+  lv_obj_set_style_text_font(deskFltDetail, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_opa(deskFltDetail, LV_OPA_90, 0);
+  lv_label_set_long_mode(deskFltDetail, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_width(deskFltDetail, W() - 40, 0);
+  lv_obj_set_height(deskFltDetail, lv_font_get_line_height(&lv_font_montserrat_14));
+  lv_label_set_text(deskFltDetail, "");
+
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
   lv_obj_set_width(deskWifiLbl, W() - 16);
@@ -1385,6 +1465,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         volcBack = Screen::Menu;
         showVolcanoes();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_GPS, "Airport flights");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        fltBack = Screen::Menu;
+        showFlights();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -4266,6 +4355,247 @@ void showVolcanoDetail() {
   load(scr, Screen::VolcanoDetail);
 }
 
+// ---------- Airport flights ----------
+
+String eventLine2(const weather::FlightEvent &e) {
+  char when[32];
+  timesvc::formatEpoch(e.time, when, sizeof(when));
+  String t = String(when) + " (" + agoText(e.time) + ")";
+  if (e.type[0]) t += String(" - ") + e.type;
+  if (e.runway > 0) t += " - rwy " + String(e.runway);
+  return t;
+}
+
+void onFlightRow(lv_event_t *e) {
+  intptr_t v = (intptr_t)lv_event_get_user_data(e);
+  bool dep = v < 100;
+  size_t i = (size_t)(dep ? v : v - 100);
+  const auto &rows = dep ? flDepRows : flArrRows;
+  if (i >= rows.size()) return;
+  flDetail = rows[i];
+  flDetailDep = dep;
+  showFlightDetail();
+}
+
+void refreshFlightsScreen() {
+  if (!flStatus) return;
+  weather::flightsKeepAlive();
+  setText(flStatus, weather::flightsStatus().c_str());
+  int key = (int)(weather::flightsVersion() * 4096 + (millis() / 60000) % 4096);
+  if (key == flKey) return;
+  flKey = key;
+
+  String code = weather::airportCode(), name = weather::airportName();
+  char b[128];
+  snprintf(b, sizeof(b), "Today at %s:\n%d takeoffs, %d landings", code.c_str(), weather::flightsDepToday(),
+           weather::flightsArrToday());
+  setText(flSummary, b);
+
+  // Near the airport right now
+  auto live = weather::liveFlights();
+  lv_obj_clean(flLiveBox);
+  if (live.empty()) {
+    lv_obj_t *l = lv_label_create(flLiveBox);
+    lv_label_set_text(l, "No airliners within 10 nm");
+  }
+  static const char *phaseTxt[] = {"nearby", "approaching", "departing", "on the ground"};
+  for (const auto &f : live) {
+    lv_obj_t *l = lv_label_create(flLiveBox);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    if (f.phase == 3)
+      snprintf(b, sizeof(b), "%s  %s - %s, %.1f nm", f.flight, f.type, phaseTxt[f.phase], f.distNm);
+    else
+      snprintf(b, sizeof(b), "%s  %s - %s, %.1f nm, %ld ft, %d kt", f.flight, f.type, phaseTxt[f.phase], f.distNm,
+               (long)f.altFt, f.gsKt);
+    lv_label_set_text(l, b);
+    if (f.phase == 1 || f.phase == 2) lv_obj_set_style_text_color(l, theme::accent(), 0);
+  }
+
+  // Last 10 of each
+  flDepRows = weather::flightDepartures();
+  flArrRows = weather::flightArrivals();
+  for (int dep = 1; dep >= 0; dep--) {
+    lv_obj_t *box = dep ? flDepBox : flArrBox;
+    const auto &rows = dep ? flDepRows : flArrRows;
+    lv_obj_clean(box);
+    if (rows.empty()) {
+      lv_obj_t *l = lv_label_create(box);
+      lv_label_set_text(l, dep ? "No takeoffs seen yet" : "No landings seen yet");
+    }
+    for (size_t i = 0; i < rows.size(); i++) {
+      const auto &e = rows[i];
+      String l1 = String(e.flight) + "  " + e.airline;
+      twoLineRow(box, l1, dep ? theme::accent() : theme::text(), eventLine2(e), onFlightRow,
+                 dep ? i : 100 + i);
+    }
+  }
+}
+
+void showFlights() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Airport flights", [](lv_event_t *) {
+    if (fltBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_set_style_pad_row(card, 4, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  flSummary = lv_label_create(card);
+  lv_obj_set_style_text_font(flSummary, &lv_font_montserrat_20, 0);
+  lv_label_set_long_mode(flSummary, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(flSummary, LV_PCT(100));
+  lv_label_set_text(flSummary, "");
+  flStatus = lv_label_create(card);
+  lv_label_set_long_mode(flStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(flStatus, LV_PCT(100));
+  lv_obj_set_style_text_opa(flStatus, LV_OPA_70, 0);
+  lv_label_set_text(flStatus, "");
+
+  lv_list_add_text(list, "Settings");
+  String name = weather::airportName();
+  String t = "Airport: " + weather::airportCode() + (name.length() ? " (" + name + ")" : String(""));
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, t.c_str());
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showAirportCode(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show on desktop");
+  lv_obj_t *sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showFlightDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showFlightDesk();
+        weather::setShowFlightDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to track flights.");
+          return;
+        }
+        weather::refreshFlights();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  auto box = [&]() {
+    lv_obj_t *o = lv_obj_create(list);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(o, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_hor(o, 8, 0);
+    lv_obj_set_style_pad_row(o, 4, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+  };
+  lv_list_add_text(list, "Airliners near the airport now");
+  flLiveBox = box();
+  lv_list_add_text(list, "Last 10 takeoffs");
+  flDepBox = box();
+  lv_list_add_text(list, "Last 10 landings");
+  flArrBox = box();
+  lv_list_add_text(list, "Live ADS-B data: adsb.fi (adsb.fi)");
+  lv_list_add_text(list, "Detected from positions; low coverage");
+  lv_list_add_text(list, "near the ground can miss a flight.");
+
+  load(scr, Screen::Flights);
+  weather::flightsKeepAlive();
+  if (weather::liveFlights().empty()) weather::refreshFlights();
+  flKey = -1;
+  refreshFlightsScreen();
+}
+
+void showFlightDetail() {
+  lv_obj_t *scr = newScreen();
+  const auto &e = flDetail;
+  makeHeader(scr, e.flight, [](lv_event_t *) { showFlights(); });
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *big = bodyLabel(body);
+  lv_obj_set_style_text_font(big, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(big, flDetailDep ? theme::accent() : theme::text(), 0);
+  String h = String(e.airline) + (flDetailDep ? " - took off" : " - landed");
+  lv_label_set_text(big, h.c_str());
+
+  char when[32];
+  timesvc::formatEpoch(e.time, when, sizeof(when));
+  String t = String(flDetailDep ? "Takeoff: " : "Landing: ") + when + " (" + agoText(e.time) + ")\n";
+  t += String("Flight: ") + e.flight + "\n";
+  t += String("Callsign: ") + e.callsign + "\n";
+  if (e.type[0]) {
+    const char *nm = weather::aircraftName(e.type);
+    t += String("Aircraft: ") + nm + (strcmp(nm, e.type) ? String(" (") + e.type + ")" : String("")) + "\n";
+  }
+  if (e.reg[0]) t += String("Tail number: ") + e.reg + "\n";
+  if (e.runway > 0) {
+    char r[48];
+    snprintf(r, sizeof(r), "Runway: about %02d (heading %03d)\n", e.runway, e.heading);
+    t += r;
+  }
+  if (e.gsKt >= 0) t += "Ground speed: " + String(e.gsKt) + " kt\n";
+  if (e.altFt > 0) t += "Height when detected: " + String(e.altFt) + " ft\n";
+  t += String("\nTrack it online: flightaware.com/live/flight/") + e.callsign;
+  t += "\n\nThe runway is estimated from the aircraft's heading, and the time from when the "
+       "aircraft was seen climbing away or touching down.\n\nLive ADS-B data: adsb.fi";
+  lv_obj_t *info = bodyLabel(body);
+  lv_label_set_text(info, t.c_str());
+  load(scr, Screen::FlightDetail);
+}
+
+void showAirportCode() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Airport code", [](lv_event_t *) { showFlights(); });
+  flTa = lv_textarea_create(scr);
+  lv_textarea_set_one_line(flTa, true);
+  lv_textarea_set_accepted_chars(flTa, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+  lv_textarea_set_max_length(flTa, 4);
+  lv_textarea_set_placeholder_text(flTa, "e.g. DAB, MCO or KJFK");
+  lv_textarea_set_text(flTa, weather::airportCode().c_str());
+  lv_obj_set_width(flTa, W() - 8);
+  lv_obj_align(flTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
+  lv_obj_add_state(flTa, LV_STATE_FOCUSED);
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+  lv_obj_set_size(kb, W(), kbH);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(kb, flTa);
+  lv_obj_add_event_cb(
+      kb,
+      [](lv_event_t *e) {
+        lv_event_code_t c = lv_event_get_code(e);
+        if (c == LV_EVENT_CANCEL) {
+          showFlights();
+          return;
+        }
+        if (c != LV_EVENT_READY) return;
+        String v = lv_textarea_get_text(flTa);
+        v.trim();
+        if (v.length() < 3 || v.length() > 4) {
+          errorBox("Airport code", "Enter a 3-letter code (DAB) or a 4-letter ICAO code (KDAB).");
+          return;
+        }
+        weather::setAirportCode(v);
+        showFlights();
+      },
+      LV_EVENT_ALL, nullptr);
+  load(scr, Screen::AirportCode);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -4880,6 +5210,7 @@ void poll(lv_timer_t *) {
     case Screen::Nfl: refreshNflScreen(); break;
     case Screen::Quakes: refreshQuakeScreen(); break;
     case Screen::Volcanoes: refreshVolcanoScreen(); break;
+    case Screen::Flights: refreshFlightsScreen(); break;
     default: break;
   }
 }

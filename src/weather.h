@@ -253,6 +253,49 @@ String volcanoStatus();                 // U.S. part
 String eruptionStatus();                // worldwide part
 bool volcanoDistanceKm(float vlat, float vlon, float &km);  // from the ZIP code
 
+// ---- Airport flights (live ADS-B from adsb.fi) ----
+// Watches airliners within 10 NM of one airport about every 30 s and detects
+// takeoffs (climbing away from the field) and landings (touchdown, or
+// disappearing low on short final). Keeps the last 10 of each and today's
+// counts. The airport's position comes from AviationWeather.gov (NOAA).
+struct FlightEvent {
+  uint32_t time = 0;      // epoch UTC
+  char callsign[10] = ""; // radio callsign, e.g. "DAL3154"
+  char flight[10] = "";   // marketed flight number, e.g. "DL 3154"
+  char airline[28] = "";  // "Delta", "American Eagle (PSA)"
+  char type[6] = "";      // ICAO aircraft type, e.g. "E75L"
+  char reg[10] = "";      // tail number, e.g. "N601QX"
+  int16_t heading = -1;   // true track, degrees
+  int16_t runway = -1;    // estimated runway number (1-36) from the heading
+  int16_t gsKt = -1;      // ground speed at detection
+  int32_t altFt = -1;     // height above the field at detection
+};
+struct LiveFlight {       // an airliner near the airport right now
+  char flight[10] = "";
+  char airline[28] = "";
+  char type[6] = "";
+  float distNm = 0;
+  int32_t altFt = 0;      // above the field (0 on the ground)
+  int16_t gsKt = 0;
+  int16_t rateFpm = 0;    // climb (+) / descent (-)
+  uint8_t phase = 0;      // 0 nearby, 1 approaching, 2 departing, 3 on the ground
+};
+std::vector<FlightEvent> flightDepartures();  // newest first, up to 10
+std::vector<FlightEvent> flightArrivals();    // newest first, up to 10
+std::vector<LiveFlight> liveFlights();        // nearest first
+int flightsDepToday();
+int flightsArrToday();
+String airportCode();                 // e.g. "DAB"
+String airportName();                 // e.g. "DAYTONA BEACH INTL" ("" until looked up)
+void setAirportCode(const String &code);  // 3-letter FAA/IATA or 4-letter ICAO; resets the counts
+bool showFlightDesk();
+void setShowFlightDesk(bool on);
+void refreshFlights();
+void flightsKeepAlive();              // the page is open: keep polling with the widget off
+uint32_t flightsVersion();
+String flightsStatus();
+const char *aircraftName(const char *icaoType);  // "Embraer 175" for "E75L", or the code itself
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

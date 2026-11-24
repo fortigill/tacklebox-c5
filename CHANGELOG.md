@@ -3,6 +3,46 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.6.0] - 2026-11-24
+
+### Added
+- **Airport flights** (menu, desktop widget): live takeoffs and landings at one airport,
+  detected from ADS-B aircraft data (adsb.fi open data, no account needed). Default airport
+  is DAB.
+  - Every 30 s (60 s on the classic CYD) the board fetches the aircraft within 10 NM of the
+    airport. It keeps only airline flights: the callsign must be an airline's (DAL3154,
+    JIA5462...), or an unknown operator flying an airliner-sized aircraft. Flight-school,
+    private and most business traffic is ignored.
+  - **Takeoff:** an airliner within 6 NM, below 3,500 ft above the field and climbing, after
+    being on the ground or first seen low.
+  - **Landing:** on the ground within 3 NM after being airborne. Or, since receivers often
+    can't see the runway at small airports, last seen within 4 NM, under 1,200 ft and
+    descending, then gone for 45 s.
+  - A plane isn't logged twice within 20 minutes.
+  - **Today's counts** (takeoffs / landings since local midnight). They survive a restart on
+    the same day.
+  - **Last 10 takeoffs and last 10 landings**, each with:
+    - the marketed flight number (PSA's JIA5462 reads "AA 5462", Endeavor's EDV5243 reads
+      "DL 5243") and the airline, including regional brands like "American Eagle (PSA)";
+    - the time and how long ago;
+    - the aircraft type (with a friendly name like "Embraer 175" on the detail page), tail
+      number, estimated runway (from the heading and the airport's magnetic variation),
+      ground speed and height when detected;
+    - a FlightAware link to look the flight up.
+  - **Airliners near the airport now:** approaching / departing / on the ground / nearby,
+    with distance, height and speed, nearest first.
+  - **Desktop bubble:** a plane icon with "DAB 12 out 11 in", then an inbound airliner
+    ("Inbound: DL 3154, 6 nm") or the latest movement ("AA 5462 took off 4 min ago").
+  - **Any airport:** enter a 3-letter code (DAB) or 4-letter ICAO (KDAB). Its position,
+    elevation and magnetic variation are looked up once on AviationWeather.gov (NOAA) and
+    saved. Changing the airport resets the counts.
+  - Airline table covers the U.S. majors and low-cost carriers, regional partners (Endeavor,
+    PSA, Envoy, Piedmont, SkyWest, Republic, Mesa...), cargo and the Canadian / Mexican
+    carriers.
+  - The page credits adsb.fi as its terms require (personal, non-commercial use).
+- New icon `ui_plane`.
+- On the C5, big JSON downloads parse into PSRAM.
+
 ## [1.5.2] - 2026-11-24
 
 ### Changed

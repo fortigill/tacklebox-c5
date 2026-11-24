@@ -7,6 +7,19 @@ weather with NWS alerts, NOAA buoy data, stocks, NFL scores, a drone Remote ID w
 and Wi-Fi tools, and over-the-air updates into one small box. Current version: see `src/version.h`
 and [CHANGELOG.md](CHANGELOG.md).
 
+## Supported boards
+
+| Board | Build | Notes |
+|---|---|---|
+| Classic CYD, ESP32-2432S028R | `pio run -e cyd -t upload` (USB), `-e cyd-ota` (Wi-Fi, `tacklebox.local`) | ESP32, ILI9341, 4 MB flash |
+| RockBase NM-CYD-C5 | `pio run -e cyd-c5 -t upload` (USB), `-e cyd-c5-ota` (Wi-Fi, `tacklebox-c5.local`) | ESP32-C5 (single core, dual-band Wi-Fi 6), ST7789, 16 MB flash + 8 MB PSRAM |
+
+Both boards share one codebase. The hardware differences (pins, display/touch driver, status LED)
+live in `src/board.h`, `src/display.cpp` (classic: TFT_eSPI) and `src/display_c5.cpp` (C5:
+ESP-IDF esp_lcd with the XPT2046 on the same SPI bus). On first boot the C5 asks for a touch
+calibration, like a new classic board. If the colors look wrong, use **Display & touch > Invert
+colors** or **Swap red/blue**.
+
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
 - **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer,

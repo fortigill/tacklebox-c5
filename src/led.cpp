@@ -3,12 +3,16 @@
 #include <Arduino.h>
 #include <esp_timer.h>
 
+#include "board.h"
+
 namespace led {
 namespace {
 
+#if !defined(BOARD_NM_CYD_C5)
 const uint8_t PIN_R = 4;
 const uint8_t PIN_G = 16;
 const uint8_t PIN_B = 17;
+#endif
 
 esp_timer_handle_t timer = nullptr;
 volatile Color blinkColor = Color::Off;
@@ -18,9 +22,15 @@ void write(Color c) {
   bool r = c == Color::Red || c == Color::Yellow || c == Color::Magenta || c == Color::White;
   bool g = c == Color::Green || c == Color::Yellow || c == Color::Cyan || c == Color::White;
   bool b = c == Color::Blue || c == Color::Cyan || c == Color::Magenta || c == Color::White;
+#if defined(BOARD_NM_CYD_C5)
+  // WS2812: a dim level is plenty for a status light and easy on the eyes
+  const uint8_t L = 40;
+  rgbLedWrite(PIN_RGB_LED, r ? L : 0, g ? L : 0, b ? L : 0);
+#else
   digitalWrite(PIN_R, r ? LOW : HIGH);  // active low
   digitalWrite(PIN_G, g ? LOW : HIGH);
   digitalWrite(PIN_B, b ? LOW : HIGH);
+#endif
 }
 
 void onTimer(void *) {
@@ -35,9 +45,11 @@ void stopTimer() {
 }  // namespace
 
 void begin() {
+#if !defined(BOARD_NM_CYD_C5)
   pinMode(PIN_R, OUTPUT);
   pinMode(PIN_G, OUTPUT);
   pinMode(PIN_B, OUTPUT);
+#endif
   write(Color::Off);
   esp_timer_create_args_t args = {};
   args.callback = onTimer;

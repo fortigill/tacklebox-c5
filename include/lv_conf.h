@@ -6,7 +6,11 @@
 #include <stdint.h>
 
 #define LV_COLOR_DEPTH     16
+#if defined(BOARD_NM_CYD_C5)
+#define LV_COLOR_16_SWAP   1      // esp_lcd sends the buffer as-is: big-endian RGB565
+#else
 #define LV_COLOR_16_SWAP   0      // TFT_eSPI swaps bytes in the flush callback
+#endif
 
 // Use the system heap instead of a static pool (keeps .bss small on Arduino 3.x)
 #define LV_MEM_CUSTOM          1

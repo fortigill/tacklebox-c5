@@ -3,6 +3,36 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.1.0] - 2026-11-24
+
+### Added
+- Support for the **RockBase NM-CYD-C5** (ESP32-C5, single-core RISC-V, dual-band Wi-Fi 6,
+  BLE 5, 16 MB flash, 8 MB PSRAM, ST7789 2.8" 240x320, XPT2046 resistive touch, WS2812 LED).
+  This is a first test build.
+  - New build targets `cyd-c5` (USB) and `cyd-c5-ota` (Wi-Fi). The classic board keeps `cyd` /
+    `cyd-ota`.
+  - `src/board.h`: per-board pins and defaults. The C5 pins come from RockBase's wiki and the CYM
+    project: SPI SCK 6, MOSI 7, MISO 2 (shared), LCD CS 23 / DC 24 / no reset, backlight 25,
+    touch CS 1 (polled), SD CS 10 (held high), WS2812 on 27.
+  - `src/display_c5.cpp`: ST7789 through ESP-IDF's esp_lcd (the C5 is officially supported
+    there, unlike TFT_eSPI), with asynchronous DMA flushing and two 20-line buffers. The XPT2046
+    is a second SPI device on the same bus, read only while no pixel transfer is in flight
+    (median of 3 samples, Z1/Z2 pressure). It exposes the same `display.h` API, so calibration,
+    rotation, brightness, invert and red/blue swap work unchanged.
+  - LVGL byte-swaps RGB565 on the C5 build (`LV_COLOR_16_SWAP`), since esp_lcd sends the buffer
+    as-is.
+  - `partitions_c5_16mb.csv`: two 6 MB OTA slots, 1 MB SPIFFS and a core dump.
+    `tools/check_size.py` now reads the slot size from each build's partition table.
+  - The C5's network name is `tacklebox-c5.local`, so both boards can share a network.
+  - The WS2812 status LED is driven through `rgbLedWrite` at a dim level.
+  - The About screen shows the board, single/dual core and PSRAM. CPU load reports one figure on
+    single-core chips. The boot banner names the board.
+- The default for "Invert colors" is now per board: on for the classic CYD, off for the C5.
+
+### Not yet verified on the C5
+- Bluetooth tools, the Wi-Fi analyzer and Drone Remote ID compile, but they're untested on the
+  C5. 5 GHz Remote ID (channel 149) comes in the next step.
+
 ## [1.0.0] - 2026-11-19
 
 The project is now officially **SaltyGills Tackle Box**: *lots of handy tools in one small box.*

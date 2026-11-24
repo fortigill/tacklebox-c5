@@ -7,8 +7,24 @@ import os
 
 Import("env")  # noqa: F821  (provided by PlatformIO/SCons)
 
-SLOT_BYTES = 0x1E0000      # app0/app1 size in min_spiffs.csv
 WARN_MARGIN = 64 * 1024
+
+
+def slot_bytes():
+    """Size of the app0 slot in this environment's partition table."""
+    csv = env.subst("$PARTITIONS_TABLE_CSV")  # noqa: F821
+    try:
+        with open(csv, encoding="utf-8") as f:
+            for line in f:
+                cols = [c.strip() for c in line.split("#")[0].split(",")]
+                if len(cols) >= 5 and cols[0] == "app0":
+                    return int(cols[4], 0)
+    except OSError:
+        pass
+    return 0x1E0000  # min_spiffs.csv (classic CYD)
+
+
+SLOT_BYTES = slot_bytes()
 
 
 def check_size(source, target, env):

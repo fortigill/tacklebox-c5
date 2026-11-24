@@ -6,6 +6,11 @@
 namespace sysmon {
 namespace {
 
+#if CONFIG_FREERTOS_UNICORE
+const int NCORES = 1;  // e.g. ESP32-C5: core 1 stays at -1
+#else
+const int NCORES = 2;
+#endif
 volatile uint32_t idleTicks[2] = {0, 0};
 volatile TickType_t lastTick[2] = {0, 0};
 int load[2] = {-1, -1};
@@ -38,7 +43,7 @@ void loop() {
   TickType_t now = xTaskGetTickCount();
   TickType_t span = now - windowStart;
   if (span < pdMS_TO_TICKS(1000)) return;
-  for (int c = 0; c < 2; c++) {
+  for (int c = 0; c < NCORES; c++) {
     uint32_t idle = idleTicks[c] - idleAtStart[c];
     idleAtStart[c] = idleTicks[c];
     if (idle > span) idle = span;

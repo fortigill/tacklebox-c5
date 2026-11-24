@@ -19,6 +19,7 @@
 #include "timesvc.h"
 #include "ui_icons.h"
 #include "version.h"
+#include "board.h"
 #include "weather.h"
 
 // Note: the built-in Montserrat fonts only contain ASCII + LV_SYMBOL_* icons,
@@ -3811,6 +3812,7 @@ void refreshAbout() {
   // Core 0 runs Wi-Fi and Bluetooth, core 1 the UI and app loop
   int c0 = sysmon::cpuLoad(0), c1 = sysmon::cpuLoad(1);
   if (c0 < 0) snprintf(buf, sizeof(buf), "CPU load: measuring...");
+  else if (c1 < 0) snprintf(buf, sizeof(buf), "CPU load: %d%% (single core)", c0);
   else snprintf(buf, sizeof(buf), "CPU load: %d%% radio core, %d%% app core", c0, c1);
   setText(aboutCpu, buf);
   int worst = c0 > c1 ? c0 : c1;
@@ -3839,16 +3841,18 @@ void showAbout() {
   uint16_t rev = ESP.getChipRevision();  // e.g. 301 = v3.1
   snprintf(buf, sizeof(buf),
            "Firmware: v%s (%s)\n"
+           "Board: %s\n"
            "Chip: %s v%u.%u\n"
-           "CPU: %d cores @ %lu MHz\n"
-           "Flash: %lu KB\n"
+           "CPU: %d core%s @ %lu MHz\n"
+           "Flash: %lu KB, PSRAM: %lu KB\n"
            "Free heap: %lu KB\n"
            "MAC: %s\n"
            "Wi-Fi: %s\n"
            "IP: %s\n"
            "OTA: %s",
-           FW_VERSION, __DATE__, ESP.getChipModel(), rev / 100, rev % 100, ESP.getChipCores(),
-           (unsigned long)ESP.getCpuFreqMHz(), (unsigned long)(ESP.getFlashChipSize() / 1024),
+           FW_VERSION, __DATE__, BOARD_NAME, ESP.getChipModel(), rev / 100, rev % 100, ESP.getChipCores(),
+           ESP.getChipCores() == 1 ? "" : "s", (unsigned long)ESP.getCpuFreqMHz(),
+           (unsigned long)(ESP.getFlashChipSize() / 1024), (unsigned long)(ESP.getPsramSize() / 1024),
            (unsigned long)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
            up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-",
            ota::ready() ? (String(ota::hostname()) + ".local").c_str() : "waiting for Wi-Fi");

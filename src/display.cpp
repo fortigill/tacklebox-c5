@@ -1,3 +1,8 @@
+// Classic CYD display driver (TFT_eSPI + XPT2046_Touchscreen). The NM-CYD-C5
+// uses display_c5.cpp instead.
+#include "board.h"
+#if !defined(BOARD_NM_CYD_C5)
+
 #include "display.h"
 
 #include <Arduino.h>
@@ -152,7 +157,7 @@ void display::begin() {
   prefs.begin("disp", false);  // read-write: creates the namespace on first boot
   rot = prefs.getUChar("rot", LANDSCAPE) & 3;
   swapRB = prefs.getBool("swaprb", false);
-  invert = prefs.getBool("inv", true);
+  invert = prefs.getBool("inv", DEFAULT_INVERT);
   blPct = clampBrightness(prefs.getUChar("bl", 100));
   if (prefs.getBytesLength("cal") == sizeof(Cal)) {
     prefs.getBytes("cal", &cal, sizeof(Cal));
@@ -297,3 +302,5 @@ bool display::calibrate(const CalPoint *pts, int n, float *maxErrPx) {
   prefs.end();
   return true;
 }
+
+#endif  // !BOARD_NM_CYD_C5

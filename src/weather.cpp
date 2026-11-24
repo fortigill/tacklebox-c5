@@ -68,7 +68,13 @@ const uint32_t QUAKE_REFRESH_MS = 10UL * 60 * 1000;
 const uint32_t QUAKE_RETRY_MS = 3UL * 60 * 1000;
 const uint32_t QUAKE_BOOT_DELAY_MS = 90000;
 const uint32_t QUAKE_WANTED_MS = 15UL * 60 * 1000;  // keep polling this long after the page was open
-const uint32_t QUAKE_WINDOW_S = 96UL * 3600;
+const uint32_t QUAKE_WINDOW_S = 24UL * 3600;  // the list covers the last 24 h
+const char *QUAKE_HOST = "earthquake.usgs.gov/fdsnws/event/1/";
+#if defined(BOARD_NM_CYD_C5)
+const int QUAKE_BACKFILL = 8;  // older weeks counted per refresh until all 52 are in
+#else
+const int QUAKE_BACKFILL = 3;
+#endif
 #if defined(BOARD_NM_CYD_C5)
 const size_t QUAKE_KEEP = 250;  // plenty of RAM
 #else
@@ -136,6 +142,8 @@ QuakeSummary quakeSum;
 String quakeErr;
 uint32_t quakeVer = 0;
 uint32_t quakeWantedMs = 0;
+QuakeWeek quakeWk[QUAKE_WEEKS];  // persisted ("eqWk"), along with the filter it was counted with ("eqSig")
+bool quakeTls = false;           // USGS redirected plain HTTP to HTTPS: go straight there next time
 
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
@@ -1191,8 +1199,6 @@ struct QuakeParse {
         sum.haveBiggest = true;
       }
     }
-    if (age <= 48L * 3600) sum.h48++;
-    sum.h96++;
     if (!sum.haveLatest || q.time > sum.latest.time) {
       sum.latest = q;
       sum.haveLatest = true;
@@ -1200,6 +1206,112 @@ struct QuakeParse {
     if (list->size() < keep) list->push_back(q);  // rows come newest first
   }
 };
+
+// One GET to the USGS event service. Plain HTTP the first time; once USGS
+// redirects to HTTPS, every later request goes straight there. onBody gets
+// the body stream on 200. Returns the HTTP code (204 = no events).
+template <typename F>
+int usgsGet(const String &pathQuery, F onBody, String &why) {
+  for (int secure = quakeTls ? 1 : 0; secure < 2; secure++) {
+    std::unique_ptr<TlsGuard> guard;
+    if (secure) {
+      if (!tlsFits(why)) return -1;
+      guard.reset(new TlsGuard());
+    }
+    WiFiClient plain;
+    WiFiClientSecure tls;
+    HTTPClient http;  // after the clients, so it is destroyed first
+    http.setTimeout(15000);
+    http.setConnectTimeout(15000);
+    http.setReuse(false);
+    bool ok;
+    if (secure) {
+      tls.setInsecure();  // public, read-only data
+      ok = http.begin(tls, String("https://") + QUAKE_HOST + pathQuery);
+    } else {
+      ok = http.begin(plain, String("http://") + QUAKE_HOST + pathQuery);
+    }
+    if (!ok) {
+      why = "bad URL";
+      return -1;
+    }
+    http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal earthquake widget)");
+    const char *hdrs[] = {"Transfer-Encoding"};
+    http.collectHeaders(hdrs, 1);
+    int code = http.GET();
+    if (code == 200) {
+      why = "";  // forget a redirect from the plain-HTTP attempt
+      BodyStream body(http.getStreamPtr(), http.header("Transfer-Encoding").equalsIgnoreCase("chunked"),
+                      http.getSize());
+      onBody(body);
+      if (body.failed()) why = "connection stalled";
+      http.end();
+      return 200;
+    }
+    http.end();
+    if (code == 204 || code == 400 || code == 404) {
+      if (code != 204) why = String("HTTP ") + code;
+      return code;
+    }
+    why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
+    if (!secure && (code == 301 || code == 302 || code == 307 || code == 308)) quakeTls = true;
+    // a redirect to HTTPS (or plain HTTP refused): try again over TLS
+  }
+  return -1;
+}
+
+String usgsTime(time_t t) {
+  struct tm g;
+  gmtime_r(&t, &g);
+  char b[24];
+  snprintf(b, sizeof(b), "%04d-%02d-%02dT%02d:%02d:%02d", g.tm_year + 1900, g.tm_mon + 1, g.tm_mday, g.tm_hour,
+           g.tm_min, g.tm_sec);
+  return b;
+}
+
+// The magnitude/area part of every query
+String usgsFilter(float minMag, int radiusKm, float la, float lo) {
+  char b[96];
+  int n = snprintf(b, sizeof(b), "&minmagnitude=%.1f", minMag);
+  if (radiusKm > 0) snprintf(b + n, sizeof(b) - n, "&latitude=%.3f&longitude=%.3f&maxradiuskm=%d", la, lo, radiusKm);
+  return b;
+}
+
+// Number of quakes in [from, to) (to = 0: up to now); -1 on failure
+long usgsCount(time_t from, time_t to, const String &filter, String &why) {
+  String q = "count?starttime=" + usgsTime(from) + (to ? "&endtime=" + usgsTime(to) : String("")) + filter;
+  long n = -1;
+  int code = usgsGet(
+      q,
+      [&](Stream &body) {
+        // A plain number ("245"), or {"count":245,...} with format=geojson: take the first digits
+        char b[64];
+        size_t k = 0;
+        int c;
+        while (k < sizeof(b) - 1 && (c = body.read()) >= 0) b[k++] = (char)c;
+        b[k] = 0;
+        for (char *p = b; *p; p++)
+          if (isdigit((unsigned char)*p)) {
+            n = strtol(p, nullptr, 10);
+            break;
+          }
+      },
+      why);
+  if (code == 204) return 0;
+  if (code == 200 && n < 0) why = "unexpected count reply";
+  return code == 200 ? n : -1;
+}
+
+// Monday 00:00 local time of the week `back` weeks before the one holding `t`
+time_t weekStart(time_t t, int back) {
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int sinceMon = (lt.tm_wday + 6) % 7;
+  lt.tm_mday -= sinceMon + 7 * back;
+  lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
+  lt.tm_isdst = -1;  // let mktime work out daylight saving for that date
+  return mktime(&lt);
+}
 
 bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Quake> &list, QuakeSummary &sum,
                  String &why) {
@@ -1213,16 +1325,6 @@ bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Qua
   localtime_r(&now, &lt);
   lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
   time_t midnight = mktime(&lt);
-  time_t start = now - QUAKE_WINDOW_S;
-  struct tm gt;
-  gmtime_r(&start, &gt);
-  char path[240];
-  int n = snprintf(path, sizeof(path),
-                   "earthquake.usgs.gov/fdsnws/event/1/query?format=text&orderby=time&limit=20000"
-                   "&starttime=%04d-%02d-%02dT%02d:%02d:%02d&minmagnitude=%.1f",
-                   gt.tm_year + 1900, gt.tm_mon + 1, gt.tm_mday, gt.tm_hour, gt.tm_min, gt.tm_sec, minMag);
-  if (radiusKm > 0)
-    snprintf(path + n, sizeof(path) - n, "&latitude=%.3f&longitude=%.3f&maxradiuskm=%d", la, lo, radiusKm);
 
   list.clear();
   list.reserve(QUAKE_KEEP);  // before TLS, while the heap is still roomy
@@ -1231,83 +1333,42 @@ bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Qua
   qp.midnight = (uint32_t)midnight;
   qp.keep = QUAKE_KEEP;
   qp.list = &list;
-  for (int secure = 0; secure < 2; secure++) {  // plain HTTP first; USGS normally redirects to HTTPS
-    std::unique_ptr<TlsGuard> guard;
-    if (secure) {
-      if (!tlsFits(why)) return false;
-      guard.reset(new TlsGuard());
-    }
-    WiFiClient plain;
-    WiFiClientSecure tls;
-    HTTPClient http;  // after the clients, so it is destroyed first
-    http.setTimeout(15000);
-    http.setConnectTimeout(15000);
-    http.setReuse(false);
-    bool ok;
-    if (secure) {
-      tls.setInsecure();  // public, read-only data
-      ok = http.begin(tls, String("https://") + path);
-    } else {
-      ok = http.begin(plain, String("http://") + path);
-    }
-    if (!ok) {
-      why = "bad URL";
-      return false;
-    }
-    http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal earthquake widget)");
-    const char *hdrs[] = {"Transfer-Encoding"};
-    http.collectHeaders(hdrs, 1);
-    int code = http.GET();
-    Serial.printf("[quake] %s -> %d (free %lu, largest block %lu)\n", secure ? "https" : "http", code,
-                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
-    if (code == 204) {  // no events match
-      http.end();
-      qp.sum.valid = true;
-      sum = qp.sum;
-      return true;
-    }
-    if (code == 200) {
-      BodyStream body(http.getStreamPtr(), http.header("Transfer-Encoding").equalsIgnoreCase("chunked"),
-                      http.getSize());
-      static char line[256];  // weather task only
-      size_t len = 0;
-      int c;
-      while ((c = body.read()) >= 0) {
-        if (c == '\n') {
-          line[len] = 0;
-          len = 0;
-          qp.feed(line);
-          if (qp.badFormat) break;
-        } else if (len < sizeof(line) - 1) {
-          line[len++] = (char)c;
+  String q = "query?format=text&orderby=time&limit=20000&starttime=" + usgsTime(now - QUAKE_WINDOW_S) +
+             usgsFilter(minMag, radiusKm, la, lo);
+  int code = usgsGet(
+      q,
+      [&](Stream &body) {
+        static char line[256];  // weather task only
+        size_t len = 0;
+        int c;
+        while ((c = body.read()) >= 0) {
+          if (c == '\n') {
+            line[len] = 0;
+            len = 0;
+            qp.feed(line);
+            if (qp.badFormat) break;
+          } else if (len < sizeof(line) - 1) {
+            line[len++] = (char)c;
+          }
         }
-      }
-      if (len) {  // last line without a newline
-        line[len] = 0;
-        qp.feed(line);
-      }
-      bool stalled = body.failed();
-      Serial.printf("[quake] read %u bytes, %d events\n", (unsigned)body.bytes(), qp.rows);
-      http.end();
-      if (qp.badFormat) {
-        why = "unexpected data format";
-        return false;
-      }
-      if (stalled && !qp.rows) {
-        why = "connection stalled";
-        return false;
-      }
-      qp.sum.valid = true;
-      qp.sum.stored = (int)list.size();
-      sum = qp.sum;
-      return true;
-    }
-    why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
-    http.end();
-    if (code == 400) return false;  // our query was refused; HTTPS won't change that
-    // a redirect to HTTPS (or plain HTTP refused): try again over TLS
+        if (len) {  // last line without a newline
+          line[len] = 0;
+          qp.feed(line);
+        }
+      },
+      why);
+  Serial.printf("[quake] list -> %d, %d events (free %lu)\n", code, qp.rows, (unsigned long)ESP.getFreeHeap());
+  if (code == 200 && qp.badFormat) {
+    why = "unexpected data format";
+    return false;
   }
-  return false;
+  if (code != 200 && code != 204) return false;
+  if (code == 200 && !qp.rows && why.length()) return false;  // stalled before any data
+  why = "";
+  qp.sum.valid = true;
+  qp.sum.stored = (int)list.size();
+  sum = qp.sum;
+  return true;
 }
 
 // The tracked team's game this week, or nullptr (caller holds mtx)
@@ -1474,11 +1535,50 @@ void quakeWork() {
   QuakeSummary sum;
   String why;
   bool ok;
+  QuakeWeek wk[QUAKE_WEEKS];
+  bool wkChanged = false;
   if (radius > 0 && !have) {
     ok = false;
     why = "\"near me\" needs a ZIP code: set one under Weather";
   } else {
     ok = fetchQuakes(minMag, radius, la, lo, fresh, sum, why);
+  }
+  if (ok) {
+    // Weekly counts. Line the saved weeks up with the calendar (a new week
+    // shifts them down by one), then count this week, last week (USGS keeps
+    // adding late-reviewed quakes for a while) and a few missing older weeks.
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      memcpy(wk, quakeWk, sizeof(wk));
+    }
+    time_t now = time(nullptr);
+    QuakeWeek aligned[QUAKE_WEEKS];
+    for (size_t i = 0; i < QUAKE_WEEKS; i++) {
+      aligned[i].start = (uint32_t)weekStart(now, (int)i);
+      for (const auto &o : wk)
+        if (o.start == aligned[i].start) aligned[i].count = o.count;
+    }
+    if (memcmp(aligned, wk, sizeof(wk)) != 0) wkChanged = true;
+    memcpy(wk, aligned, sizeof(wk));
+    String filt = usgsFilter(minMag, radius, la, lo), cwhy;
+    long n = usgsCount(wk[0].start, 0, filt, cwhy);
+    if (n >= 0) wk[0].count = n;
+    n = usgsCount(wk[1].start, wk[0].start, filt, cwhy);
+    if (n >= 0 && n != wk[1].count) {
+      wk[1].count = n;
+      wkChanged = true;
+    }
+    int budget = QUAKE_BACKFILL;
+    for (size_t i = 2; i < QUAKE_WEEKS && budget > 0; i++) {
+      if (wk[i].count >= 0) continue;
+      budget--;
+      n = usgsCount(wk[i].start, wk[i - 1].start, filt, cwhy);
+      if (n < 0) break;  // try again next refresh
+      wk[i].count = n;
+      wkChanged = true;
+    }
+    if (cwhy.length()) Serial.printf("[quake] weekly count problem: %s\n", cwhy.c_str());
+    Serial.printf("[quake] this week %ld, last week %ld\n", (long)wk[0].count, (long)wk[1].count);
   }
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -1488,6 +1588,12 @@ void quakeWork() {
         quakeList.swap(fresh);
         quakeSum = sum;
         quakeErr = "";
+        memcpy(quakeWk, wk, sizeof(wk));
+        if (wkChanged) {  // completed weeks changed: save (this week's running count isn't saved)
+          prefs.begin("wx", false);
+          prefs.putBytes("eqWk", quakeWk, sizeof(quakeWk));
+          prefs.end();
+        }
       } else {
         quakeErr = why;
       }
@@ -1495,8 +1601,7 @@ void quakeWork() {
     }
   }
   if (ok)
-    Serial.printf("[quake] M%.1f+: %d today, %d in 24 h, %d in 48 h, %d in 96 h\n", minMag, sum.today, sum.h24,
-                  sum.h48, sum.h96);
+    Serial.printf("[quake] M%.1f+: %d today, %d in 24 h\n", minMag, sum.today, sum.h24);
   else
     Serial.printf("[quake] failed: %s\n", why.c_str());
   qkLastOk = ok;
@@ -1688,6 +1793,7 @@ void begin() {
   quakeMin = prefs.getFloat("eqMin", 2.5f);
   quakeRadius = prefs.getInt("eqRad", 0);
   quakeDesk = prefs.getBool("eqDesk", true);
+  if (prefs.getBytesLength("eqWk") == sizeof(quakeWk)) prefs.getBytes("eqWk", quakeWk, sizeof(quakeWk));
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
     int nl = fv.indexOf('\n', i);
@@ -1784,7 +1890,13 @@ void loop() {
   }
 }
 
-bool tlsActive() { return tlsBusy; }
+bool tlsActive() {
+#if defined(BOARD_NM_CYD_C5)
+  return false;  // plenty of RAM: no need to hold screen updates during HTTPS
+#else
+  return tlsBusy;
+#endif
+}
 
 bool configured() {
   std::lock_guard<std::mutex> lock(mtx);
@@ -1801,6 +1913,8 @@ String place() {
   return placeName;
 }
 
+static void quakeSettingsChanged();
+
 void setZip(const String &z) {
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -1815,6 +1929,7 @@ void setZip(const String &z) {
     alertsErr = "";
     alertsFetchedMs = 0;
     alertsVer++;
+    if (quakeRadius > 0) quakeSettingsChanged();  // "near me" counts belonged to the old place
   }
   prefs.begin("wx", false);
   prefs.putString("zip", z);
@@ -2393,6 +2508,11 @@ bool showQuakeDesk() { return quakeDesk; }
 
 // A new filter makes the old numbers meaningless: clear them and refetch
 static void quakeSettingsChanged() {  // caller holds mtx
+  // Weekly counts were made with the old filter: start the history over
+  for (auto &w : quakeWk) w = QuakeWeek();
+  prefs.begin("wx", false);
+  prefs.remove("eqWk");
+  prefs.end();
   quakeList.clear();
   quakeSum = QuakeSummary();
   quakeErr = "";
@@ -2438,6 +2558,19 @@ void refreshQuake() {
 void quakeKeepAlive() { quakeWantedMs = millis(); }
 
 uint32_t quakeVersion() { return quakeVer; }
+
+void quakeWeeks(QuakeWeek out[QUAKE_WEEKS]) {
+  std::lock_guard<std::mutex> lock(mtx);
+  memcpy(out, quakeWk, sizeof(quakeWk));
+}
+
+int quakeWeeksLoaded() {
+  std::lock_guard<std::mutex> lock(mtx);
+  int n = 0;
+  for (size_t i = 1; i < QUAKE_WEEKS; i++)
+    if (quakeWk[i].count >= 0) n++;
+  return n;
+}
 
 String quakeStatus() {
   std::lock_guard<std::mutex> lock(mtx);

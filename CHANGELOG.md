@@ -3,6 +3,32 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.4.0] - 2026-11-24
+
+### Changed
+- Earthquakes: the quake list now covers only the last 24 hours (the 48 h / 96 h lists and
+  counts are gone), which frees their memory.
+
+### Added
+- **Weekly earthquake counts.** Weeks run Monday 00:00 to Sunday 24:00 local time, the same
+  for every week, including the ones with a daylight-saving change.
+  - "This week" is the running count since Monday.
+  - "Last week" shows its total and the change from the week before, as a count and a
+    percent (e.g. "up 1 (+1.0%) from 98"), with an arrow.
+  - **Streak:** how many weeks in a row the count has gone up (or down), ending last week.
+  - **52-week bar chart** on the Earthquakes page, oldest on the left, with the 52-week
+    average, high and low.
+  - **Weekly history page:** every week of the past year with its count and the change from
+    the week before, up in amber and down in green.
+  - Counts come from USGS's count service. On first use the 52 past weeks are filled in a few
+    at a time, every 10 minutes (8 per round on the C5, 3 on the classic CYD). Last week is
+    recounted each round, because USGS keeps adding late-reviewed quakes for a few days.
+  - The history is saved in flash and survives restarts. Changing the minimum magnitude or
+    area (or the ZIP code while using "within") starts it over, since the old counts used a
+    different filter.
+- The C5 no longer pauses screen updates during HTTPS downloads. That pause is only needed
+  for the classic CYD's small memory.
+
 ## [1.3.1] - 2026-11-24
 
 ### Changed

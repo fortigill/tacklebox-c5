@@ -13,6 +13,7 @@
 #include <mutex>
 
 #include "ble.h"
+#include "board.h"
 #include "drone.h"
 #include "net.h"
 #include "version.h"
@@ -62,6 +63,17 @@ const uint32_t NFL_IDLE_MS = 30UL * 60 * 1000;     // otherwise
 const uint32_t NFL_RETRY_MS = 2UL * 60 * 1000;
 const uint32_t NFL_BOOT_DELAY_MS = 75000;
 const size_t MAX_GAMES = 20;
+// Earthquakes (USGS FDSN event service, text format)
+const uint32_t QUAKE_REFRESH_MS = 10UL * 60 * 1000;
+const uint32_t QUAKE_RETRY_MS = 3UL * 60 * 1000;
+const uint32_t QUAKE_BOOT_DELAY_MS = 90000;
+const uint32_t QUAKE_WANTED_MS = 15UL * 60 * 1000;  // keep polling this long after the page was open
+const uint32_t QUAKE_WINDOW_S = 96UL * 3600;
+#if defined(BOARD_NM_CYD_C5)
+const size_t QUAKE_KEEP = 250;  // plenty of RAM
+#else
+const size_t QUAKE_KEEP = 30;   // ~3 KB; the classic board needs its heap for TLS
+#endif
 const size_t MAX_STOCKS = 8;
 
 std::mutex mtx;
@@ -115,6 +127,16 @@ String nflErr;
 uint32_t nflFetchedMs = 0;
 uint32_t nflVer = 0;
 
+// Earthquakes (guarded by mtx)
+float quakeMin = 2.5f;
+int quakeRadius = 0;      // km, 0 = worldwide
+bool quakeDesk = true;
+std::vector<Quake> quakeList;  // newest first, up to QUAKE_KEEP
+QuakeSummary quakeSum;
+String quakeErr;
+uint32_t quakeVer = 0;
+uint32_t quakeWantedMs = 0;
+
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
 bool attempted = false;
@@ -136,13 +158,17 @@ uint32_t nfLastAttempt = 0;
 bool nfAttempted = false;
 bool nfLastOk = false;
 bool nfForce = false;
+uint32_t qkLastAttempt = 0;
+bool qkAttempted = false;
+bool qkLastOk = false;
+bool qkForce = false;
 volatile bool taskRunning = false;
 volatile bool tlsBusy = false;  // an HTTPS session is open (holds ~40 KB of heap)
 struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16 };
+enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -1078,6 +1104,212 @@ bool fetchNfl(std::vector<Game> &out, String &why) {
   return false;
 }
 
+// ---------- Earthquakes (USGS) ----------
+// https://earthquake.usgs.gov/fdsnws/event/1/query?format=text&starttime=...
+// returns one line per event, newest first:
+//   #EventID|Time|Latitude|Longitude|Depth/km|Author|Catalog|Contributor|ContributorID|MagType|Magnitude|MagAuthor|EventLocationName
+//   us7000abcd|2026-11-24T18:55:12.340|35.61|-117.71|8.2|ci|ci|ci|ci40912345|ml|4.6|ci|12 km SW of Ridgecrest, CA
+// Columns are found by name from the header. The body is read line by line
+// straight off the connection (BodyStream decodes chunked replies), so even
+// a few thousand events need only a 256-byte line buffer. 204 = no events.
+
+// Splits on '|' keeping empty fields (strtok would merge them)
+int splitBars(char *line, char **out, int maxOut) {
+  int n = 0;
+  char *p = line;
+  while (n < maxOut) {
+    out[n++] = p;
+    char *bar = strchr(p, '|');
+    if (!bar) break;
+    *bar = 0;
+    p = bar + 1;
+  }
+  return n;
+}
+
+void copyField(char *dst, size_t n, const char *src) {
+  strncpy(dst, src ? src : "", n - 1);
+  dst[n - 1] = 0;
+  char *r = strchr(dst, '\r');
+  if (r) *r = 0;
+}
+
+struct QuakeParse {
+  enum { ID, TIME, LAT, LON, DEPTH, CONTRIB, MAGTYPE, MAG, PLACE, NF };
+  int col[NF];
+  int ncols = 0;
+  uint32_t now = 0, midnight = 0;
+  size_t keep = 0;
+  std::vector<Quake> *list = nullptr;
+  QuakeSummary sum;
+  int rows = 0;
+  bool badFormat = false;
+  QuakeParse() {
+    for (int &c : col) c = -1;
+  }
+  void feed(char *line) {
+    static const char *names[NF] = {"EventID",     "Time",    "Latitude",  "Longitude",        "Depth/km",
+                                    "Contributor", "MagType", "Magnitude", "EventLocationName"};
+    char *tok[20];
+    if (line[0] == '#') {
+      int n = splitBars(line + 1, tok, 20);
+      for (int i = 0; i < n; i++) {
+        char *r = strchr(tok[i], '\r');
+        if (r) *r = 0;
+        for (int f = 0; f < NF; f++)
+          if (col[f] < 0 && strcmp(tok[i], names[f]) == 0) col[f] = i;
+      }
+      ncols = n;
+      return;
+    }
+    if (!line[0] || line[0] == '\r') return;
+    if (!ncols || col[TIME] < 0 || col[MAG] < 0) {
+      badFormat = true;
+      return;
+    }
+    int n = splitBars(line, tok, 20);
+    if (n < ncols) return;  // garbled line
+    int Y, M, D, h, m, sec = 0;
+    if (sscanf(tok[col[TIME]], "%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &sec) < 5) return;
+    Quake q;
+    q.time = epochUtc(Y, M, D, h, m) + sec;
+    q.mag = atof(tok[col[MAG]]);
+    if (col[LAT] >= 0) q.lat = atof(tok[col[LAT]]);
+    if (col[LON] >= 0) q.lon = atof(tok[col[LON]]);
+    if (col[DEPTH] >= 0 && tok[col[DEPTH]][0]) q.depthKm = atof(tok[col[DEPTH]]);
+    if (col[ID] >= 0) copyField(q.id, sizeof(q.id), tok[col[ID]]);
+    if (col[MAGTYPE] >= 0) copyField(q.magType, sizeof(q.magType), tok[col[MAGTYPE]]);
+    if (col[CONTRIB] >= 0) copyField(q.net, sizeof(q.net), tok[col[CONTRIB]]);
+    if (col[PLACE] >= 0) copyField(q.place, sizeof(q.place), tok[col[PLACE]]);
+    rows++;
+    long age = (long)now - (long)q.time;
+    if (q.time >= midnight) sum.today++;
+    if (age <= 24L * 3600) {
+      sum.h24++;
+      if (!sum.haveBiggest || q.mag > sum.biggest24.mag) {
+        sum.biggest24 = q;
+        sum.haveBiggest = true;
+      }
+    }
+    if (age <= 48L * 3600) sum.h48++;
+    sum.h96++;
+    if (!sum.haveLatest || q.time > sum.latest.time) {
+      sum.latest = q;
+      sum.haveLatest = true;
+    }
+    if (list->size() < keep) list->push_back(q);  // rows come newest first
+  }
+};
+
+bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Quake> &list, QuakeSummary &sum,
+                 String &why) {
+  time_t now = time(nullptr);
+  if (now < 1700000000) {
+    why = "waiting for the clock to sync";
+    return false;
+  }
+  // "Today" starts at local midnight (the time zone is set system-wide)
+  struct tm lt;
+  localtime_r(&now, &lt);
+  lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
+  time_t midnight = mktime(&lt);
+  time_t start = now - QUAKE_WINDOW_S;
+  struct tm gt;
+  gmtime_r(&start, &gt);
+  char path[240];
+  int n = snprintf(path, sizeof(path),
+                   "earthquake.usgs.gov/fdsnws/event/1/query?format=text&orderby=time&limit=20000"
+                   "&starttime=%04d-%02d-%02dT%02d:%02d:%02d&minmagnitude=%.1f",
+                   gt.tm_year + 1900, gt.tm_mon + 1, gt.tm_mday, gt.tm_hour, gt.tm_min, gt.tm_sec, minMag);
+  if (radiusKm > 0)
+    snprintf(path + n, sizeof(path) - n, "&latitude=%.3f&longitude=%.3f&maxradiuskm=%d", la, lo, radiusKm);
+
+  list.clear();
+  list.reserve(QUAKE_KEEP);  // before TLS, while the heap is still roomy
+  QuakeParse qp;
+  qp.now = (uint32_t)now;
+  qp.midnight = (uint32_t)midnight;
+  qp.keep = QUAKE_KEEP;
+  qp.list = &list;
+  for (int secure = 0; secure < 2; secure++) {  // plain HTTP first; USGS normally redirects to HTTPS
+    std::unique_ptr<TlsGuard> guard;
+    if (secure) {
+      if (!tlsFits(why)) return false;
+      guard.reset(new TlsGuard());
+    }
+    WiFiClient plain;
+    WiFiClientSecure tls;
+    HTTPClient http;  // after the clients, so it is destroyed first
+    http.setTimeout(15000);
+    http.setConnectTimeout(15000);
+    http.setReuse(false);
+    bool ok;
+    if (secure) {
+      tls.setInsecure();  // public, read-only data
+      ok = http.begin(tls, String("https://") + path);
+    } else {
+      ok = http.begin(plain, String("http://") + path);
+    }
+    if (!ok) {
+      why = "bad URL";
+      return false;
+    }
+    http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal earthquake widget)");
+    const char *hdrs[] = {"Transfer-Encoding"};
+    http.collectHeaders(hdrs, 1);
+    int code = http.GET();
+    Serial.printf("[quake] %s -> %d (free %lu, largest block %lu)\n", secure ? "https" : "http", code,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+    if (code == 204) {  // no events match
+      http.end();
+      qp.sum.valid = true;
+      sum = qp.sum;
+      return true;
+    }
+    if (code == 200) {
+      BodyStream body(http.getStreamPtr(), http.header("Transfer-Encoding").equalsIgnoreCase("chunked"),
+                      http.getSize());
+      static char line[256];  // weather task only
+      size_t len = 0;
+      int c;
+      while ((c = body.read()) >= 0) {
+        if (c == '\n') {
+          line[len] = 0;
+          len = 0;
+          qp.feed(line);
+          if (qp.badFormat) break;
+        } else if (len < sizeof(line) - 1) {
+          line[len++] = (char)c;
+        }
+      }
+      if (len) {  // last line without a newline
+        line[len] = 0;
+        qp.feed(line);
+      }
+      bool stalled = body.failed();
+      Serial.printf("[quake] read %u bytes, %d events\n", (unsigned)body.bytes(), qp.rows);
+      http.end();
+      if (qp.badFormat) {
+        why = "unexpected data format";
+        return false;
+      }
+      if (stalled && !qp.rows) {
+        why = "connection stalled";
+        return false;
+      }
+      qp.sum.valid = true;
+      qp.sum.stored = (int)list.size();
+      sum = qp.sum;
+      return true;
+    }
+    why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
+    http.end();
+    if (code == 400) return false;  // our query was refused; HTTPS won't change that
+    // a redirect to HTTPS (or plain HTTP refused): try again over TLS
+  }
+  return false;
+}
+
 // The tracked team's game this week, or nullptr (caller holds mtx)
 const Game *teamGame() {
   if (nflTeamAbbr.isEmpty()) return nullptr;
@@ -1226,7 +1458,52 @@ void nflWork() {
   nfLastOk = ok;
 }
 
+void quakeWork() {
+  float minMag, la, lo;
+  int radius;
+  bool have;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    minMag = quakeMin;
+    radius = quakeRadius;
+    la = lat;
+    lo = lon;
+    have = haveLoc;
+  }
+  std::vector<Quake> fresh;
+  QuakeSummary sum;
+  String why;
+  bool ok;
+  if (radius > 0 && !have) {
+    ok = false;
+    why = "\"near me\" needs a ZIP code: set one under Weather";
+  } else {
+    ok = fetchQuakes(minMag, radius, la, lo, fresh, sum, why);
+  }
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (minMag == quakeMin && radius == quakeRadius) {  // ignore if the settings changed meanwhile
+      if (ok) {
+        sum.fetchedMs = millis();
+        quakeList.swap(fresh);
+        quakeSum = sum;
+        quakeErr = "";
+      } else {
+        quakeErr = why;
+      }
+      quakeVer++;
+    }
+  }
+  if (ok)
+    Serial.printf("[quake] M%.1f+: %d today, %d in 24 h, %d in 48 h, %d in 96 h\n", minMag, sum.today, sum.h24,
+                  sum.h48, sum.h96);
+  else
+    Serial.printf("[quake] failed: %s\n", why.c_str());
+  qkLastOk = ok;
+}
+
 void fetchWork() {
+  if (taskFlags & DO_QUAKE) quakeWork();
   if (taskFlags & DO_BUOY) buoyWork();
   if (taskFlags & DO_STOCK) stockWork();
   if (taskFlags & DO_NFL) nflWork();
@@ -1335,6 +1612,10 @@ void startFetch(uint8_t flags) {
     nfAttempted = true;
     nfLastAttempt = millis();
   }
+  if (flags & DO_QUAKE) {
+    qkAttempted = true;
+    qkLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -1358,6 +1639,10 @@ void startFetch(uint8_t flags) {
     if (flags & DO_NFL) {
       nflErr = "not enough memory";
       nfLastOk = false;
+    }
+    if (flags & DO_QUAKE) {
+      quakeErr = "not enough memory";
+      qkLastOk = false;
     }
   }
 }
@@ -1400,6 +1685,9 @@ void begin() {
   nflBar = prefs.getBool("nflBar", true);
   nflDesk = prefs.getBool("nflDesk", true);
   stockDesk = prefs.getBool("stkDesk", true);
+  quakeMin = prefs.getFloat("eqMin", 2.5f);
+  quakeRadius = prefs.getInt("eqRad", 0);
+  quakeDesk = prefs.getBool("eqDesk", true);
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
     int nl = fv.indexOf('\n', i);
@@ -1481,8 +1769,14 @@ void loop() {
     }
     if (nfForce || !nfAttempted || millis() - nfLastAttempt >= every) flags |= DO_NFL;
   }
+  // Earthquakes: on their own, once nothing else is due
+  bool quakeWanted = quakeDesk || (quakeWantedMs && millis() - quakeWantedMs < QUAKE_WANTED_MS);
+  if (!flags && quakeWanted && (millis() >= QUAKE_BOOT_DELAY_MS || qkForce) &&
+      (qkForce || !qkAttempted || millis() - qkLastAttempt >= (qkLastOk ? QUAKE_REFRESH_MS : QUAKE_RETRY_MS)))
+    flags |= DO_QUAKE;
   if (flags) {
     force = alForce = false;
+    if (flags & DO_QUAKE) qkForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
     if (flags & DO_NFL) nfForce = false;
@@ -2073,6 +2367,105 @@ String nflStatus() {
   char b[112];
   snprintf(b, sizeof(b), "Checked %lu min ago, %s - ESPN", (unsigned long)((millis() - nflFetchedMs) / 60000), pace);
   return b;
+}
+
+// ---------- Earthquakes ----------
+
+QuakeSummary quakeSummary() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return quakeSum;
+}
+
+std::vector<Quake> quakes(uint32_t sinceEpoch, size_t maxN) {
+  std::lock_guard<std::mutex> lock(mtx);
+  std::vector<Quake> out;
+  for (const auto &q : quakeList) {
+    if (q.time < sinceEpoch) break;  // newest first
+    if (out.size() >= maxN) break;
+    out.push_back(q);
+  }
+  return out;
+}
+
+float quakeMinMag() { return quakeMin; }
+int quakeRadiusKm() { return quakeRadius; }
+bool showQuakeDesk() { return quakeDesk; }
+
+// A new filter makes the old numbers meaningless: clear them and refetch
+static void quakeSettingsChanged() {  // caller holds mtx
+  quakeList.clear();
+  quakeSum = QuakeSummary();
+  quakeErr = "";
+  quakeVer++;
+  qkForce = true;
+}
+
+void setQuakeMinMag(float m) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (m == quakeMin) return;
+  quakeMin = m;
+  prefs.begin("wx", false);
+  prefs.putFloat("eqMin", m);
+  prefs.end();
+  quakeSettingsChanged();
+}
+
+void setQuakeRadiusKm(int km) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (km == quakeRadius) return;
+  quakeRadius = km;
+  prefs.begin("wx", false);
+  prefs.putInt("eqRad", km);
+  prefs.end();
+  quakeSettingsChanged();
+}
+
+void setShowQuakeDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  quakeDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("eqDesk", on);
+  prefs.end();
+  if (on && !quakeSum.valid) qkForce = true;
+  quakeVer++;
+}
+
+void refreshQuake() {
+  quakeWantedMs = millis();
+  qkForce = true;
+}
+
+void quakeKeepAlive() { quakeWantedMs = millis(); }
+
+uint32_t quakeVersion() { return quakeVer; }
+
+String quakeStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (net::state() != net::State::Connected && !quakeSum.valid) return "Waiting for Wi-Fi...";
+  if (quakeErr.length()) return "Update failed: " + quakeErr;
+  if (!quakeSum.valid)
+    return millis() < QUAKE_BOOT_DELAY_MS && !qkForce ? "First check about 90 s after startup..."
+                                                      : "Getting earthquakes from USGS...";
+  char b[96];
+  snprintf(b, sizeof(b), "Checked %lu min ago, every 10 min - USGS",
+           (unsigned long)((millis() - quakeSum.fetchedMs) / 60000));
+  return b;
+}
+
+bool quakeDistanceKm(const Quake &q, float &km) {
+  float la, lo;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (!haveLoc || std::isnan(q.lat) || std::isnan(q.lon)) return false;
+    la = lat;
+    lo = lon;
+  }
+  const float R = 6371.0f, d2r = (float)M_PI / 180.0f;
+  float dLat = (q.lat - la) * d2r, dLon = (q.lon - lo) * d2r;
+  float a = sinf(dLat / 2) * sinf(dLat / 2) + cosf(la * d2r) * cosf(q.lat * d2r) * sinf(dLon / 2) * sinf(dLon / 2);
+  km = 2 * R * atan2f(sqrtf(a), sqrtf(1 - a));
+  return true;
 }
 
 }  // namespace weather

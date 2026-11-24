@@ -3,6 +3,27 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.3.0] - 2026-11-24
+
+### Added
+- **Earthquakes** (menu, and a desktop widget), from the USGS Earthquake Hazards Program's
+  official catalog (FDSN event service). Refreshed every 10 minutes.
+  - Counts for today (since local midnight) and the last 24, 48 and 96 hours.
+  - The largest quake of the last 24 hours.
+  - A list of quakes for a 24 h / 48 h / 96 h window, newest first. Each shows the magnitude
+    (color-coded: green under 3, amber 3+, orange 4.5+, red 6+), place, how long ago, depth
+    and distance from your ZIP code. Quakes from the last hour are highlighted.
+  - Tap a quake for its official readings: local time, magnitude and magnitude type, depth in
+    km and mi, coordinates, distance, reporting network and USGS event ID.
+  - Settings: minimum magnitude (1.0 / 2.5 / 4.5 / 6.0, default 2.5) and area (worldwide, or
+    within about 1000 / 500 / 250 / 100 mi of the Weather ZIP code).
+  - Desktop bubble: "N quakes today". Below it is the newest quake while it's under an hour
+    old, otherwise the largest of the last 24 h.
+  - The data comes as plain text and is read line by line off the connection, so even
+    thousands of small quakes need only a small buffer. The list keeps up to 250 quakes on the
+    C5 and 30 on the classic CYD (counts are always complete).
+  - Like the other downloads, it pauses while Bluetooth tools or the drone scanner run.
+
 ## [1.2.4] - 2026-11-24
 
 ### Added

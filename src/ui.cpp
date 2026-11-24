@@ -32,7 +32,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail
 };
 
 const int HEADER_H = 40;
@@ -90,6 +90,16 @@ lv_obj_t *deskBarNfl = nullptr;
 lv_obj_t *deskNfl = nullptr, *deskNflScore = nullptr, *deskNflDetail = nullptr;
 lv_obj_t *deskBarMenu = nullptr;  // small menu icon when the big Menu button has no room
 int deskNflKey = -1;
+// Earthquakes: desktop bubble and the Earthquakes pages
+lv_obj_t *deskQuake = nullptr, *deskQuakeTop = nullptr, *deskQuakeDetail = nullptr;
+int deskQuakeKey = -1;
+lv_obj_t *eqSummary = nullptr, *eqBig = nullptr, *eqStatus = nullptr, *eqBox = nullptr, *eqHeading = nullptr;
+lv_obj_t *eqWinBtn[3] = {nullptr, nullptr, nullptr};
+int eqWindowH = 24;            // list window: 24, 48 or 96 hours
+int eqKey = -1;                // data version + minute the page was built for
+std::vector<weather::Quake> eqRows;
+weather::Quake eqDetail;
+Screen quakeBack = Screen::Menu;
 lv_obj_t *nfScore = nullptr, *nfTeams = nullptr, *nfDetail = nullptr, *nfStatus = nullptr, *nfGames = nullptr;
 uint32_t nfVer = 0;
 Screen nflBack = Screen::Menu;
@@ -236,6 +246,8 @@ void showStockSym();
 void showStockDetail();
 void showNfl();
 void showNflTeam();
+void showQuakes();
+void showQuakeDetail();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
 String nflScoreText(const weather::Game &g) {
@@ -254,6 +266,54 @@ String nflDetailText(const weather::Game &g) {
 }
 
 // Stock formatting shared by the status bar, desktop and stock page
+// ---- Earthquake helpers ----
+lv_color_t magColor(float m) {
+  if (m >= 6.0f) return lv_palette_main(LV_PALETTE_RED);
+  if (m >= 4.5f) return lv_palette_main(LV_PALETTE_DEEP_ORANGE);
+  if (m >= 3.0f) return lv_palette_main(LV_PALETTE_AMBER);
+  return lv_palette_main(LV_PALETTE_GREEN);
+}
+
+String agoText(uint32_t t) {
+  time_t now = time(nullptr);
+  long s = (long)now - (long)t;
+  if (now < 1700000000 || s < 0) return "";
+  if (s < 90) return "just now";
+  if (s < 3600) return String(s / 60) + " min ago";
+  if (s < 48 * 3600) {
+    long h = s / 3600, m = s % 3600 / 60;
+    return h < 10 && m ? String(h) + " h " + m + " min ago" : String(h) + " h ago";
+  }
+  return String(s / 86400) + " d " + String(s % 86400 / 3600) + " h ago";
+}
+
+String distText(float km) {
+  char b[24];
+  if (weather::useF()) snprintf(b, sizeof(b), "%.0f mi", km * 0.621371f);
+  else snprintf(b, sizeof(b), "%.0f km", km);
+  return b;
+}
+
+String quakePlace(const weather::Quake &q) {
+  if (q.place[0]) return q.place;
+  char b[40];
+  snprintf(b, sizeof(b), "%.2f%c %.2f%c", fabsf(q.lat), q.lat >= 0 ? 'N' : 'S', fabsf(q.lon), q.lon >= 0 ? 'E' : 'W');
+  return b;
+}
+
+String quakeAreaText(int km) {
+  if (km <= 0) return "worldwide";
+  char b[32];
+  if (weather::useF()) {
+    long mi = lroundf(km * 0.621371f / 50) * 50;  // 1600 km -> 1000 mi
+    if (!mi) mi = lroundf(km * 0.621371f);
+    snprintf(b, sizeof(b), "within %ld mi", mi);
+  } else {
+    snprintf(b, sizeof(b), "within %d km", km);
+  }
+  return b;
+}
+
 String fmtPrice(const weather::Stock &s) {
   if (!s.valid) return "--";
   char b[24];
@@ -297,6 +357,11 @@ void resetPtrs() {
   skRowVals.clear();
   deskBarNfl = deskNfl = deskNflScore = deskNflDetail = deskBarMenu = nullptr;
   deskNflKey = -1;
+  deskQuake = deskQuakeTop = deskQuakeDetail = nullptr;
+  deskQuakeKey = -1;
+  eqSummary = eqBig = eqStatus = eqBox = eqHeading = nullptr;
+  for (auto &b : eqWinBtn) b = nullptr;
+  eqKey = -1;
   nfScore = nfTeams = nfDetail = nfStatus = nfGames = nullptr;
   nfVer = 0;
   deskBar = deskRow = deskMenu = nullptr;
@@ -511,11 +576,12 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 // Places the widget row under the (possibly two-row) status bar and the Menu
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
-  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl) return;
+  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake) return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
+              lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   int key = barH * 1000 + rowH;
   if (key == deskLayoutKey) return;
@@ -683,6 +749,42 @@ void refreshDesktop() {
     }
   }
   if (!barNfl) setHidden(deskBarNfl, true);
+
+  // Earthquake bubble: today's count, then the newest quake if it's under an
+  // hour old, otherwise the largest of the last 24 h. Rebuilt when the data
+  // changes and once a minute (for the "min ago" text).
+  bool deskQuakeOn = weather::showQuakeDesk();
+  setHidden(deskQuake, !deskQuakeOn);
+  int quakeKey = (int)(weather::quakeVersion() * 4096 + (millis() / 60000) % 4096);
+  if (deskQuakeOn && quakeKey != deskQuakeKey) {
+    deskQuakeKey = quakeKey;
+    weather::QuakeSummary qs = weather::quakeSummary();
+    char top[40];
+    String detail;
+    lv_color_t dcol = theme::text();
+    if (!qs.valid) {
+      snprintf(top, sizeof(top), "Quakes: --");
+    } else {
+      snprintf(top, sizeof(top), "%d quake%s today", qs.today, qs.today == 1 ? "" : "s");
+      time_t now = time(nullptr);
+      char m[12];
+      if (qs.haveLatest && (long)now - (long)qs.latest.time < 3600) {
+        snprintf(m, sizeof(m), "M%.1f ", qs.latest.mag);
+        detail = String("New: ") + m + quakePlace(qs.latest) + ", " + agoText(qs.latest.time);
+        dcol = magColor(qs.latest.mag);
+      } else if (qs.haveBiggest) {
+        snprintf(m, sizeof(m), "M%.1f ", qs.biggest24.mag);
+        detail = String("Largest 24 h: ") + m + quakePlace(qs.biggest24);
+      } else {
+        snprintf(m, sizeof(m), "M%.1f+", weather::quakeMinMag());
+        detail = String("None in 24 h (") + m + ")";
+      }
+    }
+    setText(deskQuakeTop, top);
+    setText(deskQuakeDetail, detail.c_str());
+    setHidden(deskQuakeDetail, detail.isEmpty());
+    lv_obj_set_style_text_color(deskQuakeDetail, dcol, 0);
+  }
 
   if (deskAlerts) {
     bool on = weather::showAlertDesk() && weather::configured();
@@ -1092,6 +1194,33 @@ void showDesktop() {
   lv_obj_set_height(deskNflDetail, lv_font_get_line_height(&lv_font_montserrat_14));
   lv_label_set_text(deskNflDetail, "");
 
+  // Earthquake bubble, two lines: count + ">" on top, newest/largest below
+  deskQuake = widget([](lv_event_t *) {
+    quakeBack = Screen::Desktop;
+    showQuakes();
+  });
+  lv_obj_set_flex_flow(deskQuake, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskQuake, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskQuake, 0, 0);
+  lv_obj_t *qline = lv_obj_create(deskQuake);
+  lv_obj_remove_style_all(qline);
+  lv_obj_set_size(qline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(qline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(qline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(qline, 6, 0);
+  lv_obj_clear_flag(qline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(qline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskQuakeTop = lv_label_create(qline);
+  lv_label_set_text(deskQuakeTop, "Quakes: --");
+  chevron(qline);
+  deskQuakeDetail = lv_label_create(deskQuake);
+  lv_obj_set_style_text_font(deskQuakeDetail, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_opa(deskQuakeDetail, LV_OPA_90, 0);
+  lv_label_set_long_mode(deskQuakeDetail, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_width(deskQuakeDetail, W() - 40, 0);  // long place names end in "..."
+  lv_obj_set_height(deskQuakeDetail, lv_font_get_line_height(&lv_font_montserrat_14));
+  lv_label_set_text(deskQuakeDetail, "");
+
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
   lv_obj_set_width(deskWifiLbl, W() - 16);
@@ -1150,6 +1279,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         nflBack = Screen::Menu;
         showNfl();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_SHUFFLE, "Earthquakes");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        quakeBack = Screen::Menu;
+        showQuakes();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -3574,6 +3712,275 @@ void showNflTeam() {
   load(scr, Screen::NflTeam);
 }
 
+// ---------- Earthquakes ----------
+
+const float EQ_MAGS[] = {1.0f, 2.5f, 4.5f, 6.0f};
+const int EQ_RADII[] = {0, 1600, 800, 400, 160};  // km: worldwide, ~1000/500/250/100 mi
+#if defined(BOARD_NM_CYD_C5)
+const size_t EQ_MAX_ROWS = 80;
+#else
+const size_t EQ_MAX_ROWS = 30;
+#endif
+
+void onQuakeRow(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= eqRows.size()) return;
+  eqDetail = eqRows[i];
+  showQuakeDetail();
+}
+
+void styleWinButtons() {
+  const int hours[3] = {24, 48, 96};
+  for (int i = 0; i < 3; i++) {
+    if (!eqWinBtn[i]) continue;
+    bool on = hours[i] == eqWindowH;
+    lv_obj_set_style_bg_color(eqWinBtn[i], on ? theme::accent() : theme::text(), 0);
+    lv_obj_set_style_bg_opa(eqWinBtn[i], on ? LV_OPA_COVER : LV_OPA_10, 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(eqWinBtn[i], 0), on ? lv_color_white() : theme::text(), 0);
+  }
+}
+
+void refreshQuakeScreen() {
+  if (!eqStatus) return;
+  weather::quakeKeepAlive();
+  setText(eqStatus, weather::quakeStatus().c_str());
+  int key = (int)(weather::quakeVersion() * 4096 + (millis() / 60000) % 4096) * 4 + eqWindowH / 24 % 4;
+  if (key == eqKey) return;
+  eqKey = key;
+
+  weather::QuakeSummary qs = weather::quakeSummary();
+  char m[12];
+  snprintf(m, sizeof(m), "M%.1f+", weather::quakeMinMag());
+  String filt = String(m) + ", " + quakeAreaText(weather::quakeRadiusKm());
+  if (!qs.valid) {
+    setText(eqSummary, ("Today: --\n" + filt).c_str());
+    setText(eqBig, "");
+  } else {
+    char b[128];
+    snprintf(b, sizeof(b), "Today: %d\n24 h: %d   48 h: %d   96 h: %d\n%s", qs.today, qs.h24, qs.h48, qs.h96,
+             filt.c_str());
+    setText(eqSummary, b);
+    if (qs.haveBiggest) {
+      snprintf(m, sizeof(m), "M%.1f", qs.biggest24.mag);
+      String t = String("Largest in 24 h: ") + m + " " + quakePlace(qs.biggest24) + ", " + agoText(qs.biggest24.time);
+      setText(eqBig, t.c_str());
+      lv_obj_set_style_text_color(eqBig, magColor(qs.biggest24.mag), 0);
+    } else {
+      setText(eqBig, "No quakes in the last 24 h");
+      lv_obj_set_style_text_color(eqBig, theme::text(), 0);
+    }
+  }
+
+  // Rows for the chosen window, newest first
+  time_t now = time(nullptr);
+  uint32_t since = now > 1700000000 ? (uint32_t)(now - (time_t)eqWindowH * 3600) : 0;
+  eqRows = weather::quakes(since, EQ_MAX_ROWS);
+  int inWindow = !qs.valid ? 0 : eqWindowH == 24 ? qs.h24 : eqWindowH == 48 ? qs.h48 : qs.h96;
+  char h[80];
+  if (qs.valid && (int)eqRows.size() < inWindow)
+    snprintf(h, sizeof(h), "Last %d h: newest %u of %d", eqWindowH, (unsigned)eqRows.size(), inWindow);
+  else
+    snprintf(h, sizeof(h), "Last %d h, newest first", eqWindowH);
+  setText(eqHeading, h);
+
+  lv_obj_clean(eqBox);
+  if (qs.valid && eqRows.empty()) {
+    lv_obj_t *l = lv_label_create(eqBox);
+    lv_label_set_text(l, "No quakes in this window");
+  }
+  for (size_t i = 0; i < eqRows.size(); i++) {
+    const auto &q = eqRows[i];
+    lv_obj_t *row = lv_obj_create(eqBox);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_ver(row, 4, 0);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_set_style_bg_color(row, theme::accent(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_30, LV_STATE_PRESSED);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(row, onQuakeRow, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    lv_obj_t *ml = lv_label_create(row);
+    lv_obj_set_style_text_font(ml, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(ml, magColor(q.mag), 0);
+    lv_obj_set_width(ml, 44);
+    lv_label_set_text_fmt(ml, "%.1f", q.mag);
+    lv_obj_t *tl = lv_label_create(row);
+    lv_label_set_long_mode(tl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_flex_grow(tl, 1);
+    String t = quakePlace(q) + "\n" + agoText(q.time);
+    if (!std::isnan(q.depthKm)) t += " - " + String(q.depthKm, 0) + " km deep";
+    float km;
+    if (weather::quakeDistanceKm(q, km)) t += " - " + distText(km) + " away";
+    lv_label_set_text(tl, t.c_str());
+    if ((long)now - (long)q.time < 3600) lv_obj_set_style_text_color(tl, theme::accent(), 0);  // last hour
+  }
+}
+
+void showQuakes() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Earthquakes", [](lv_event_t *) {
+    if (quakeBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_set_style_pad_row(card, 4, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  auto wrapLabel = [&](lv_obj_t *parent, const lv_font_t *font) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    if (font) lv_obj_set_style_text_font(l, font, 0);
+    lv_label_set_text(l, "");
+    return l;
+  };
+  eqSummary = wrapLabel(card, &lv_font_montserrat_20);
+  eqBig = wrapLabel(card, nullptr);
+  eqStatus = wrapLabel(card, nullptr);
+  lv_obj_set_style_text_opa(eqStatus, LV_OPA_70, 0);
+
+  // 24 h / 48 h / 96 h window buttons
+  lv_obj_t *wins = lv_obj_create(list);
+  lv_obj_remove_style_all(wins);
+  lv_obj_set_size(wins, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(wins, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(wins, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_ver(wins, 4, 0);
+  lv_obj_clear_flag(wins, LV_OBJ_FLAG_SCROLLABLE);
+  static const char *winTxt[3] = {"24 h", "48 h", "96 h"};
+  static const int winHours[3] = {24, 48, 96};
+  for (int i = 0; i < 3; i++) {
+    eqWinBtn[i] = flatBtn(wins, winTxt[i], (W() - 40) / 3, 36);
+    lv_obj_add_event_cb(
+        eqWinBtn[i],
+        [](lv_event_t *e) {
+          eqWindowH = (int)(intptr_t)lv_event_get_user_data(e);
+          styleWinButtons();
+          eqKey = -1;
+          refreshQuakeScreen();
+        },
+        LV_EVENT_CLICKED, (void *)(intptr_t)winHours[i]);
+  }
+  styleWinButtons();
+
+  eqHeading = lv_list_add_text(list, "");
+  eqBox = lv_obj_create(list);
+  lv_obj_remove_style_all(eqBox);
+  lv_obj_set_size(eqBox, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(eqBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(eqBox, 8, 0);
+  lv_obj_set_style_pad_row(eqBox, 2, 0);
+  lv_obj_clear_flag(eqBox, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_list_add_text(list, "Settings");
+  char t[48];
+  snprintf(t, sizeof(t), "Minimum magnitude: %.1f", weather::quakeMinMag());
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, t);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        float cur = weather::quakeMinMag();
+        size_t n = sizeof(EQ_MAGS) / sizeof(EQ_MAGS[0]), i = 0;
+        while (i < n && EQ_MAGS[i] != cur) i++;
+        weather::setQuakeMinMag(EQ_MAGS[(i + 1) % n]);
+        showQuakes();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  String area = "Area: " + quakeAreaText(weather::quakeRadiusKm());
+  b = lv_list_add_btn(list, LV_SYMBOL_GPS, area.c_str());
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        int cur = weather::quakeRadiusKm();
+        size_t n = sizeof(EQ_RADII) / sizeof(EQ_RADII[0]), i = 0;
+        while (i < n && EQ_RADII[i] != cur) i++;
+        weather::setQuakeRadiusKm(EQ_RADII[(i + 1) % n]);
+        showQuakes();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show on desktop");
+  lv_obj_t *sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showQuakeDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showQuakeDesk();
+        weather::setShowQuakeDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get earthquake data.");
+          return;
+        }
+        weather::refreshQuake();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  lv_list_add_text(list, "Area \"within\" uses the Weather ZIP code");
+  lv_list_add_text(list, "Data: USGS Earthquake Hazards Program");
+
+  load(scr, Screen::Quakes);
+  // Stale or never fetched: get fresh numbers now
+  weather::QuakeSummary qs = weather::quakeSummary();
+  if (!qs.valid || millis() - qs.fetchedMs > 10UL * 60 * 1000) weather::refreshQuake();
+  eqKey = -1;
+  refreshQuakeScreen();
+}
+
+void showQuakeDetail() {
+  lv_obj_t *scr = newScreen();
+  const auto &q = eqDetail;
+  char title[32];
+  snprintf(title, sizeof(title), "M%.1f earthquake", q.mag);
+  makeHeader(scr, title, [](lv_event_t *) { showQuakes(); });
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);  // long details scroll in landscape
+  lv_obj_t *big = bodyLabel(body);
+  lv_obj_set_style_text_font(big, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(big, magColor(q.mag), 0);
+  lv_label_set_text(big, quakePlace(q).c_str());
+
+  char when[40];
+  timesvc::formatEpoch(q.time, when, sizeof(when));
+  String t = String("Time: ") + when + " (" + agoText(q.time) + ")\n";
+  char b[96];
+  snprintf(b, sizeof(b), "Magnitude: %.1f %s\n", q.mag, q.magType);
+  t += b;
+  if (!std::isnan(q.depthKm)) {
+    snprintf(b, sizeof(b), "Depth: %.1f km (%.1f mi)\n", q.depthKm, q.depthKm * 0.621371f);
+    t += b;
+  }
+  snprintf(b, sizeof(b), "Location: %.3f%c, %.3f%c\n", fabsf(q.lat), q.lat >= 0 ? 'N' : 'S', fabsf(q.lon),
+           q.lon >= 0 ? 'E' : 'W');
+  t += b;
+  float km;
+  if (weather::quakeDistanceKm(q, km)) t += "Distance: " + distText(km) + " from your ZIP code\n";
+  if (q.net[0]) t += String("Reported by: ") + q.net + " network\n";
+  if (q.id[0]) t += String("USGS event ID: ") + q.id + "\n";
+  t += "Source: USGS Earthquake Hazards Program";
+  lv_obj_t *info = bodyLabel(body);
+  lv_label_set_text(info, t.c_str());
+  load(scr, Screen::QuakeDetail);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -4161,6 +4568,7 @@ void poll(lv_timer_t *) {
     case Screen::Stock:
     case Screen::StockDetail: refreshStockScreen(); break;
     case Screen::Nfl: refreshNflScreen(); break;
+    case Screen::Quakes: refreshQuakeScreen(); break;
     default: break;
   }
 }

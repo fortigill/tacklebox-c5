@@ -172,6 +172,42 @@ bool nflTeamGame(Game &out);          // your team's game this week
 uint32_t nflVersion();
 String nflStatus();
 
+// ---- Earthquakes (USGS Earthquake Hazards Program, FDSN event service) ----
+// Every quake at or above the chosen magnitude in the last 96 hours,
+// worldwide or within a radius of the ZIP code. Refreshed every 10 min.
+struct Quake {
+  char id[20] = "";        // USGS event ID, e.g. "us7000abcd"
+  uint32_t time = 0;       // origin time, epoch UTC
+  float mag = NAN;
+  char magType[6] = "";    // ml, md, mb, mww...
+  float lat = NAN, lon = NAN, depthKm = NAN;
+  char net[8] = "";        // contributing network, e.g. "ci", "us"
+  char place[48] = "";     // "12 km SW of Ridgecrest, CA"
+};
+struct QuakeSummary {
+  bool valid = false;
+  int today = 0, h24 = 0, h48 = 0, h96 = 0;  // counts (today = since local midnight)
+  int stored = 0;          // quakes kept for the list (newest first; capped)
+  bool haveBiggest = false;
+  Quake biggest24;         // largest in the last 24 h
+  bool haveLatest = false;
+  Quake latest;            // most recent
+  uint32_t fetchedMs = 0;
+};
+QuakeSummary quakeSummary();
+std::vector<Quake> quakes(uint32_t sinceEpoch, size_t maxN);  // newest first
+float quakeMinMag();                  // 1.0 / 2.5 / 4.5 / 6.0 (default 2.5)
+void setQuakeMinMag(float m);
+int quakeRadiusKm();                  // 0 = worldwide
+void setQuakeRadiusKm(int km);
+bool showQuakeDesk();                 // desktop widget (also turns polling on)
+void setShowQuakeDesk(bool on);
+void refreshQuake();
+void quakeKeepAlive();                // the quake page is open: keep polling even with the widget off
+uint32_t quakeVersion();
+String quakeStatus();
+bool quakeDistanceKm(const Quake &q, float &km);  // from the ZIP code; false without one
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

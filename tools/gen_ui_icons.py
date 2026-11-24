@@ -71,8 +71,13 @@ def plane(n):
     return big.rotate(-45, resample=Image.BICUBIC, center=(c, c))
 
 
+def plane_land(n):
+    """The same airliner, nose down and to the right (landing)."""
+    return plane(n).rotate(-90, resample=Image.BICUBIC, center=(n / 2, n / 2))
+
+
 ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22),
-         ("plane", plane, 22)]
+         ("plane", plane, 22), ("plane_land", plane_land, 22)]
 
 
 def to_alpha4(img):

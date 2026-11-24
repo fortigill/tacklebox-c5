@@ -113,6 +113,8 @@ lv_obj_t *volcAlertBox = nullptr;  // level-change pop-up (top layer)
 // Airport flights: desktop bubble, page, event detail, airport code entry
 lv_obj_t *deskFlt = nullptr, *deskFltTop = nullptr, *deskFltDetail = nullptr;
 int deskFltKey = -1;
+lv_obj_t *deskAppr = nullptr, *deskApprTop = nullptr, *deskApprDetail = nullptr, *deskApprImg = nullptr;
+int deskApprKey = -1;
 lv_obj_t *flSummary = nullptr, *flStatus = nullptr, *flLiveBox = nullptr, *flDepBox = nullptr, *flArrBox = nullptr;
 lv_obj_t *flTa = nullptr;
 int flKey = -1;
@@ -401,6 +403,8 @@ void resetPtrs() {
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
   deskFlt = deskFltTop = deskFltDetail = nullptr;
   deskFltKey = -1;
+  deskAppr = deskApprTop = deskApprDetail = deskApprImg = nullptr;
+  deskApprKey = -1;
   flSummary = flStatus = flLiveBox = flDepBox = flArrBox = flTa = nullptr;
   flKey = -1;
   vcKey = -1;
@@ -621,14 +625,14 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc || !deskFlt)
+      !deskVolc || !deskFlt || !deskAppr)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskFlt, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskFlt, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAppr, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   int key = barH * 1000 + rowH;
   if (key == deskLayoutKey) return;
@@ -873,8 +877,9 @@ void refreshDesktop() {
     String detail;
     auto live = weather::liveFlights();
     const weather::LiveFlight *inb = nullptr;
-    for (const auto &l : live)
-      if (l.phase == 1 && (!inb || l.distNm < inb->distNm)) inb = &l;
+    if (!weather::showApproachDesk())  // the approach widget shows it otherwise
+      for (const auto &l : live)
+        if (l.phase == 1 && (!inb || l.distNm < inb->distNm)) inb = &l;
     if (inb) {
       char b[48];
       snprintf(b, sizeof(b), "Inbound: %s, %.0f nm", inb->flight, inb->distNm);
@@ -888,6 +893,36 @@ void refreshDesktop() {
     setText(deskFltTop, top);
     setText(deskFltDetail, detail.c_str());
     setHidden(deskFltDetail, detail.isEmpty());
+  }
+
+  // Approach bubble: the nearest airliner descending toward the airport,
+  // with distance, height, speed and a rough time to touchdown
+  bool deskApprOn = weather::showApproachDesk();
+  setHidden(deskAppr, !deskApprOn);
+  int apprKey = (int)weather::flightsVersion();
+  if (deskApprOn && apprKey != deskApprKey) {
+    deskApprKey = apprKey;
+    auto live = weather::liveFlights();
+    const weather::LiveFlight *inb = nullptr;
+    for (const auto &l : live)
+      if (l.phase == 1 && (!inb || l.distNm < inb->distNm)) inb = &l;
+    char top[40], det[64];
+    if (inb) {
+      snprintf(top, sizeof(top), "%s  %.1f nm", inb->flight, inb->distNm);
+      int eta = inb->gsKt > 30 ? (int)lroundf(inb->distNm / inb->gsKt * 60.0f) : -1;
+      if (eta >= 0)
+        snprintf(det, sizeof(det), "%s %ld ft %d kt, ~%d min", inb->type, (long)inb->altFt, inb->gsKt, eta < 1 ? 1 : eta);
+      else
+        snprintf(det, sizeof(det), "%s %ld ft", inb->type, (long)inb->altFt);
+    } else {
+      snprintf(top, sizeof(top), "No inbound");
+      snprintf(det, sizeof(det), "to %s right now", weather::airportCode().c_str());
+    }
+    setText(deskApprTop, top);
+    setText(deskApprDetail, det);
+    lv_color_t c = inb ? theme::accent() : theme::text();
+    lv_obj_set_style_img_recolor(deskApprImg, c, 0);
+    lv_obj_set_style_text_opa(deskApprTop, inb ? LV_OPA_COVER : LV_OPA_60, 0);
   }
 
   if (deskAlerts) {
@@ -1388,6 +1423,38 @@ void showDesktop() {
   lv_obj_set_style_max_width(deskFltDetail, W() - 40, 0);
   lv_obj_set_height(deskFltDetail, lv_font_get_line_height(&lv_font_montserrat_14));
   lv_label_set_text(deskFltDetail, "");
+
+  // Approach bubble: landing-plane icon + flight and distance, then details
+  deskAppr = widget([](lv_event_t *) {
+    fltBack = Screen::Desktop;
+    showFlights();
+  });
+  lv_obj_set_flex_flow(deskAppr, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskAppr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskAppr, 0, 0);
+  lv_obj_t *aline = lv_obj_create(deskAppr);
+  lv_obj_remove_style_all(aline);
+  lv_obj_set_size(aline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(aline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(aline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(aline, 6, 0);
+  lv_obj_clear_flag(aline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(aline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskApprImg = lv_img_create(aline);
+  lv_img_set_src(deskApprImg, &ui_plane_land);
+  lv_obj_set_style_img_recolor_opa(deskApprImg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(deskApprImg, theme::text(), 0);
+  lv_obj_clear_flag(deskApprImg, LV_OBJ_FLAG_CLICKABLE);
+  deskApprTop = lv_label_create(aline);
+  lv_label_set_text(deskApprTop, "--");
+  chevron(aline);
+  deskApprDetail = lv_label_create(deskAppr);
+  lv_obj_set_style_text_font(deskApprDetail, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_opa(deskApprDetail, LV_OPA_90, 0);
+  lv_label_set_long_mode(deskApprDetail, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_width(deskApprDetail, W() - 40, 0);
+  lv_obj_set_height(deskApprDetail, lv_font_get_line_height(&lv_font_montserrat_14));
+  lv_label_set_text(deskApprDetail, "");
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -4475,6 +4542,20 @@ void showFlights() {
         lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
         bool on = !weather::showFlightDesk();
         weather::setShowFlightDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Approaching aircraft on desktop");
+  sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showApproachDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showApproachDesk();
+        weather::setShowApproachDesk(on);
         if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
         else lv_obj_clear_state(s, LV_STATE_CHECKED);
       },

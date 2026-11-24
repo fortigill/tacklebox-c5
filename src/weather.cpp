@@ -199,6 +199,7 @@ int apElevFt = 34;
 float apMagVar = -6.0f;                     // degrees, east positive (DAB ~6 W)
 bool apHaveLoc = true;
 bool fltDesk = true;
+bool apprDesk = true;                       // approaching-aircraft widget
 std::vector<FlightEvent> fltDeps, fltArrs;  // newest first
 std::vector<LiveFlight> fltLive;
 int fltDepToday = 0, fltArrToday = 0;
@@ -2653,6 +2654,7 @@ void begin() {
   volcDesk = prefs.getBool("vcDesk", true);
   volcPop = prefs.getBool("vcPop", true);
   fltDesk = prefs.getBool("flDesk", true);
+  apprDesk = prefs.getBool("flAppr", true);
   if (prefs.isKey("apCode")) {
     apCode = prefs.getString("apCode");
     apName = prefs.isKey("apName") ? prefs.getString("apName") : String();
@@ -2772,7 +2774,7 @@ void loop() {
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
   // Airport flights: polled often, so lowest priority (only when nothing else is due)
-  bool fltWanted = fltDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
+  bool fltWanted = fltDesk || apprDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
   if (!flags && fltWanted && (millis() >= FLT_BOOT_DELAY_MS || flForce) &&
       (flForce || !flAttempted || millis() - flLastAttempt >= (flLastOk ? FLT_POLL_MS : FLT_RETRY_MS)))
     flags |= DO_FLIGHTS;
@@ -3634,6 +3636,17 @@ void setAirportCode(const String &code) {
 }
 
 bool showFlightDesk() { return fltDesk; }
+bool showApproachDesk() { return apprDesk; }
+
+void setShowApproachDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  apprDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("flAppr", on);
+  prefs.end();
+  if (on) flForce = true;
+  fltVer++;
+}
 
 void setShowFlightDesk(bool on) {
   std::lock_guard<std::mutex> lock(mtx);

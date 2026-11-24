@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.6.2] - 2026-11-24
+
+### Added
+- **Approaching aircraft** desktop widget, with its own switch on the Airport flights page
+  ("Approaching aircraft on desktop", on by default).
+  - Shows the nearest airliner descending toward the airport: flight number and distance
+    ("DL 3154  6.2 nm"), then aircraft type, height, speed and a rough time to touchdown
+    ("E75L 2400 ft 180 kt, ~2 min").
+  - Shows "No inbound to DAB right now" (dimmed) when there isn't one.
+  - A nose-down plane icon in the accent color while a flight is inbound. Tapping it opens
+    the Airport flights page.
+  - While this widget is on, the flights bubble's second line always shows the latest
+    takeoff / landing instead of repeating the inbound flight.
+  - Either widget being on keeps the live tracking running.
+- New icon `ui_plane_land`.
+
 ## [1.6.1] - 2026-11-24
 
 ### Changed

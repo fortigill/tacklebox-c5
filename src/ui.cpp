@@ -1155,7 +1155,22 @@ void showDesktop() {
 
   // Menu icon at the far left, shown only when the widgets need the Menu
   // button's space (see layoutDesktop)
-  deskBarMenu = flatBtn(bar, LV_SYMBOL_LIST, 40, 32);
+  // Compact: a bare 14 px icon in a 22 px slot, so it fits on the top line
+  // without pushing the other readouts to a second row. The touch area is
+  // padded out so it's still easy to hit.
+  deskBarMenu = lv_btn_create(bar);
+  lv_obj_set_size(deskBarMenu, 22, 32);
+  lv_obj_set_style_pad_all(deskBarMenu, 0, 0);
+  lv_obj_set_style_bg_opa(deskBarMenu, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_bg_opa(deskBarMenu, LV_OPA_20, LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(deskBarMenu, 0, 0);
+  lv_obj_set_style_border_width(deskBarMenu, 0, 0);
+  lv_obj_set_ext_click_area(deskBarMenu, 10);
+  lv_obj_t *mi = lv_label_create(deskBarMenu);
+  lv_obj_set_style_text_font(mi, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(mi, theme::text(), 0);
+  lv_label_set_text(mi, LV_SYMBOL_LIST);
+  lv_obj_center(mi);
   lv_obj_add_flag(deskBarMenu, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_event_cb(deskBarMenu, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
   lv_obj_move_to_index(deskBarMenu, 0);

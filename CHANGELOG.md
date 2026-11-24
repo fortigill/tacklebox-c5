@@ -3,6 +3,14 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.2] - 2026-11-24
+
+### Changed
+- The small menu button that replaces the big Menu button when widgets fill the desktop is
+  now a bare 14 px icon in a 22 px slot (was a 40 px button with padding and a background),
+  so it fits on the status bar's top line instead of pushing readouts to a second row. Its
+  touch area extends 10 px past the icon.
+
 ## [1.7.1] - 2026-11-24
 
 ### Changed

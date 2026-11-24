@@ -112,6 +112,7 @@ Screen volcBack = Screen::Menu;
 lv_obj_t *volcAlertBox = nullptr;  // level-change pop-up (top layer)
 // Aircraft near an airport: desktop bubble, page, airport code entry
 // "Near the airport" bubble: aircraft count, then one airliner's details
+lv_obj_t *deskNearCnt = nullptr;  // airliner count, left of the plane icon
 lv_obj_t *deskNear = nullptr, *deskNearTop = nullptr, *deskNearL2 = nullptr, *deskNearL3 = nullptr, *deskNearL4 = nullptr,
          *deskNearImg = nullptr;
 int deskNearKey = -1;
@@ -407,7 +408,7 @@ void resetPtrs() {
   deskVolc = deskVolcTop = deskVolcDetail = deskVolcImg = nullptr;
   deskVolcKey = -1;
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
-  deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = nullptr;
+  deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = deskNearCnt = nullptr;
   deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
   deskOursKey = -1;
   deskNearKey = -1;
@@ -905,13 +906,12 @@ void refreshDesktop() {
       deskNearKey = nearKey;
       int total = weather::flightsNearTotal();
       char top[40], l2[56], l3[48], l4[48];
-      if (total < 0) snprintf(top, sizeof(top), "Near %s: --", weather::airportCode().c_str());
-      // Airliners only (flight-school and private traffic isn't counted)
-      else if (W() >= 300)
-        snprintf(top, sizeof(top), "%u airliner%s near %s", (unsigned)live.size(), live.size() == 1 ? "" : "s",
-                 weather::airportCode().c_str());
-      else
-        snprintf(top, sizeof(top), "%u near %s", (unsigned)live.size(), weather::airportCode().c_str());
+      // "3 [plane] near DAB": airliners only (flight-school and private traffic isn't counted)
+      char cnt[8];
+      if (total < 0) snprintf(cnt, sizeof(cnt), "--");
+      else snprintf(cnt, sizeof(cnt), "%u", (unsigned)live.size());
+      setText(deskNearCnt, cnt);
+      snprintf(top, sizeof(top), "near %s", weather::airportCode().c_str());
       l3[0] = l4[0] = 0;
       if (live.empty()) {
         snprintf(l2, sizeof(l2), total < 0 ? "Checking..." : "No airliners within 10 nm");
@@ -1532,6 +1532,8 @@ void showDesktop() {
   lv_obj_set_style_pad_column(nline2, 6, 0);
   lv_obj_clear_flag(nline2, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(nline2, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskNearCnt = lv_label_create(nline2);
+  lv_label_set_text(deskNearCnt, "--");
   deskNearImg = lv_img_create(nline2);
   lv_img_set_src(deskNearImg, &ui_plane_land);
   lv_obj_set_style_img_recolor_opa(deskNearImg, LV_OPA_COVER, 0);

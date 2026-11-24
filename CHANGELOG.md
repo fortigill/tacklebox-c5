@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.7] - 2026-11-24
+
+### Changed
+- Near-the-airport widget, first line: the airliner count, then the plane icon, then "near
+  DAB" ("3 [plane] near DAB"). It's the same in landscape and portrait.
+
 ## [1.7.6] - 2026-11-24
 
 ### Changed

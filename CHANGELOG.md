@@ -3,6 +3,16 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.6] - 2026-11-24
+
+### Changed
+- Aircraft near airport: only airliners are counted now. The widget's first line reads "3
+  airliners near DAB" ("3 near DAB" in portrait), and the page summary matches. Flight-school
+  and private traffic no longer appears anywhere. The serial log line counts airliners only.
+- The flights-to/from widget's switch reads "Flights to/from DAB widget (follows the airport
+  above)". The widget always uses the airport code set on that page (it did already): change
+  the code to MCO and it shows flights to/from MCO.
+
 ## [1.7.5] - 2026-11-24
 
 ### Changed

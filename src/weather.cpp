@@ -2087,8 +2087,8 @@ bool pollFlights(String &why) {
   addRoutes(live, code);
   int ours = 0;
   for (const auto &f : live) ours += f.ours != 0;
-  Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s, %d to/from %s\n", code.c_str(), total,
-                FLT_RADIUS_NM, airliners, airliners == 1 ? "" : "s", ours, code.c_str());
+  Serial.printf("[flights] %s: %d airliner%s within %d nm, %d to/from %s\n", code.c_str(), airliners,
+                airliners == 1 ? "" : "s", FLT_RADIUS_NM, ours, code.c_str());
   std::lock_guard<std::mutex> lock(mtx);
   if (code != apCode) return true;  // airport changed while we were downloading
   fltLive.swap(live);

@@ -906,7 +906,12 @@ void refreshDesktop() {
       int total = weather::flightsNearTotal();
       char top[40], l2[56], l3[48], l4[48];
       if (total < 0) snprintf(top, sizeof(top), "Near %s: --", weather::airportCode().c_str());
-      else snprintf(top, sizeof(top), "%d near %s", total, weather::airportCode().c_str());
+      // Airliners only (flight-school and private traffic isn't counted)
+      else if (W() >= 300)
+        snprintf(top, sizeof(top), "%u airliner%s near %s", (unsigned)live.size(), live.size() == 1 ? "" : "s",
+                 weather::airportCode().c_str());
+      else
+        snprintf(top, sizeof(top), "%u near %s", (unsigned)live.size(), weather::airportCode().c_str());
       l3[0] = l4[0] = 0;
       if (live.empty()) {
         snprintf(l2, sizeof(l2), total < 0 ? "Checking..." : "No airliners within 10 nm");
@@ -4569,7 +4574,7 @@ void refreshFlightsScreen() {
   int total = weather::flightsNearTotal();
   size_t nAir = weather::liveFlights().size();
   if (total < 0) snprintf(b, sizeof(b), "Near %s: --", code.c_str());
-  else snprintf(b, sizeof(b), "%d aircraft near %s\n%u airliner%s", total, code.c_str(), (unsigned)nAir, nAir == 1 ? "" : "s");
+  else snprintf(b, sizeof(b), "%u airliner%s near %s", (unsigned)nAir, nAir == 1 ? "" : "s", code.c_str());
   setText(flSummary, b);
 
   // Near the airport right now
@@ -4662,7 +4667,7 @@ void showFlights() {
         else lv_obj_clear_state(s, LV_STATE_CHECKED);
       },
       LV_EVENT_CLICKED, sw);
-  String ot = "Flights to/from " + weather::airportCode() + " widget";
+  String ot = "Flights to/from " + weather::airportCode() + " widget (follows the airport above)";
   row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, ot.c_str());
   sw = lv_switch_create(row);
   lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);

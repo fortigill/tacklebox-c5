@@ -7,6 +7,11 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include <esp_heap_caps.h>
+#if defined(BOARD_NM_CYD_C5)
+#include "mbedtls/platform.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -34,10 +39,15 @@ const uint32_t ALERTS_BOOT_DELAY_MS = 30000;  // first NWS check waits until boo
 // single allocations up to ~17 KB. A 38 KB block with 47 KB free still failed.
 const uint32_t TLS_MIN_BLOCK = 36 * 1024;
 const uint32_t TLS_MIN_FREE = 54 * 1024;
+bool tlsInPsram = false;  // C5: mbedTLS allocates from PSRAM, so TLS barely touches internal RAM
 bool tlsFits(String &why) {
-  if (ESP.getMaxAllocHeap() >= TLS_MIN_BLOCK && ESP.getFreeHeap() >= TLS_MIN_FREE) return true;
+  uint32_t minBlock = tlsInPsram ? 8 * 1024 : TLS_MIN_BLOCK, minFree = tlsInPsram ? 24 * 1024 : TLS_MIN_FREE;
+  if (ESP.getMaxAllocHeap() >= minBlock && ESP.getFreeHeap() >= minFree) return true;
   why = String("skipped, low memory (") + ESP.getFreeHeap() / 1024 + " KB free, " + ESP.getMaxAllocHeap() / 1024 +
-        " KB block). Bluetooth tools hold memory; it is released 1 min after they stop";
+        " KB block)";
+#if !defined(BOARD_NM_CYD_C5)
+  why += ". Bluetooth tools hold memory; it is released 1 min after they stop";
+#endif
   return false;
 }
 const uint16_t HTTP_TIMEOUT_MS = 8000;
@@ -148,7 +158,7 @@ uint32_t nflVer = 0;
 float quakeMin = 2.5f;
 int quakeRadius = 0;      // km, 0 = worldwide
 bool quakeDesk = true;
-std::vector<Quake> quakeList;  // newest first, up to QUAKE_KEEP
+BigVec<Quake> quakeList;  // newest first, up to QUAKE_KEEP (PSRAM on the C5)
 QuakeSummary quakeSum;
 String quakeErr;
 uint32_t quakeVer = 0;
@@ -157,7 +167,7 @@ bool quakeTls = false;           // USGS redirected plain HTTP to HTTPS: go stra
 
 // Volcanoes (guarded by mtx)
 std::vector<Volcano> volcList;
-std::vector<Eruption> eruptList;
+BigVec<Eruption> eruptList;
 String eruptWeek;
 bool volcDesk = true, volcPop = true;
 String volcErr, eruptErr;
@@ -1177,7 +1187,7 @@ struct QuakeParse {
   int ncols = 0;
   uint32_t now = 0, midnight = 0;
   size_t keep = 0;
-  std::vector<Quake> *list = nullptr;
+  BigVec<Quake> *list = nullptr;
   QuakeSummary sum;
   int rows = 0;
   bool badFormat = false;
@@ -1336,7 +1346,7 @@ long usgsCount(time_t from, time_t to, const String &filter, String &why) {
   return code == 200 ? n : -1;
 }
 
-bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Quake> &list, QuakeSummary &sum,
+bool fetchQuakes(float minMag, int radiusKm, float la, float lo, BigVec<Quake> &list, QuakeSummary &sum,
                  String &why) {
   time_t now = time(nullptr);
   if (now < 1700000000) {
@@ -1499,7 +1509,7 @@ bool fetchUsVolcanoes(std::vector<Volcano> &out, String &why) {
 // description are kept.
 struct RssScan {
   enum Field { NONE, TITLE, DESC, POINT };
-  std::vector<Eruption> *out = nullptr;
+  BigVec<Eruption> *out = nullptr;
   String week;
   bool inItem = false, inTag = false, inCdata = false;
   Field field = NONE;
@@ -1679,7 +1689,7 @@ struct RssScan {
   }
 };
 
-bool fetchEruptions(std::vector<Eruption> &out, String &week, String &why) {
+bool fetchEruptions(BigVec<Eruption> &out, String &week, String &why) {
   out.reserve(ERUPT_MAX);
   std::unique_ptr<RssScan> scan(new RssScan());  // ~1 KB of buffers: heap, not the task stack
   scan->out = &out;
@@ -1864,7 +1874,7 @@ void quakeWork() {
     lo = lon;
     have = haveLoc;
   }
-  std::vector<Quake> fresh;
+  BigVec<Quake> fresh;
   QuakeSummary sum;
   String why;
   bool ok;
@@ -1967,7 +1977,7 @@ void volcanoWork() {
   if (!due) return;
   eruptAttempted = true;
   eruptLastAttempt = millis();
-  std::vector<Eruption> world;
+  BigVec<Eruption> world;
   String week, ewhy;
   bool eok = fetchEruptions(world, week, ewhy);
   {
@@ -2142,7 +2152,23 @@ void startFetch(uint8_t flags) {
 
 }  // namespace
 
+#if defined(BOARD_NM_CYD_C5) && defined(MBEDTLS_PLATFORM_MEMORY) && !defined(MBEDTLS_PLATFORM_CALLOC_MACRO)
+// TLS sessions (~50 KB each, with 16 KB record buffers) go to PSRAM
+static void *tlsCalloc(size_t n, size_t size) {
+  void *p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return p ? p : calloc(n, size);
+}
+static void tlsFree(void *p) { heap_caps_free(p); }
+#define HAVE_TLS_PSRAM 1
+#endif
+
 void begin() {
+#if defined(HAVE_TLS_PSRAM)
+  if (ESP.getPsramSize() && mbedtls_platform_set_calloc_free(tlsCalloc, tlsFree) == 0) {
+    tlsInPsram = true;
+    Serial.println("[wx] HTTPS buffers in PSRAM");
+  }
+#endif
   prefs.begin("wx", false);  // read-write: creates the namespace on first boot
   zipCode = prefs.isKey("zip") ? prefs.getString("zip") : String();
   placeName = prefs.isKey("place") ? prefs.getString("place") : String();
@@ -2178,7 +2204,7 @@ void begin() {
   nflBar = prefs.getBool("nflBar", true);
   nflDesk = prefs.getBool("nflDesk", true);
   stockDesk = prefs.getBool("stkDesk", true);
-  quakeMin = prefs.getFloat("eqMin", 2.5f);
+  quakeMin = prefs.isKey("eqMin") ? prefs.getFloat("eqMin", 2.5f) : 2.5f;
   quakeRadius = prefs.getInt("eqRad", 0);
   quakeDesk = prefs.getBool("eqDesk", true);
   volcDesk = prefs.getBool("vcDesk", true);
@@ -2288,7 +2314,9 @@ void loop() {
 
 bool tlsActive() {
 #if defined(BOARD_NM_CYD_C5)
-  return false;  // plenty of RAM: no need to hold screen updates during HTTPS
+  // Widgets live in PSRAM here, so screen updates can go on during HTTPS,
+  // unless internal RAM still gets tight (TLS buffers are internal)
+  return tlsBusy && heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 24 * 1024;
 #else
   return tlsBusy;
 #endif
@@ -2887,9 +2915,9 @@ QuakeSummary quakeSummary() {
   return quakeSum;
 }
 
-std::vector<Quake> quakes(uint32_t sinceEpoch, size_t maxN) {
+BigVec<Quake> quakes(uint32_t sinceEpoch, size_t maxN) {
   std::lock_guard<std::mutex> lock(mtx);
-  std::vector<Quake> out;
+  BigVec<Quake> out;
   for (const auto &q : quakeList) {
     if (q.time < sinceEpoch) break;  // newest first
     if (out.size() >= maxN) break;
@@ -2987,7 +3015,7 @@ std::vector<Volcano> usVolcanoes() {
   return volcList;
 }
 
-std::vector<Eruption> eruptions() {
+BigVec<Eruption> eruptions() {
   std::lock_guard<std::mutex> lock(mtx);
   return eruptList;
 }

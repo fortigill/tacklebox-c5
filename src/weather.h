@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "board.h"
+#include "psram_vec.h"
 
 // Weather from Open-Meteo (free, no API key). The ZIP code is resolved to
 // coordinates once (Zippopotam.us, falling back to Open-Meteo geocoding) and
@@ -199,7 +200,7 @@ struct QuakeSummary {
   uint32_t fetchedMs = 0;
 };
 QuakeSummary quakeSummary();
-std::vector<Quake> quakes(uint32_t sinceEpoch, size_t maxN);  // newest first (last 24 h only)
+BigVec<Quake> quakes(uint32_t sinceEpoch, size_t maxN);  // newest first (last 24 h only)
 float quakeMinMag();                  // 1.0 / 2.5 / 4.5 / 6.0 (default 2.5)
 void setQuakeMinMag(float m);
 int quakeRadiusKm();                  // 0 = worldwide
@@ -237,7 +238,7 @@ struct Eruption {          // one volcano in the weekly worldwide report
 #endif
 };
 std::vector<Volcano> usVolcanoes();     // most serious first
-std::vector<Eruption> eruptions();      // in report order
+BigVec<Eruption> eruptions();           // in report order
 String eruptionWeek();                  // "19 November-25 November 2025", "" if unknown
 int colorRank(const char *color);       // RED 4, ORANGE 3, YELLOW 2, GREEN 1, else 0
 bool showVolcanoDesk();

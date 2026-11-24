@@ -96,7 +96,7 @@ int deskQuakeKey = -1;
 lv_obj_t *eqSummary = nullptr, *eqBig = nullptr, *eqStatus = nullptr, *eqBox = nullptr, *eqHeading = nullptr;
 lv_obj_t *eqDay = nullptr;     // today vs yesterday
 int eqKey = -1;                // data version + minute the page was built for
-std::vector<weather::Quake> eqRows;
+BigVec<weather::Quake> eqRows;
 weather::Quake eqDetail;
 Screen quakeBack = Screen::Menu;
 // Volcanoes: desktop bubble, page, detail and level-change pop-ups
@@ -105,7 +105,7 @@ int deskVolcKey = -1;
 lv_obj_t *vcSummary = nullptr, *vcStatus = nullptr, *vcUsBox = nullptr, *vcWorldBox = nullptr, *vcWorldHdr = nullptr;
 int vcKey = -1;
 std::vector<weather::Volcano> vcUsRows;
-std::vector<weather::Eruption> vcWorldRows;
+BigVec<weather::Eruption> vcWorldRows;
 String vcDetailTitle, vcDetailText;
 lv_color_t vcDetailColor;
 Screen volcBack = Screen::Menu;
@@ -4686,7 +4686,7 @@ void showAbout() {
            "Chip: %s v%u.%u\n"
            "CPU: %d core%s @ %lu MHz\n"
            "Flash: %lu KB, PSRAM: %lu KB\n"
-           "Free heap: %lu KB\n"
+           "Free RAM: %lu KB (PSRAM %lu KB)\n"
            "MAC: %s\n"
            "Wi-Fi: %s\n"
            "IP: %s\n"
@@ -4694,7 +4694,8 @@ void showAbout() {
            FW_VERSION, __DATE__, BOARD_NAME, ESP.getChipModel(), rev / 100, rev % 100, ESP.getChipCores(),
            ESP.getChipCores() == 1 ? "" : "s", (unsigned long)ESP.getCpuFreqMHz(),
            (unsigned long)(ESP.getFlashChipSize() / 1024), (unsigned long)(ESP.getPsramSize() / 1024),
-           (unsigned long)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
+           (unsigned long)(ESP.getFreeHeap() / 1024), (unsigned long)(ESP.getFreePsram() / 1024),
+           WiFi.macAddress().c_str(),
            wifiTxt.c_str(), up ? net::ip().c_str() : "-",
            ota::ready() ? (String(ota::hostname()) + ".local").c_str() : "waiting for Wi-Fi");
 

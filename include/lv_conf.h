@@ -14,10 +14,17 @@
 
 // Use the system heap instead of a static pool (keeps .bss small on Arduino 3.x)
 #define LV_MEM_CUSTOM          1
+#if defined(BOARD_NM_CYD_C5)
+#define LV_MEM_CUSTOM_INCLUDE  "lv_mem_psram.h"   // widgets in PSRAM: internal RAM stays free for Wi-Fi/TLS
+#define LV_MEM_CUSTOM_ALLOC    lv_psram_alloc
+#define LV_MEM_CUSTOM_FREE     lv_psram_free
+#define LV_MEM_CUSTOM_REALLOC  lv_psram_realloc
+#else
 #define LV_MEM_CUSTOM_INCLUDE  <stdlib.h>
 #define LV_MEM_CUSTOM_ALLOC    malloc
 #define LV_MEM_CUSTOM_FREE     free
 #define LV_MEM_CUSTOM_REALLOC  realloc
+#endif
 
 #define LV_TICK_CUSTOM                1
 #define LV_TICK_CUSTOM_INCLUDE        "Arduino.h"

@@ -71,7 +71,10 @@ void loop() {
   if (!bootDone && (networkSettled() || millis() > BOOT_LED_MAX_MS)) {
     bootDone = true;
     led::set(led::Color::Green);
-    Serial.printf("[boot] up and running after %lu ms\n", (unsigned long)millis());
+    Serial.printf("[boot] up and running after %lu ms; internal RAM %lu KB free (largest block %lu KB), "
+                  "PSRAM %lu KB free\n",
+                  (unsigned long)millis(), (unsigned long)(ESP.getFreeHeap() / 1024),
+                  (unsigned long)(ESP.getMaxAllocHeap() / 1024), (unsigned long)(ESP.getFreePsram() / 1024));
   }
   delay(5);
 }

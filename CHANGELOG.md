@@ -3,6 +3,32 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.5.1] - 2026-11-24
+
+### Fixed (NM-CYD-C5)
+- **Downloads skipped for "low memory" even though the board has 8 MB of PSRAM.** PSRAM was
+  detected but nothing used it, so screens, data lists and HTTPS sessions all came out of the
+  ESP32-C5's ~320 KB of internal RAM. After a few screens and an HTTPS session or two, the
+  largest free piece fell to ~24 KB, below what a TLS session needs. Stocks, earthquakes and
+  volcanoes failed, and internal RAM fell as low as 5 KB during the NWS download. Now:
+  - LVGL's widget memory comes from PSRAM. Only the two display draw buffers, which need
+    DMA, stay internal.
+  - The earthquake list and the weekly volcano report are kept in PSRAM (`BigVec`).
+  - mbedTLS allocates its buffers from PSRAM, if this framework build allows changing its
+    allocator (checked at compile time; the boot log says "HTTPS buffers in PSRAM"). The
+    memory check before each HTTPS download is relaxed to match.
+  - Screen updates only pause during HTTPS if internal RAM drops under 24 KB anyway.
+- The low-memory message no longer blames Bluetooth on the C5.
+
+### Added
+- Boot log and About show internal RAM (free and largest block) and free PSRAM separately.
+
+### Notes
+- "MSPI Timing: Failed to allocate dummy cacheline for PSRAM memory barrier!" at power-up
+  comes from the ESP-IDF PSRAM driver on this chip revision. PSRAM still works (all 8 MB is
+  reported and used).
+- The first-boot "nvs_get_blob len fail: eqMin NOT_FOUND" log line is gone.
+
 ## [1.5.0] - 2026-11-24
 
 ### Added

@@ -2,7 +2,7 @@
 
 // SaltyGills Tackle Box: lots of handy tools in one small box.
 // Bump FW_VERSION with every release and add an entry to CHANGELOG.md.
-#define FW_VERSION "1.7.7"
+#define FW_VERSION "1.7.8"
 #define PRODUCT_NAME "SaltyGills Tackle Box"
 #define PRODUCT_SHORT "Tackle Box"
 #define PRODUCT_TAGLINE "Lots of handy tools in one small box"

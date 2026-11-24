@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.8] - 2026-11-24
+
+### Changed
+- The near-the-airport widget and the status-bar plane count hide themselves while no
+  airliner is within 10 NM (or before the first check), even with their switches on. They
+  come back as soon as one shows up, like the flights-to/from widget.
+
 ## [1.7.7] - 2026-11-24
 
 ### Changed

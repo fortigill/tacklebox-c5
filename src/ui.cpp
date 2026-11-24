@@ -875,7 +875,8 @@ void refreshDesktop() {
 
   // Status bar: plane icon + airliner count badge (dim at zero)
   if (deskBarFlt) {
-    bool on = weather::showFlightBar() && weather::flightsNearTotal() >= 0;
+    // Hidden while no airliner is near, even with the switch on
+    bool on = weather::showFlightBar() && !weather::liveFlights().empty();
     setHidden(deskBarFlt, !on);
     int k = (int)weather::flightsVersion();
     if (on && k != deskBarFltKey) {
@@ -893,9 +894,10 @@ void refreshDesktop() {
   // "Near the airport" bubble: how many aircraft are within 10 nm, then each
   // airliner in turn (flight, type, distance / height, climb or descent, speed)
   bool deskNearOn = weather::showNearbyDesk();
-  setHidden(deskNear, !deskNearOn);
-  if (deskNearOn) {
-    auto live = weather::liveFlights();
+  auto liveNow = weather::liveFlights();
+  setHidden(deskNear, !deskNearOn || liveNow.empty());  // hidden while no airliner is near
+  if (deskNearOn && !liveNow.empty()) {
+    auto &live = liveNow;
     if (live.size() > 1 && millis() - deskNearRotMs >= NEAR_ROTATE_MS) {
       deskNearRotMs = millis();
       deskNearIdx++;

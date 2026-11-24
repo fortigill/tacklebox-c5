@@ -45,6 +45,7 @@ Screen calReturn = Screen::Desktop;
 
 // Widgets of the current screen (reset whenever the screen changes)
 lv_obj_t *deskWifiIcon = nullptr;
+lv_obj_t *deskWifi5g = nullptr;  // green "5G" badge over the Wi-Fi icon (dual-band boards)
 lv_obj_t *deskWifiLbl = nullptr;
 lv_obj_t *deskClock = nullptr;
 lv_obj_t *deskWx = nullptr, *deskWxImg = nullptr;
@@ -279,7 +280,7 @@ lv_color_t pctColor(const weather::Stock &s) {
 // ---------- helpers ----------
 
 void resetPtrs() {
-  deskWifiIcon = deskWifiLbl = deskClock = nullptr;
+  deskWifiIcon = deskWifi5g = deskWifiLbl = deskClock = nullptr;
   deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
   deskDrone = nullptr;
   deskDroneState = -1;
@@ -546,7 +547,8 @@ void layoutDesktop() {
 void refreshDesktop() {
   if (!deskWifiIcon) return;
   char buf[96];
-  int state = (int)net::state();
+  // The band is part of the icon state: the 5G badge comes and goes with it
+  int state = (int)net::state() * 2 + (net::band() == 5 ? 1 : 0);
 
   switch (net::state()) {
     case net::State::Connected:
@@ -719,6 +721,7 @@ void refreshDesktop() {
   }
   lv_obj_set_style_text_color(deskWifiIcon, color, 0);
   lv_obj_set_style_text_opa(deskWifiIcon, opa, 0);
+  setHidden(deskWifi5g, net::band() != 5);  // band() is 0 unless connected
 }
 
 void showDesktop() {
@@ -904,6 +907,26 @@ void showDesktop() {
   lv_obj_set_style_text_font(deskWifiIcon, &lv_font_montserrat_20, 0);
   lv_label_set_text(deskWifiIcon, LV_SYMBOL_WIFI);
   lv_obj_center(deskWifiIcon);
+  if (net::dualBand()) {
+    // Small green "5G" tag on the lower right of the icon while on 5 GHz
+    deskWifi5g = lv_label_create(wb);
+    lv_label_set_text(deskWifi5g, "5G");
+    lv_obj_set_style_text_font(deskWifi5g, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(deskWifi5g, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(deskWifi5g, lv_palette_main(LV_PALETTE_GREEN), 0);
+    lv_obj_set_style_bg_opa(deskWifi5g, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(deskWifi5g, 3, 0);
+    lv_obj_set_style_pad_hor(deskWifi5g, 2, 0);
+    lv_obj_set_style_pad_ver(deskWifi5g, 0, 0);
+    lv_obj_set_style_text_line_space(deskWifi5g, 0, 0);
+    lv_obj_add_flag(deskWifi5g, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(deskWifi5g, LV_OBJ_FLAG_CLICKABLE);  // taps go to the Wi-Fi button
+    // No button padding, so the tag sits in the button's corner, overlapping
+    // the icon's lower right (the icon stays centered either way)
+    lv_obj_set_style_pad_all(wb, 0, 0);
+    lv_obj_align(deskWifi5g, LV_ALIGN_BOTTOM_RIGHT, -1, 0);
+    lv_obj_add_flag(deskWifi5g, LV_OBJ_FLAG_HIDDEN);
+  }
 
   // Menu button
   lv_obj_t *mb = flatBtn(scr, LV_SYMBOL_LIST "  Menu", 170, 70);

@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.2.1] - 2026-11-24
+
+### Added
+- Status bar: while connected on 5 GHz, the Wi-Fi icon gets a small green **5G** tag on its
+  lower right. On 2.4 GHz it stays the plain blue icon. The tag also updates when the board
+  switches bands. Dual-band boards only.
+
 ## [1.2.0] - 2026-11-24
 
 ### Added (NM-CYD-C5 / dual-band boards)

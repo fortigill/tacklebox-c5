@@ -70,13 +70,9 @@ const uint32_t QUAKE_BOOT_DELAY_MS = 90000;
 const uint32_t QUAKE_WANTED_MS = 15UL * 60 * 1000;  // keep polling this long after the page was open
 const uint32_t QUAKE_WINDOW_S = 24UL * 3600;  // the list covers the last 24 h
 const char *QUAKE_HOST = "earthquake.usgs.gov/fdsnws/event/1/";
+
 #if defined(BOARD_NM_CYD_C5)
-const int QUAKE_BACKFILL = 8;  // older weeks counted per refresh until all 52 are in
-#else
-const int QUAKE_BACKFILL = 3;
-#endif
-#if defined(BOARD_NM_CYD_C5)
-const size_t QUAKE_KEEP = 250;  // plenty of RAM
+const size_t QUAKE_KEEP = 200;  // plenty of RAM (a busy M1.0+ day can pass this)
 #else
 const size_t QUAKE_KEEP = 30;   // ~3 KB; the classic board needs its heap for TLS
 #endif
@@ -142,7 +138,6 @@ QuakeSummary quakeSum;
 String quakeErr;
 uint32_t quakeVer = 0;
 uint32_t quakeWantedMs = 0;
-QuakeWeek quakeWk[QUAKE_WEEKS];  // persisted ("eqWk"), along with the filter it was counted with ("eqSig")
 bool quakeTls = false;           // USGS redirected plain HTTP to HTTPS: go straight there next time
 
 // Scheduling (main task only)
@@ -1302,17 +1297,6 @@ long usgsCount(time_t from, time_t to, const String &filter, String &why) {
   return code == 200 ? n : -1;
 }
 
-// Monday 00:00 local time of the week `back` weeks before the one holding `t`
-time_t weekStart(time_t t, int back) {
-  struct tm lt;
-  localtime_r(&t, &lt);
-  int sinceMon = (lt.tm_wday + 6) % 7;
-  lt.tm_mday -= sinceMon + 7 * back;
-  lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
-  lt.tm_isdst = -1;  // let mktime work out daylight saving for that date
-  return mktime(&lt);
-}
-
 bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Quake> &list, QuakeSummary &sum,
                  String &why) {
   time_t now = time(nullptr);
@@ -1535,8 +1519,6 @@ void quakeWork() {
   QuakeSummary sum;
   String why;
   bool ok;
-  QuakeWeek wk[QUAKE_WEEKS];
-  bool wkChanged = false;
   if (radius > 0 && !have) {
     ok = false;
     why = "\"near me\" needs a ZIP code: set one under Weather";
@@ -1544,41 +1526,24 @@ void quakeWork() {
     ok = fetchQuakes(minMag, radius, la, lo, fresh, sum, why);
   }
   if (ok) {
-    // Weekly counts. Line the saved weeks up with the calendar (a new week
-    // shifts them down by one), then count this week, last week (USGS keeps
-    // adding late-reviewed quakes for a while) and a few missing older weeks.
-    {
-      std::lock_guard<std::mutex> lock(mtx);
-      memcpy(wk, quakeWk, sizeof(wk));
-    }
+    // Yesterday's total, local midnight to midnight. Recounted every time:
+    // USGS keeps adding late-reviewed quakes for a day or so.
     time_t now = time(nullptr);
-    QuakeWeek aligned[QUAKE_WEEKS];
-    for (size_t i = 0; i < QUAKE_WEEKS; i++) {
-      aligned[i].start = (uint32_t)weekStart(now, (int)i);
-      for (const auto &o : wk)
-        if (o.start == aligned[i].start) aligned[i].count = o.count;
+    struct tm lt;
+    localtime_r(&now, &lt);
+    lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
+    lt.tm_isdst = -1;
+    time_t today0 = mktime(&lt);
+    lt.tm_mday -= 1;
+    lt.tm_isdst = -1;  // 23 or 25 h long on a daylight-saving day
+    time_t yest0 = mktime(&lt);
+    String cwhy;
+    sum.yesterday = usgsCount(yest0, today0, usgsFilter(minMag, radius, la, lo), cwhy);
+    if (sum.yesterday < 0) {
+      Serial.printf("[quake] yesterday's count failed: %s\n", cwhy.c_str());
+      std::lock_guard<std::mutex> lock(mtx);
+      if (quakeSum.valid && quakeSum.yesterday >= 0) sum.yesterday = quakeSum.yesterday;  // keep the last one
     }
-    if (memcmp(aligned, wk, sizeof(wk)) != 0) wkChanged = true;
-    memcpy(wk, aligned, sizeof(wk));
-    String filt = usgsFilter(minMag, radius, la, lo), cwhy;
-    long n = usgsCount(wk[0].start, 0, filt, cwhy);
-    if (n >= 0) wk[0].count = n;
-    n = usgsCount(wk[1].start, wk[0].start, filt, cwhy);
-    if (n >= 0 && n != wk[1].count) {
-      wk[1].count = n;
-      wkChanged = true;
-    }
-    int budget = QUAKE_BACKFILL;
-    for (size_t i = 2; i < QUAKE_WEEKS && budget > 0; i++) {
-      if (wk[i].count >= 0) continue;
-      budget--;
-      n = usgsCount(wk[i].start, wk[i - 1].start, filt, cwhy);
-      if (n < 0) break;  // try again next refresh
-      wk[i].count = n;
-      wkChanged = true;
-    }
-    if (cwhy.length()) Serial.printf("[quake] weekly count problem: %s\n", cwhy.c_str());
-    Serial.printf("[quake] this week %ld, last week %ld\n", (long)wk[0].count, (long)wk[1].count);
   }
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -1588,12 +1553,6 @@ void quakeWork() {
         quakeList.swap(fresh);
         quakeSum = sum;
         quakeErr = "";
-        memcpy(quakeWk, wk, sizeof(wk));
-        if (wkChanged) {  // completed weeks changed: save (this week's running count isn't saved)
-          prefs.begin("wx", false);
-          prefs.putBytes("eqWk", quakeWk, sizeof(quakeWk));
-          prefs.end();
-        }
       } else {
         quakeErr = why;
       }
@@ -1601,7 +1560,7 @@ void quakeWork() {
     }
   }
   if (ok)
-    Serial.printf("[quake] M%.1f+: %d today, %d in 24 h\n", minMag, sum.today, sum.h24);
+    Serial.printf("[quake] M%.1f+: %d today, %ld yesterday, %d in 24 h\n", minMag, sum.today, sum.yesterday, sum.h24);
   else
     Serial.printf("[quake] failed: %s\n", why.c_str());
   qkLastOk = ok;
@@ -1793,7 +1752,7 @@ void begin() {
   quakeMin = prefs.getFloat("eqMin", 2.5f);
   quakeRadius = prefs.getInt("eqRad", 0);
   quakeDesk = prefs.getBool("eqDesk", true);
-  if (prefs.getBytesLength("eqWk") == sizeof(quakeWk)) prefs.getBytes("eqWk", quakeWk, sizeof(quakeWk));
+  if (prefs.isKey("eqWk")) prefs.remove("eqWk");  // 1.4.0's weekly history is no longer kept
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
     int nl = fv.indexOf('\n', i);
@@ -2508,11 +2467,6 @@ bool showQuakeDesk() { return quakeDesk; }
 
 // A new filter makes the old numbers meaningless: clear them and refetch
 static void quakeSettingsChanged() {  // caller holds mtx
-  // Weekly counts were made with the old filter: start the history over
-  for (auto &w : quakeWk) w = QuakeWeek();
-  prefs.begin("wx", false);
-  prefs.remove("eqWk");
-  prefs.end();
   quakeList.clear();
   quakeSum = QuakeSummary();
   quakeErr = "";
@@ -2559,18 +2513,6 @@ void quakeKeepAlive() { quakeWantedMs = millis(); }
 
 uint32_t quakeVersion() { return quakeVer; }
 
-void quakeWeeks(QuakeWeek out[QUAKE_WEEKS]) {
-  std::lock_guard<std::mutex> lock(mtx);
-  memcpy(out, quakeWk, sizeof(quakeWk));
-}
-
-int quakeWeeksLoaded() {
-  std::lock_guard<std::mutex> lock(mtx);
-  int n = 0;
-  for (size_t i = 1; i < QUAKE_WEEKS; i++)
-    if (quakeWk[i].count >= 0) n++;
-  return n;
-}
 
 String quakeStatus() {
   std::lock_guard<std::mutex> lock(mtx);

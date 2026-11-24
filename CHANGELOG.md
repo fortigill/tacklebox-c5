@@ -3,6 +3,20 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.4.1] - 2026-11-24
+
+### Changed
+- Earthquakes, simplified:
+  - **Today** (since local midnight) and **yesterday's total** (midnight to midnight). Below
+    them: how today compares so far ("Today so far: 40% of yesterday's total", or "Today
+    already has 5 more than yesterday").
+  - Every quake from the last 24 hours, newest first. The C5 lists up to 200, the classic
+    CYD 30, with the full count in the heading.
+  - Removed 1.4.0's weekly counts, streaks, 52-week chart and weekly history page. Their
+    saved data is erased from flash on the first boot.
+  - Yesterday's total is recounted every 10 minutes (one small request), since USGS keeps
+    adding late-reviewed quakes for about a day.
+
 ## [1.4.0] - 2026-11-24
 
 ### Changed

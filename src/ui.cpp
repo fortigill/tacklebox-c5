@@ -32,7 +32,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, QuakeWeeks
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail
 };
 
 const int HEADER_H = 40;
@@ -94,8 +94,7 @@ int deskNflKey = -1;
 lv_obj_t *deskQuake = nullptr, *deskQuakeTop = nullptr, *deskQuakeDetail = nullptr;
 int deskQuakeKey = -1;
 lv_obj_t *eqSummary = nullptr, *eqBig = nullptr, *eqStatus = nullptr, *eqBox = nullptr, *eqHeading = nullptr;
-lv_obj_t *eqWeek = nullptr, *eqTrend = nullptr, *eqChart = nullptr, *eqChartCap = nullptr;
-lv_chart_series_t *eqSer = nullptr;
+lv_obj_t *eqDay = nullptr;     // today vs yesterday
 int eqKey = -1;                // data version + minute the page was built for
 std::vector<weather::Quake> eqRows;
 weather::Quake eqDetail;
@@ -248,7 +247,6 @@ void showNfl();
 void showNflTeam();
 void showQuakes();
 void showQuakeDetail();
-void showQuakeWeeks();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
 String nflScoreText(const weather::Game &g) {
@@ -361,8 +359,7 @@ void resetPtrs() {
   deskQuake = deskQuakeTop = deskQuakeDetail = nullptr;
   deskQuakeKey = -1;
   eqSummary = eqBig = eqStatus = eqBox = eqHeading = nullptr;
-  eqWeek = eqTrend = eqChart = eqChartCap = nullptr;
-  eqSer = nullptr;
+  eqDay = nullptr;
   eqKey = -1;
   nfScore = nfTeams = nfDetail = nfStatus = nfGames = nullptr;
   nfVer = 0;
@@ -3719,7 +3716,7 @@ void showNflTeam() {
 const float EQ_MAGS[] = {1.0f, 2.5f, 4.5f, 6.0f};
 const int EQ_RADII[] = {0, 1600, 800, 400, 160};  // km: worldwide, ~1000/500/250/100 mi
 #if defined(BOARD_NM_CYD_C5)
-const size_t EQ_MAX_ROWS = 80;
+const size_t EQ_MAX_ROWS = 200;  // every stored quake of the last 24 h
 #else
 const size_t EQ_MAX_ROWS = 30;
 #endif
@@ -3731,48 +3728,6 @@ void onQuakeRow(lv_event_t *e) {
   showQuakeDetail();
 }
 
-// Week-over-week numbers from the saved weekly counts
-struct QuakeTrend {
-  bool haveLast = false, havePrev = false;
-  long last = 0, prev = 0, diff = 0;
-  float pct = 0;
-  int dir = 0;     // last week vs the week before: 1 up, -1 down, 0 same
-  int streak = 0;  // weeks in a row moving in that direction, ending last week
-};
-
-QuakeTrend quakeTrend(const weather::QuakeWeek *w) {
-  QuakeTrend t;
-  auto dirAt = [&](size_t i) -> int {  // week i vs week i+1; 2 = unknown
-    if (i + 1 >= weather::QUAKE_WEEKS || w[i].count < 0 || w[i + 1].count < 0) return 2;
-    return w[i].count > w[i + 1].count ? 1 : w[i].count < w[i + 1].count ? -1 : 0;
-  };
-  if (w[1].count >= 0) {
-    t.haveLast = true;
-    t.last = w[1].count;
-  }
-  if (w[2].count >= 0) {
-    t.havePrev = true;
-    t.prev = w[2].count;
-  }
-  if (t.haveLast && t.havePrev) {
-    t.diff = t.last - t.prev;
-    t.pct = t.prev ? 100.0f * t.diff / t.prev : 0;
-    t.dir = dirAt(1);
-    if (t.dir != 0)
-      for (size_t i = 1; dirAt(i) == t.dir; i++) t.streak++;
-  }
-  return t;
-}
-
-String weekLabel(uint32_t start) {
-  time_t t = start;
-  struct tm lt;
-  localtime_r(&t, &lt);
-  char b[12];
-  strftime(b, sizeof(b), "%b %d", &lt);
-  return b;
-}
-
 void refreshQuakeScreen() {
   if (!eqStatus) return;
   weather::quakeKeepAlive();
@@ -3782,39 +3737,29 @@ void refreshQuakeScreen() {
   eqKey = key;
 
   weather::QuakeSummary qs = weather::quakeSummary();
-  weather::QuakeWeek wk[weather::QUAKE_WEEKS];
-  weather::quakeWeeks(wk);
   char m[12];
   snprintf(m, sizeof(m), "M%.1f+", weather::quakeMinMag());
   String filt = String(m) + ", " + quakeAreaText(weather::quakeRadiusKm());
   char b[160];
-  if (qs.valid) snprintf(b, sizeof(b), "Today: %d    24 h: %d\n%s", qs.today, qs.h24, filt.c_str());
-  else snprintf(b, sizeof(b), "Today: --    24 h: --\n%s", filt.c_str());
+  if (qs.valid) snprintf(b, sizeof(b), "Today: %d so far\n%s", qs.today, filt.c_str());
+  else snprintf(b, sizeof(b), "Today: --\n%s", filt.c_str());
   setText(eqSummary, b);
 
-  // This week, last week vs the week before, and the streak
-  if (wk[0].count >= 0) snprintf(b, sizeof(b), "This week: %ld (since Mon %s)", (long)wk[0].count, weekLabel(wk[0].start).c_str());
-  else snprintf(b, sizeof(b), "This week: --");
-  setText(eqWeek, b);
-  QuakeTrend t = quakeTrend(wk);
-  String tr;
-  lv_color_t tcol = theme::text();
-  if (!t.haveLast) {
-    tr = "Last week: counting...";
-  } else if (!t.havePrev) {
-    tr = String("Last week: ") + t.last;
+  // Yesterday's total, and how today compares so far
+  String d;
+  if (!qs.valid || qs.yesterday < 0) {
+    d = qs.valid ? "Yesterday: counting..." : "Yesterday: --";
   } else {
-    snprintf(b, sizeof(b), "Last week: %ld, %s %ld (%+.1f%%) from %ld", t.last,
-             t.dir > 0 ? LV_SYMBOL_UP " up" : t.dir < 0 ? LV_SYMBOL_DOWN " down" : "same,", labs(t.diff), t.pct, t.prev);
-    tr = b;
-    if (t.streak >= 2)
-      tr += String("\n") + (t.dir > 0 ? "Up" : "Down") + " trend: " + t.streak + " weeks in a row";
-    else if (t.dir != 0)
-      tr += String("\nFirst week ") + (t.dir > 0 ? "up" : "down") + " after " + (t.dir > 0 ? "a drop" : "a rise");
-    tcol = t.dir > 0 ? lv_palette_main(LV_PALETTE_AMBER) : t.dir < 0 ? lv_palette_main(LV_PALETTE_GREEN) : theme::text();
+    d = String("Yesterday: ") + qs.yesterday;
+    long diff = (long)qs.today - qs.yesterday;
+    if (qs.yesterday > 0 && diff > 0)
+      d += String("\nToday already has ") + diff + " more than yesterday";
+    else if (qs.yesterday > 0) {
+      int pct = (int)lroundf(100.0f * qs.today / qs.yesterday);
+      d += String("\nToday so far: ") + pct + "% of yesterday's total";
+    }
   }
-  setText(eqTrend, tr.c_str());
-  lv_obj_set_style_text_color(eqTrend, tcol, 0);
+  setText(eqDay, d.c_str());
 
   if (qs.valid && qs.haveBiggest) {
     snprintf(m, sizeof(m), "M%.1f", qs.biggest24.mag);
@@ -3826,38 +3771,13 @@ void refreshQuakeScreen() {
     lv_obj_set_style_text_color(eqBig, theme::text(), 0);
   }
 
-  // 52-week chart, oldest on the left
-  if (eqChart && eqSer) {
-    long mx = 1, sum = 0, hi = -1, lo = -1;
-    int n = 0;
-    for (size_t i = 1; i < weather::QUAKE_WEEKS; i++) {
-      long c = wk[i].count;
-      if (c < 0) continue;
-      mx = std::max(mx, c);
-      sum += c;
-      n++;
-      if (hi < 0 || c > hi) hi = c;
-      if (lo < 0 || c < lo) lo = c;
-    }
-    lv_chart_set_range(eqChart, LV_CHART_AXIS_PRIMARY_Y, 0, (lv_coord_t)std::min(mx, 32000L));
-    for (size_t i = 1; i < weather::QUAKE_WEEKS; i++) {
-      long c = wk[i].count;
-      lv_chart_set_value_by_id(eqChart, eqSer, (uint16_t)(weather::QUAKE_WEEKS - 1 - i),
-                               c < 0 ? LV_CHART_POINT_NONE : (lv_coord_t)std::min(c, 32000L));
-    }
-    lv_chart_refresh(eqChart);
-    if (n) snprintf(b, sizeof(b), "52 weeks: avg %ld, high %ld, low %ld (%d of 52 loaded)", sum / n, hi, lo, n);
-    else snprintf(b, sizeof(b), "52 weeks: loading weekly counts...");
-    setText(eqChartCap, b);
-  }
-
   // The last 24 h, newest first
   time_t now = time(nullptr);
   eqRows = weather::quakes(0, EQ_MAX_ROWS);
   if (qs.valid && (int)eqRows.size() < qs.h24)
     snprintf(b, sizeof(b), "Last 24 h: newest %u of %d", (unsigned)eqRows.size(), qs.h24);
   else
-    snprintf(b, sizeof(b), "Last 24 h, newest first");
+    snprintf(b, sizeof(b), qs.valid ? "Last 24 h: %d quakes, newest first" : "Last 24 h", qs.h24);
   setText(eqHeading, b);
 
   lv_obj_clean(eqBox);
@@ -3923,33 +3843,15 @@ void showQuakes() {
     return l;
   };
   eqSummary = wrapLabel(card, &lv_font_montserrat_20);
-  eqWeek = wrapLabel(card, &lv_font_montserrat_20);
-  eqTrend = wrapLabel(card, nullptr);
+  eqDay = wrapLabel(card, nullptr);
   eqBig = wrapLabel(card, nullptr);
-
-  // 52 weekly counts as bars, oldest on the left
-  eqChart = lv_chart_create(card);
-  lv_obj_set_size(eqChart, LV_PCT(100), 70);
-  lv_chart_set_type(eqChart, LV_CHART_TYPE_BAR);
-  lv_chart_set_point_count(eqChart, weather::QUAKE_WEEKS - 1);
-  lv_chart_set_div_line_count(eqChart, 3, 0);
-  lv_obj_set_style_pad_all(eqChart, 4, 0);
-  lv_obj_set_style_pad_column(eqChart, 1, 0);  // gap between weeks
-  eqSer = lv_chart_add_series(eqChart, theme::accent(), LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_all_value(eqChart, eqSer, LV_CHART_POINT_NONE);
-  lv_obj_clear_flag(eqChart, LV_OBJ_FLAG_CLICKABLE);
-  eqChartCap = wrapLabel(card, &lv_font_montserrat_14);
-  lv_obj_set_style_text_opa(eqChartCap, LV_OPA_80, 0);
   eqStatus = wrapLabel(card, nullptr);
   lv_obj_set_style_text_opa(eqStatus, LV_OPA_70, 0);
-
-  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_LIST, "Weekly history (52 weeks)");
-  lv_obj_add_event_cb(b, [](lv_event_t *) { showQuakeWeeks(); }, LV_EVENT_CLICKED, nullptr);
 
   lv_list_add_text(list, "Settings");
   char t[48];
   snprintf(t, sizeof(t), "Minimum magnitude: %.1f", weather::quakeMinMag());
-  b = lv_list_add_btn(list, LV_SYMBOL_EDIT, t);
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, t);
   lv_obj_add_event_cb(
       b,
       [](lv_event_t *) {
@@ -3997,7 +3899,6 @@ void showQuakes() {
         weather::refreshQuake();
       },
       LV_EVENT_CLICKED, nullptr);
-  lv_list_add_text(list, "Changing a setting restarts the weekly history");
   lv_list_add_text(list, "Area uses your Weather ZIP - data: USGS");
 
   eqHeading = lv_list_add_text(list, "");
@@ -4015,52 +3916,6 @@ void showQuakes() {
   if (!qs.valid || millis() - qs.fetchedMs > 10UL * 60 * 1000) weather::refreshQuake();
   eqKey = -1;
   refreshQuakeScreen();
-}
-
-// Every saved week, newest first, with the change from the week before
-void showQuakeWeeks() {
-  lv_obj_t *scr = newScreen();
-  makeHeader(scr, "Weekly quakes", [](lv_event_t *) { showQuakes(); });
-  lv_obj_t *body = makeBody(scr, HEADER_H);
-  lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
-  weather::QuakeWeek wk[weather::QUAKE_WEEKS];
-  weather::quakeWeeks(wk);
-  char m[12];
-  snprintf(m, sizeof(m), "M%.1f+", weather::quakeMinMag());
-  lv_obj_t *hdr = bodyLabel(body);
-  String h = String(m) + ", " + quakeAreaText(weather::quakeRadiusKm()) + ". Weeks run Monday to Sunday.";
-  QuakeTrend t = quakeTrend(wk);
-  if (t.streak >= 2) h += String("\n") + (t.dir > 0 ? "Up" : "Down") + " trend: " + t.streak + " weeks in a row";
-  lv_label_set_text(hdr, h.c_str());
-  lv_obj_set_style_text_opa(hdr, LV_OPA_80, 0);
-
-  // One recolored label instead of 53 widgets (RAM on the classic board)
-  String txt;
-  txt.reserve(53 * 48);
-  for (size_t i = 0; i < weather::QUAKE_WEEKS; i++) {
-    const auto &w = wk[i];
-    if (!w.start) continue;
-    String line = (i == 0 ? String("This week") : String("Week of ") + weekLabel(w.start)) + ": ";
-    if (w.count < 0) {
-      line += "loading...";
-    } else {
-      line += String(w.count) + (i == 0 ? " so far" : "");
-      if (i > 0 && i + 1 < weather::QUAKE_WEEKS && wk[i + 1].count >= 0) {
-        long d = w.count - wk[i + 1].count;
-        char b[40];
-        if (d == 0) snprintf(b, sizeof(b), "  same");
-        else
-          snprintf(b, sizeof(b), "  %s %+ld (%+.1f%%)#", d > 0 ? "#ffa000" : "#43a047", d,
-                   wk[i + 1].count ? 100.0f * d / wk[i + 1].count : 0.0f);
-        line += b;
-      }
-    }
-    txt += line + "\n";
-  }
-  lv_obj_t *l = bodyLabel(body);
-  lv_label_set_recolor(l, true);
-  lv_label_set_text(l, txt.c_str());
-  load(scr, Screen::QuakeWeeks);
 }
 
 void showQuakeDetail() {

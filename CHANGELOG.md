@@ -3,6 +3,15 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.5.2] - 2026-11-24
+
+### Changed
+- Volcano desktop bubble: a small volcano icon (cone and ash plume) replaces the word, and
+  the text is shorter: "2 US elevated" / "No US alerts". It no longer runs off the screen.
+  The icon takes the color of the most serious U.S. volcano (yellow / orange / red), or the
+  normal text color when none is elevated.
+- New icon `ui_volcano` in tools/gen_ui_icons.py.
+
 ## [1.5.1] - 2026-11-24
 
 ### Fixed (NM-CYD-C5)

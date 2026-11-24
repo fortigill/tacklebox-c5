@@ -100,7 +100,7 @@ BigVec<weather::Quake> eqRows;
 weather::Quake eqDetail;
 Screen quakeBack = Screen::Menu;
 // Volcanoes: desktop bubble, page, detail and level-change pop-ups
-lv_obj_t *deskVolc = nullptr, *deskVolcTop = nullptr, *deskVolcDetail = nullptr;
+lv_obj_t *deskVolc = nullptr, *deskVolcTop = nullptr, *deskVolcDetail = nullptr, *deskVolcImg = nullptr;
 int deskVolcKey = -1;
 lv_obj_t *vcSummary = nullptr, *vcStatus = nullptr, *vcUsBox = nullptr, *vcWorldBox = nullptr, *vcWorldHdr = nullptr;
 int vcKey = -1;
@@ -383,7 +383,7 @@ void resetPtrs() {
   deskQuake = deskQuakeTop = deskQuakeDetail = nullptr;
   deskQuakeKey = -1;
   eqSummary = eqBig = eqStatus = eqBox = eqHeading = nullptr;
-  deskVolc = deskVolcTop = deskVolcDetail = nullptr;
+  deskVolc = deskVolcTop = deskVolcDetail = deskVolcImg = nullptr;
   deskVolcKey = -1;
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
   vcKey = -1;
@@ -827,8 +827,9 @@ void refreshDesktop() {
     char top[40];
     String detail;
     lv_color_t tcol = theme::text();
-    if (us.empty()) snprintf(top, sizeof(top), "No US volcano alerts");
-    else snprintf(top, sizeof(top), "%u US volcano%s elevated", (unsigned)us.size(), us.size() == 1 ? "" : "es");
+    // Short: the volcano icon in front says what it is
+    if (us.empty()) snprintf(top, sizeof(top), "No US alerts");
+    else snprintf(top, sizeof(top), "%u US elevated", (unsigned)us.size());
     if (!us.empty()) {
       detail = String(us[0].name) + " " + us[0].color + "/" + us[0].alert;
       if (weather::colorRank(us[0].color) >= 3) tcol = volcColor(us[0].color);  // orange or red stands out
@@ -836,6 +837,7 @@ void refreshDesktop() {
     if (world) detail += (detail.length() ? ", " : "") + String(world) + " active worldwide";
     setText(deskVolcTop, top);
     lv_obj_set_style_text_color(deskVolcTop, tcol, 0);
+    lv_obj_set_style_img_recolor(deskVolcImg, us.empty() ? theme::text() : volcColor(us[0].color), 0);
     setText(deskVolcDetail, detail.c_str());
     setHidden(deskVolcDetail, detail.isEmpty());
   }
@@ -1291,8 +1293,13 @@ void showDesktop() {
   lv_obj_set_style_pad_column(vline, 6, 0);
   lv_obj_clear_flag(vline, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(vline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskVolcImg = lv_img_create(vline);  // icon instead of the word "Volcanoes"
+  lv_img_set_src(deskVolcImg, &ui_volcano);
+  lv_obj_set_style_img_recolor_opa(deskVolcImg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(deskVolcImg, theme::text(), 0);
+  lv_obj_clear_flag(deskVolcImg, LV_OBJ_FLAG_CLICKABLE);
   deskVolcTop = lv_label_create(vline);
-  lv_label_set_text(deskVolcTop, "Volcanoes: --");
+  lv_label_set_text(deskVolcTop, "--");
   chevron(vline);
   deskVolcDetail = lv_label_create(deskVolc);
   lv_obj_set_style_text_font(deskVolcDetail, &lv_font_montserrat_14, 0);

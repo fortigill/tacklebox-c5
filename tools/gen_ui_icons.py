@@ -47,7 +47,18 @@ def wave(n):
     return img
 
 
-ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16)]
+def volcano(n):
+    """Volcano cone with a crater notch and a puffy ash plume above it."""
+    img = Image.new("L", (n, n), 0)
+    d = ImageDraw.Draw(img)
+    d.polygon([(n * 0.04, n * 0.96), (n * 0.36, n * 0.46), (n * 0.43, n * 0.52), (n * 0.50, n * 0.47),
+               (n * 0.57, n * 0.52), (n * 0.64, n * 0.46), (n * 0.96, n * 0.96)], fill=255)
+    for cx, cy, r in ((0.50, 0.33, 0.085), (0.38, 0.22, 0.095), (0.60, 0.17, 0.11), (0.47, 0.09, 0.075)):
+        d.ellipse([n * (cx - r), n * (cy - r), n * (cx + r), n * (cy + r)], fill=255)
+    return img
+
+
+ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22)]
 
 
 def to_alpha4(img):

@@ -3,6 +3,34 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.5.0] - 2026-11-24
+
+### Added
+- **Volcanoes** (menu, a desktop widget and pop-ups).
+  - **U.S. volcanoes above normal**, from the USGS Volcano Hazards Program's Hazard
+    Notification System (HANS), checked every 15 minutes.
+    - Each one shows its aviation color code and volcano alert level (e.g. ORANGE / WATCH),
+      color-coded yellow / orange / red, plus the observatory and how long ago the latest
+      notice came out.
+    - Tap one for the details and the notice's synopsis.
+    - Most serious first.
+  - **Worldwide this week**, from the Smithsonian / USGS Weekly Volcanic Activity Report
+    (RSS), checked every 6 hours since it's published once a week.
+    - Each volcano shows its country, whether it's new activity this week or continuing, and
+      its distance from your ZIP code.
+    - Tap one for that week's report text: about 400 characters on the C5, 100 on the
+      classic CYD.
+  - **Pop-ups** when a U.S. volcano's level is raised or lowered, joins the elevated list, or
+    returns to normal ("View" opens the page). The first check after startup only records
+    the levels, so a reboot doesn't pop up everything that's already elevated.
+  - **Desktop bubble:** "N US volcanoes elevated" (in orange or red when one is at that
+    color), then the most serious one and the number active worldwide.
+  - Settings (at the top of the page): show on desktop, pop-ups on level changes, refresh.
+  - The weekly report is read with a small streaming tag scanner (CDATA, escaped HTML and
+    entities are handled), so it never has to fit in RAM.
+- The HTTPS download code is shared by earthquakes and volcanoes, and each source remembers
+  whether it redirects to HTTPS so later checks go straight there.
+
 ## [1.4.1] - 2026-11-24
 
 ### Changed

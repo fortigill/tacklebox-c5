@@ -5,6 +5,8 @@
 
 #include <vector>
 
+#include "board.h"
+
 // Weather from Open-Meteo (free, no API key). The ZIP code is resolved to
 // coordinates once (Zippopotam.us, falling back to Open-Meteo geocoding) and
 // cached. Fetches run in a short-lived background task so the UI never blocks.
@@ -209,6 +211,46 @@ void quakeKeepAlive();                // the quake page is open: keep polling ev
 uint32_t quakeVersion();
 String quakeStatus();
 bool quakeDistanceKm(const Quake &q, float &km);  // from the ZIP code; false without one
+
+// ---- Volcanoes ----
+// U.S. volcanoes at an elevated alert level (USGS Volcano Hazards Program,
+// HANS API), checked every 15 min, and the worldwide Smithsonian / USGS
+// Weekly Volcanic Activity Report (RSS), checked every 6 hours.
+struct Volcano {           // one elevated U.S. volcano
+  char name[32] = "";
+  char vnum[8] = "";       // Smithsonian volcano number
+  char alert[12] = "";     // NORMAL / ADVISORY / WATCH / WARNING
+  char color[12] = "";     // GREEN / YELLOW / ORANGE / RED
+  char obs[40] = "";       // e.g. "Alaska Volcano Observatory"
+  uint32_t sent = 0;       // latest notice, epoch UTC
+  char synopsis[200] = ""; // short notice summary, when USGS gives one
+};
+struct Eruption {          // one volcano in the weekly worldwide report
+  char name[32] = "";
+  char country[28] = "";
+  bool isNew = false;      // new activity this week (vs. continuing)
+  float lat = NAN, lon = NAN;
+#if defined(BOARD_NM_CYD_C5)
+  char summary[420] = "";
+#else
+  char summary[100] = "";  // RAM is tight on the classic board
+#endif
+};
+std::vector<Volcano> usVolcanoes();     // most serious first
+std::vector<Eruption> eruptions();      // in report order
+String eruptionWeek();                  // "19 November-25 November 2025", "" if unknown
+int colorRank(const char *color);       // RED 4, ORANGE 3, YELLOW 2, GREEN 1, else 0
+bool showVolcanoDesk();
+void setShowVolcanoDesk(bool on);
+bool volcanoPopups();                   // pop up when a U.S. alert level changes
+void setVolcanoPopups(bool on);
+bool nextVolcanoPopup(String &title, String &msg);  // each change is handed out once
+void refreshVolcano();
+void volcanoKeepAlive();                // the page is open: keep polling with the widget off
+uint32_t volcanoVersion();
+String volcanoStatus();                 // U.S. part
+String eruptionStatus();                // worldwide part
+bool volcanoDistanceKm(float vlat, float vlon, float &km);  // from the ZIP code
 
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);

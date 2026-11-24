@@ -70,6 +70,21 @@ const uint32_t QUAKE_BOOT_DELAY_MS = 90000;
 const uint32_t QUAKE_WANTED_MS = 15UL * 60 * 1000;  // keep polling this long after the page was open
 const uint32_t QUAKE_WINDOW_S = 24UL * 3600;  // the list covers the last 24 h
 const char *QUAKE_HOST = "earthquake.usgs.gov/fdsnws/event/1/";
+// Volcanoes: USGS HANS (U.S. alert levels) + Smithsonian weekly report (world)
+const uint32_t VOLC_REFRESH_MS = 15UL * 60 * 1000;
+const uint32_t VOLC_RETRY_MS = 5UL * 60 * 1000;
+const uint32_t VOLC_BOOT_DELAY_MS = 105000;
+const uint32_t ERUPT_REFRESH_MS = 6UL * 3600 * 1000;  // the report changes once a week
+const uint32_t ERUPT_RETRY_MS = 30UL * 60 * 1000;
+const char *VOLC_ELEVATED = "volcanoes.usgs.gov/hans-public/api/volcano/getElevatedVolcanoes";
+const char *VOLC_CAP = "volcanoes.usgs.gov/hans-public/api/volcano/getCapElevated";  // adds a synopsis
+const char *ERUPT_RSS = "volcano.si.edu/news/WeeklyVolcanoRSS.xml";
+const size_t VOLC_MAX = 16;
+#if defined(BOARD_NM_CYD_C5)
+const size_t ERUPT_MAX = 40;
+#else
+const size_t ERUPT_MAX = 20;
+#endif
 
 #if defined(BOARD_NM_CYD_C5)
 const size_t QUAKE_KEEP = 200;  // plenty of RAM (a busy M1.0+ day can pass this)
@@ -140,6 +155,21 @@ uint32_t quakeVer = 0;
 uint32_t quakeWantedMs = 0;
 bool quakeTls = false;           // USGS redirected plain HTTP to HTTPS: go straight there next time
 
+// Volcanoes (guarded by mtx)
+std::vector<Volcano> volcList;
+std::vector<Eruption> eruptList;
+String eruptWeek;
+bool volcDesk = true, volcPop = true;
+String volcErr, eruptErr;
+uint32_t volcFetchedMs = 0, eruptFetchedMs = 0;
+bool eruptAttempted = false, eruptLastOk = false;
+uint32_t eruptLastAttempt = 0;
+uint32_t volcVer = 0;
+uint32_t volcWantedMs = 0;
+bool volcBaseline = false;            // first U.S. list this boot: no pop-ups for it
+std::vector<String> volcPopQueue;     // "title\nmessage"
+bool volcTls = false, eruptTls = false;
+
 // Scheduling (main task only)
 uint32_t lastAttempt = 0;
 bool attempted = false;
@@ -161,6 +191,10 @@ uint32_t nfLastAttempt = 0;
 bool nfAttempted = false;
 bool nfLastOk = false;
 bool nfForce = false;
+uint32_t vcLastAttempt = 0;
+bool vcAttempted = false;
+bool vcLastOk = false;
+bool vcForce = false;
 uint32_t qkLastAttempt = 0;
 bool qkAttempted = false;
 bool qkLastOk = false;
@@ -171,7 +205,7 @@ struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32 };
+enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -1206,8 +1240,8 @@ struct QuakeParse {
 // redirects to HTTPS, every later request goes straight there. onBody gets
 // the body stream on 200. Returns the HTTP code (204 = no events).
 template <typename F>
-int usgsGet(const String &pathQuery, F onBody, String &why) {
-  for (int secure = quakeTls ? 1 : 0; secure < 2; secure++) {
+int streamGet(const String &hostPath, bool &useTls, F onBody, String &why) {
+  for (int secure = useTls ? 1 : 0; secure < 2; secure++) {
     std::unique_ptr<TlsGuard> guard;
     if (secure) {
       if (!tlsFits(why)) return -1;
@@ -1222,15 +1256,15 @@ int usgsGet(const String &pathQuery, F onBody, String &why) {
     bool ok;
     if (secure) {
       tls.setInsecure();  // public, read-only data
-      ok = http.begin(tls, String("https://") + QUAKE_HOST + pathQuery);
+      ok = http.begin(tls, "https://" + hostPath);
     } else {
-      ok = http.begin(plain, String("http://") + QUAKE_HOST + pathQuery);
+      ok = http.begin(plain, "http://" + hostPath);
     }
     if (!ok) {
       why = "bad URL";
       return -1;
     }
-    http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal earthquake widget)");
+    http.setUserAgent(PRODUCT_UA " (ESP32 touch display; personal hazard widget)");
     const char *hdrs[] = {"Transfer-Encoding"};
     http.collectHeaders(hdrs, 1);
     int code = http.GET();
@@ -1249,10 +1283,15 @@ int usgsGet(const String &pathQuery, F onBody, String &why) {
       return code;
     }
     why = code < 0 ? http.errorToString(code) : String("HTTP ") + code;
-    if (!secure && (code == 301 || code == 302 || code == 307 || code == 308)) quakeTls = true;
+    if (!secure && (code == 301 || code == 302 || code == 307 || code == 308)) useTls = true;
     // a redirect to HTTPS (or plain HTTP refused): try again over TLS
   }
   return -1;
+}
+
+template <typename F>
+int usgsGet(const String &pathQuery, F onBody, String &why) {
+  return streamGet(String(QUAKE_HOST) + pathQuery, quakeTls, onBody, why);
 }
 
 String usgsTime(time_t t) {
@@ -1352,6 +1391,316 @@ bool fetchQuakes(float minMag, int radiusKm, float la, float lo, std::vector<Qua
   qp.sum.valid = true;
   qp.sum.stored = (int)list.size();
   sum = qp.sum;
+  return true;
+}
+
+// ---------- Volcanoes ----------
+// U.S.: getElevatedVolcanoes returns a JSON array, one element per elevated
+// volcano: volcano_name, vnum, sent_unixtime, alert_level, color_code,
+// obs_fullname, notice_url... getCapElevated adds a one-line synopsis for the
+// ones that have a current CAP alert; it is merged in by volcano number.
+
+int colorRankOf(const char *c) {
+  if (!strcasecmp(c, "RED")) return 4;
+  if (!strcasecmp(c, "ORANGE")) return 3;
+  if (!strcasecmp(c, "YELLOW")) return 2;
+  if (!strcasecmp(c, "GREEN")) return 1;
+  return 0;
+}
+int alertRankOf(const char *a) {
+  if (!strcasecmp(a, "WARNING")) return 4;
+  if (!strcasecmp(a, "WATCH")) return 3;
+  if (!strcasecmp(a, "ADVISORY")) return 2;
+  if (!strcasecmp(a, "NORMAL")) return 1;
+  return 0;
+}
+
+// Drops anything outside printable ASCII (the built-in fonts have nothing else)
+void asciiCopy(char *dst, size_t n, const char *src) {
+  size_t k = 0;
+  for (const char *p = src ? src : ""; *p && k < n - 1; p++) {
+    unsigned char c = (unsigned char)*p;
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    if (c >= 32 && c < 127) dst[k++] = (char)c;
+  }
+  dst[k] = 0;
+}
+
+bool fetchUsVolcanoes(std::vector<Volcano> &out, String &why) {
+  JsonDocument filter;
+  for (const char *k : {"volcano_name", "vnum", "sent_unixtime", "alert_level", "color_code", "obs_fullname"})
+    filter[0][k] = true;
+  bool parsed = false;
+  int code = streamGet(
+      VOLC_ELEVATED, volcTls,
+      [&](Stream &body) {
+        JsonDocument doc;
+        DeserializationError e = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+        if (e) {
+          why = String("bad USGS data: ") + e.c_str();
+          return;
+        }
+        for (JsonObject v : doc.as<JsonArray>()) {
+          Volcano x;
+          asciiCopy(x.name, sizeof(x.name), v["volcano_name"] | "");
+          asciiCopy(x.vnum, sizeof(x.vnum), v["vnum"] | "");
+          asciiCopy(x.alert, sizeof(x.alert), v["alert_level"] | "");
+          asciiCopy(x.color, sizeof(x.color), v["color_code"] | "");
+          asciiCopy(x.obs, sizeof(x.obs), v["obs_fullname"] | "");
+          x.sent = v["sent_unixtime"].is<const char *>() ? (uint32_t)atol(v["sent_unixtime"].as<const char *>())
+                                                          : v["sent_unixtime"].as<uint32_t>();
+          if (!x.name[0]) continue;
+          // One entry per volcano: keep its newest notice
+          auto it = std::find_if(out.begin(), out.end(), [&](const Volcano &o) { return !strcmp(o.vnum, x.vnum); });
+          if (it == out.end()) {
+            if (out.size() < VOLC_MAX) out.push_back(x);
+          } else if (x.sent > it->sent) {
+            *it = x;
+          }
+        }
+        parsed = true;
+      },
+      why);
+  if (code == 204) return true;
+  if (code != 200 || !parsed) {
+    if (why.isEmpty()) why = "no reply from USGS";
+    return false;
+  }
+  // Synopses (best effort; the list above is what matters)
+  JsonDocument f2;
+  for (const char *k : {"vnum", "synopsis"}) f2[0][k] = true;
+  String w2;
+  streamGet(
+      VOLC_CAP, volcTls,
+      [&](Stream &body) {
+        JsonDocument doc;
+        if (deserializeJson(doc, body, DeserializationOption::Filter(f2))) return;
+        for (JsonObject v : doc.as<JsonArray>()) {
+          const char *vn = v["vnum"] | "";
+          for (auto &x : out)
+            if (!strcmp(x.vnum, vn)) asciiCopy(x.synopsis, sizeof(x.synopsis), v["synopsis"] | "");
+        }
+      },
+      w2);
+  std::sort(out.begin(), out.end(), [](const Volcano &a, const Volcano &b) {
+    int ra = colorRankOf(a.color) * 10 + alertRankOf(a.alert), rb = colorRankOf(b.color) * 10 + alertRankOf(b.alert);
+    if (ra != rb) return ra > rb;
+    return strcmp(a.name, b.name) < 0;
+  });
+  why = "";
+  return true;
+}
+
+// Worldwide: the Smithsonian / USGS Weekly Volcanic Activity Report RSS. Each
+// <item> has a <title> like "Etna (Italy) - Report for 19 November-25
+// November 2025 - New Activity/Unrest", a <description> with the report text
+// (often HTML-escaped), and a <georss:point>. A small tag scanner reads it
+// straight off the connection; only the first ~600 characters of each
+// description are kept.
+struct RssScan {
+  enum Field { NONE, TITLE, DESC, POINT };
+  std::vector<Eruption> *out = nullptr;
+  String week;
+  bool inItem = false, inTag = false, inCdata = false;
+  Field field = NONE;
+  char tag[24];
+  size_t tagLen = 0;
+  char buf[640];
+  size_t bufLen = 0;
+  Eruption cur;
+  char title[160];
+  int items = 0;
+  char cdEnd[3] = {0, 0, 0};
+
+  void putText(char c) {
+    if (field != NONE && bufLen < sizeof(buf) - 1) buf[bufLen++] = c;
+  }
+  void beginField(Field f) {
+    field = f;
+    bufLen = 0;
+  }
+  void endField() {
+    buf[bufLen] = 0;
+    if (field == TITLE) strncpy(title, buf, sizeof(title) - 1), title[sizeof(title) - 1] = 0;
+    else if (field == DESC) cleanText(buf, cur.summary, sizeof(cur.summary));
+    else if (field == POINT) sscanf(buf, "%f %f", &cur.lat, &cur.lon);
+    field = NONE;
+  }
+  // Decodes entities, strips HTML tags and squeezes whitespace
+  static void cleanText(char *s, char *dst, size_t n) {
+    // entities -> characters (in place; the result is never longer). Twice,
+    // for feeds that escape the HTML and then the entities in it ("&amp;amp;")
+    for (int pass = 0; pass < 2; pass++) {
+    char *w = s;
+    for (char *r = s; *r;) {
+      if (*r == '&') {
+        const char *ents[] = {"&lt;", "&gt;", "&amp;", "&quot;", "&#39;", "&apos;", "&nbsp;"};
+        const char repl[] = {'<', '>', '&', '"', '\'', '\'', ' '};
+        bool done = false;
+        for (size_t i = 0; i < sizeof(repl); i++) {
+          size_t L = strlen(ents[i]);
+          if (!strncmp(r, ents[i], L)) {
+            *w++ = repl[i];
+            r += L;
+            done = true;
+            break;
+          }
+        }
+        if (!done && r[1] == '#') {  // numeric: skip it (not in our fonts)
+          char *semi = strchr(r, ';');
+          if (semi && semi - r < 10) {
+            r = semi + 1;
+            continue;
+          }
+        }
+        if (!done) *w++ = *r++;
+      } else {
+        *w++ = *r++;
+      }
+    }
+    *w = 0;
+    }
+    size_t k = 0;
+    bool inHtml = false, space = true;
+    for (char *r = s; *r && k < n - 1; r++) {
+      unsigned char c = (unsigned char)*r;
+      if (c == '<') {
+        inHtml = true;
+        continue;
+      }
+      if (c == '>' && inHtml) {
+        inHtml = false;
+        c = ' ';
+      } else if (inHtml) {
+        continue;
+      }
+      if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+      if (c < 32 || c >= 127) continue;
+      if (c == ' ') {
+        if (space) continue;
+        space = true;
+      } else {
+        space = false;
+      }
+      dst[k++] = (char)c;
+    }
+    while (k && dst[k - 1] == ' ') k--;
+    dst[k] = 0;
+  }
+  void finishItem() {
+    // "Name (Country) - Report for <dates> - <status>"
+    char t[160];
+    cleanText(title, t, sizeof(t));
+    const char *paren = strchr(t, '(');
+    const char *close = paren ? strchr(paren, ')') : nullptr;
+    if (paren) {
+      size_t L = paren - t;
+      while (L && t[L - 1] == ' ') L--;
+      size_t m = std::min(L, sizeof(cur.name) - 1);
+      memcpy(cur.name, t, m);
+      cur.name[m] = 0;
+      if (close) {
+        size_t c = std::min((size_t)(close - paren - 1), sizeof(cur.country) - 1);
+        memcpy(cur.country, paren + 1, c);
+        cur.country[c] = 0;
+      }
+    } else {
+      asciiCopy(cur.name, sizeof(cur.name), t);
+    }
+    const char *rep = strstr(t, "Report for ");
+    if (rep && week.isEmpty()) {
+      String w = rep + 11;
+      int dash = w.indexOf(" - ");
+      if (dash > 0) w = w.substring(0, dash);
+      week = w;
+    }
+    // "New" anywhere after the dates marks new activity this week
+    const char *tail = rep ? rep : (close ? close : t);
+    String ts = tail;
+    ts.toLowerCase();
+    cur.isNew = ts.indexOf("new") >= 0;
+    if (cur.name[0] && out->size() < ERUPT_MAX) out->push_back(cur);
+    if (!items++) Serial.printf("[volcano] first report item: %s\n", t);
+  }
+  void onTag() {
+    tag[tagLen] = 0;
+    char *sp = strpbrk(tag, " \t/");
+    bool closing = tag[0] == '/';
+    const char *name = closing ? tag + 1 : tag;
+    if (sp && sp != tag) *sp = 0;  // drop attributes (and a self-closing '/')
+    if (!closing && !strcmp(name, "item")) {
+      inItem = true;
+      cur = Eruption();
+      title[0] = 0;
+    } else if (closing && !strcmp(name, "item")) {
+      if (inItem) finishItem();
+      inItem = false;
+    } else if (inItem) {
+      Field f = !strcmp(name, "title") ? TITLE : !strcmp(name, "description") ? DESC
+                : !strcmp(name, "georss:point") ? POINT : NONE;
+      if (f != NONE) {
+        if (closing) endField();
+        else beginField(f);
+      }
+    }
+  }
+  void feed(char c) {
+    if (inCdata) {  // copy until "]]>"
+      cdEnd[0] = cdEnd[1];
+      cdEnd[1] = cdEnd[2];
+      cdEnd[2] = c;
+      putText(c);
+      if (cdEnd[0] == ']' && cdEnd[1] == ']' && cdEnd[2] == '>') {
+        inCdata = false;
+        if (bufLen >= 3) bufLen -= 3;
+      }
+      return;
+    }
+    if (inTag) {
+      if (c == '>') {
+        inTag = false;
+        onTag();
+        return;
+      }
+      if (tagLen < sizeof(tag) - 1) tag[tagLen++] = c;
+      if (tagLen == 8 && !strncmp(tag, "![CDATA[", 8)) {
+        inTag = false;
+        inCdata = true;
+        cdEnd[0] = cdEnd[1] = cdEnd[2] = 0;
+      }
+      return;
+    }
+    if (c == '<') {
+      inTag = true;
+      tagLen = 0;
+      return;
+    }
+    putText(c);
+  }
+};
+
+bool fetchEruptions(std::vector<Eruption> &out, String &week, String &why) {
+  out.reserve(ERUPT_MAX);
+  std::unique_ptr<RssScan> scan(new RssScan());  // ~1 KB of buffers: heap, not the task stack
+  scan->out = &out;
+  int code = streamGet(
+      ERUPT_RSS, eruptTls,
+      [&](Stream &body) {
+        int c;
+        while ((c = body.read()) >= 0) scan->feed((char)c);
+      },
+      why);
+  Serial.printf("[volcano] weekly report -> %d, %u volcanoes\n", code, (unsigned)out.size());
+  if (code != 200) {
+    if (why.isEmpty()) why = "no reply from the Smithsonian";
+    return false;
+  }
+  if (out.empty()) {
+    if (why.isEmpty()) why = "report had no volcanoes (format changed?)";
+    return false;
+  }
+  week = scan->week;
+  why = "";
   return true;
 }
 
@@ -1566,7 +1915,79 @@ void quakeWork() {
   qkLastOk = ok;
 }
 
+void volcanoWork() {
+  std::vector<Volcano> us;
+  String why;
+  bool ok = fetchUsVolcanoes(us, why);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (ok) {
+      // Pop-ups for alert level / color changes (not for the first list after boot)
+      if (volcBaseline && volcPop) {
+        for (const auto &v : us) {
+          auto it = std::find_if(volcList.begin(), volcList.end(),
+                                 [&](const Volcano &o) { return !strcmp(o.vnum, v.vnum); });
+          bool isNewOne = it == volcList.end();
+          if (!isNewOne && !strcmp(it->alert, v.alert) && !strcmp(it->color, v.color)) continue;
+          String t = String(v.name) + " volcano";
+          String m;
+          if (isNewOne) m = String("Now ") + v.color + " / " + v.alert;
+          else {
+            bool up = colorRankOf(v.color) * 10 + alertRankOf(v.alert) > colorRankOf(it->color) * 10 + alertRankOf(it->alert);
+            m = String(up ? "Raised to " : "Lowered to ") + v.color + " / " + v.alert + "\n(was " + it->color + " / " +
+                it->alert + ")";
+          }
+          m += String("\n") + v.obs;
+          if (v.synopsis[0]) m += String("\n\n") + v.synopsis;
+          volcPopQueue.push_back(t + "\n" + m);
+        }
+        for (const auto &o : volcList) {  // dropped off the elevated list
+          bool still = std::any_of(us.begin(), us.end(), [&](const Volcano &v) { return !strcmp(o.vnum, v.vnum); });
+          if (!still)
+            volcPopQueue.push_back(String(o.name) + " volcano\nNo longer elevated (was " + o.color + " / " + o.alert +
+                                   ")\n" + o.obs);
+        }
+        if (volcPopQueue.size() > 6) volcPopQueue.erase(volcPopQueue.begin(), volcPopQueue.end() - 6);
+      }
+      volcBaseline = true;
+      volcList.swap(us);
+      volcErr = "";
+      volcFetchedMs = millis();
+    } else {
+      volcErr = why;
+    }
+    volcVer++;
+  }
+  if (ok) Serial.printf("[volcano] %u U.S. volcanoes elevated\n", (unsigned)volcList.size());
+  else Serial.printf("[volcano] U.S. list failed: %s\n", why.c_str());
+  vcLastOk = ok;
+
+  // Worldwide weekly report, every few hours
+  bool due = !eruptAttempted || millis() - eruptLastAttempt >= (eruptLastOk ? ERUPT_REFRESH_MS : ERUPT_RETRY_MS);
+  if (!due) return;
+  eruptAttempted = true;
+  eruptLastAttempt = millis();
+  std::vector<Eruption> world;
+  String week, ewhy;
+  bool eok = fetchEruptions(world, week, ewhy);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (eok) {
+      eruptList.swap(world);
+      eruptWeek = week;
+      eruptErr = "";
+      eruptFetchedMs = millis();
+    } else {
+      eruptErr = ewhy;
+    }
+    volcVer++;
+  }
+  if (!eok) Serial.printf("[volcano] weekly report failed: %s\n", ewhy.c_str());
+  eruptLastOk = eok;
+}
+
 void fetchWork() {
+  if (taskFlags & DO_VOLCANO) volcanoWork();
   if (taskFlags & DO_QUAKE) quakeWork();
   if (taskFlags & DO_BUOY) buoyWork();
   if (taskFlags & DO_STOCK) stockWork();
@@ -1680,6 +2101,10 @@ void startFetch(uint8_t flags) {
     qkAttempted = true;
     qkLastAttempt = millis();
   }
+  if (flags & DO_VOLCANO) {
+    vcAttempted = true;
+    vcLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -1707,6 +2132,10 @@ void startFetch(uint8_t flags) {
     if (flags & DO_QUAKE) {
       quakeErr = "not enough memory";
       qkLastOk = false;
+    }
+    if (flags & DO_VOLCANO) {
+      volcErr = "not enough memory";
+      vcLastOk = false;
     }
   }
 }
@@ -1752,6 +2181,8 @@ void begin() {
   quakeMin = prefs.getFloat("eqMin", 2.5f);
   quakeRadius = prefs.getInt("eqRad", 0);
   quakeDesk = prefs.getBool("eqDesk", true);
+  volcDesk = prefs.getBool("vcDesk", true);
+  volcPop = prefs.getBool("vcPop", true);
   if (prefs.isKey("eqWk")) prefs.remove("eqWk");  // 1.4.0's weekly history is no longer kept
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
@@ -1839,9 +2270,15 @@ void loop() {
   if (!flags && quakeWanted && (millis() >= QUAKE_BOOT_DELAY_MS || qkForce) &&
       (qkForce || !qkAttempted || millis() - qkLastAttempt >= (qkLastOk ? QUAKE_REFRESH_MS : QUAKE_RETRY_MS)))
     flags |= DO_QUAKE;
+  // Volcanoes: on their own, once nothing else is due
+  bool volcWanted = volcDesk || volcPop || (volcWantedMs && millis() - volcWantedMs < QUAKE_WANTED_MS);
+  if (!flags && volcWanted && (millis() >= VOLC_BOOT_DELAY_MS || vcForce) &&
+      (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
+    flags |= DO_VOLCANO;
   if (flags) {
     force = alForce = false;
     if (flags & DO_QUAKE) qkForce = false;
+    if (flags & DO_VOLCANO) vcForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
     if (flags & DO_NFL) nfForce = false;
@@ -2541,6 +2978,97 @@ bool quakeDistanceKm(const Quake &q, float &km) {
   float a = sinf(dLat / 2) * sinf(dLat / 2) + cosf(la * d2r) * cosf(q.lat * d2r) * sinf(dLon / 2) * sinf(dLon / 2);
   km = 2 * R * atan2f(sqrtf(a), sqrtf(1 - a));
   return true;
+}
+
+// ---------- Volcanoes ----------
+
+std::vector<Volcano> usVolcanoes() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return volcList;
+}
+
+std::vector<Eruption> eruptions() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return eruptList;
+}
+
+String eruptionWeek() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return eruptWeek;
+}
+
+int colorRank(const char *color) { return colorRankOf(color); }
+bool showVolcanoDesk() { return volcDesk; }
+bool volcanoPopups() { return volcPop; }
+
+void setShowVolcanoDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  volcDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("vcDesk", on);
+  prefs.end();
+  if (on && !volcFetchedMs) vcForce = true;
+  volcVer++;
+}
+
+void setVolcanoPopups(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  volcPop = on;
+  prefs.begin("wx", false);
+  prefs.putBool("vcPop", on);
+  prefs.end();
+  if (!on) volcPopQueue.clear();
+}
+
+bool nextVolcanoPopup(String &title, String &msg) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (volcPopQueue.empty()) return false;
+  String s = volcPopQueue.front();
+  volcPopQueue.erase(volcPopQueue.begin());
+  int nl = s.indexOf('\n');
+  title = nl < 0 ? s : s.substring(0, nl);
+  msg = nl < 0 ? String("") : s.substring(nl + 1);
+  return true;
+}
+
+void refreshVolcano() {
+  volcWantedMs = millis();
+  eruptAttempted = false;  // the weekly report too
+  vcForce = true;
+}
+
+void volcanoKeepAlive() { volcWantedMs = millis(); }
+uint32_t volcanoVersion() { return volcVer; }
+
+String volcanoStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (volcErr.length()) return "U.S. update failed: " + volcErr;
+  if (!volcFetchedMs)
+    return millis() < VOLC_BOOT_DELAY_MS && !vcForce ? "First check about 2 min after startup..."
+                                                     : "Getting alert levels from USGS...";
+  char b[80];
+  snprintf(b, sizeof(b), "USGS checked %lu min ago, every 15 min", (unsigned long)((millis() - volcFetchedMs) / 60000));
+  return b;
+}
+
+String eruptionStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (eruptErr.length()) return "Weekly report failed: " + eruptErr;
+  if (!eruptFetchedMs) return "Getting the weekly report...";
+  char b[96];
+  unsigned long m = (millis() - eruptFetchedMs) / 60000;
+  if (m < 120) snprintf(b, sizeof(b), "Smithsonian report checked %lu min ago", m);
+  else snprintf(b, sizeof(b), "Smithsonian report checked %lu h ago", m / 60);
+  return b;
+}
+
+bool volcanoDistanceKm(float vlat, float vlon, float &km) {
+  if (std::isnan(vlat) || std::isnan(vlon)) return false;
+  Quake q;
+  q.lat = vlat;
+  q.lon = vlon;
+  return quakeDistanceKm(q, km);
 }
 
 }  // namespace weather

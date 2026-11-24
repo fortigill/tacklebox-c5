@@ -32,7 +32,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail
 };
 
 const int HEADER_H = 40;
@@ -99,6 +99,17 @@ int eqKey = -1;                // data version + minute the page was built for
 std::vector<weather::Quake> eqRows;
 weather::Quake eqDetail;
 Screen quakeBack = Screen::Menu;
+// Volcanoes: desktop bubble, page, detail and level-change pop-ups
+lv_obj_t *deskVolc = nullptr, *deskVolcTop = nullptr, *deskVolcDetail = nullptr;
+int deskVolcKey = -1;
+lv_obj_t *vcSummary = nullptr, *vcStatus = nullptr, *vcUsBox = nullptr, *vcWorldBox = nullptr, *vcWorldHdr = nullptr;
+int vcKey = -1;
+std::vector<weather::Volcano> vcUsRows;
+std::vector<weather::Eruption> vcWorldRows;
+String vcDetailTitle, vcDetailText;
+lv_color_t vcDetailColor;
+Screen volcBack = Screen::Menu;
+lv_obj_t *volcAlertBox = nullptr;  // level-change pop-up (top layer)
 lv_obj_t *nfScore = nullptr, *nfTeams = nullptr, *nfDetail = nullptr, *nfStatus = nullptr, *nfGames = nullptr;
 uint32_t nfVer = 0;
 Screen nflBack = Screen::Menu;
@@ -247,6 +258,8 @@ void showNfl();
 void showNflTeam();
 void showQuakes();
 void showQuakeDetail();
+void showVolcanoes();
+void showVolcanoDetail();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
 String nflScoreText(const weather::Game &g) {
@@ -271,6 +284,17 @@ lv_color_t magColor(float m) {
   if (m >= 4.5f) return lv_palette_main(LV_PALETTE_DEEP_ORANGE);
   if (m >= 3.0f) return lv_palette_main(LV_PALETTE_AMBER);
   return lv_palette_main(LV_PALETTE_GREEN);
+}
+
+// USGS aviation color code -> screen color
+lv_color_t volcColor(const char *c) {
+  switch (weather::colorRank(c)) {
+    case 4: return lv_palette_main(LV_PALETTE_RED);
+    case 3: return lv_palette_main(LV_PALETTE_DEEP_ORANGE);
+    case 2: return lv_palette_main(LV_PALETTE_AMBER);
+    case 1: return lv_palette_main(LV_PALETTE_GREEN);
+    default: return lv_palette_main(LV_PALETTE_GREY);
+  }
 }
 
 String agoText(uint32_t t) {
@@ -359,6 +383,10 @@ void resetPtrs() {
   deskQuake = deskQuakeTop = deskQuakeDetail = nullptr;
   deskQuakeKey = -1;
   eqSummary = eqBig = eqStatus = eqBox = eqHeading = nullptr;
+  deskVolc = deskVolcTop = deskVolcDetail = nullptr;
+  deskVolcKey = -1;
+  vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
+  vcKey = -1;
   eqDay = nullptr;
   eqKey = -1;
   nfScore = nfTeams = nfDetail = nfStatus = nfGames = nullptr;
@@ -575,12 +603,14 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 // Places the widget row under the (possibly two-row) status bar and the Menu
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
-  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake) return;
+  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
+      !deskVolc)
+    return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   int key = barH * 1000 + rowH;
   if (key == deskLayoutKey) return;
@@ -783,6 +813,31 @@ void refreshDesktop() {
     setText(deskQuakeDetail, detail.c_str());
     setHidden(deskQuakeDetail, detail.isEmpty());
     lv_obj_set_style_text_color(deskQuakeDetail, dcol, 0);
+  }
+
+  // Volcano bubble: how many U.S. volcanoes are elevated, then the most
+  // serious one and the worldwide count from the weekly report
+  bool deskVolcOn = weather::showVolcanoDesk();
+  setHidden(deskVolc, !deskVolcOn);
+  int volcKey = (int)weather::volcanoVersion();
+  if (deskVolcOn && volcKey != deskVolcKey) {
+    deskVolcKey = volcKey;
+    auto us = weather::usVolcanoes();
+    size_t world = weather::eruptions().size();
+    char top[40];
+    String detail;
+    lv_color_t tcol = theme::text();
+    if (us.empty()) snprintf(top, sizeof(top), "No US volcano alerts");
+    else snprintf(top, sizeof(top), "%u US volcano%s elevated", (unsigned)us.size(), us.size() == 1 ? "" : "es");
+    if (!us.empty()) {
+      detail = String(us[0].name) + " " + us[0].color + "/" + us[0].alert;
+      if (weather::colorRank(us[0].color) >= 3) tcol = volcColor(us[0].color);  // orange or red stands out
+    }
+    if (world) detail += (detail.length() ? ", " : "") + String(world) + " active worldwide";
+    setText(deskVolcTop, top);
+    lv_obj_set_style_text_color(deskVolcTop, tcol, 0);
+    setText(deskVolcDetail, detail.c_str());
+    setHidden(deskVolcDetail, detail.isEmpty());
   }
 
   if (deskAlerts) {
@@ -1220,6 +1275,33 @@ void showDesktop() {
   lv_obj_set_height(deskQuakeDetail, lv_font_get_line_height(&lv_font_montserrat_14));
   lv_label_set_text(deskQuakeDetail, "");
 
+  // Volcano bubble, two lines like the quake one
+  deskVolc = widget([](lv_event_t *) {
+    volcBack = Screen::Desktop;
+    showVolcanoes();
+  });
+  lv_obj_set_flex_flow(deskVolc, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskVolc, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskVolc, 0, 0);
+  lv_obj_t *vline = lv_obj_create(deskVolc);
+  lv_obj_remove_style_all(vline);
+  lv_obj_set_size(vline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(vline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(vline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(vline, 6, 0);
+  lv_obj_clear_flag(vline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(vline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskVolcTop = lv_label_create(vline);
+  lv_label_set_text(deskVolcTop, "Volcanoes: --");
+  chevron(vline);
+  deskVolcDetail = lv_label_create(deskVolc);
+  lv_obj_set_style_text_font(deskVolcDetail, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_opa(deskVolcDetail, LV_OPA_90, 0);
+  lv_label_set_long_mode(deskVolcDetail, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_width(deskVolcDetail, W() - 40, 0);
+  lv_obj_set_height(deskVolcDetail, lv_font_get_line_height(&lv_font_montserrat_14));
+  lv_label_set_text(deskVolcDetail, "");
+
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
   lv_obj_set_width(deskWifiLbl, W() - 16);
@@ -1287,6 +1369,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         quakeBack = Screen::Menu;
         showQuakes();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_UPLOAD, "Volcanoes");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        volcBack = Screen::Menu;
+        showVolcanoes();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -3954,6 +4045,220 @@ void showQuakeDetail() {
   load(scr, Screen::QuakeDetail);
 }
 
+// ---------- Volcanoes ----------
+
+void onUsVolcanoRow(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= vcUsRows.size()) return;
+  const auto &v = vcUsRows[i];
+  vcDetailTitle = v.name;
+  String t = String("Aviation color code: ") + v.color + "\nVolcano alert level: " + v.alert + "\n";
+  if (v.obs[0]) t += String("Observatory: ") + v.obs + "\n";
+  if (v.sent) {
+    char when[40];
+    timesvc::formatEpoch(v.sent, when, sizeof(when));
+    t += String("Latest notice: ") + when + " (" + agoText(v.sent) + ")\n";
+  }
+  if (v.synopsis[0]) t += String("\n") + v.synopsis + "\n";
+  t += "\nThe alert level is about hazards on the ground; the color code is about ash for aircraft."
+       "\n\nSource: USGS Volcano Hazards Program";
+  vcDetailText = t;
+  vcDetailColor = volcColor(v.color);
+  showVolcanoDetail();
+}
+
+void onWorldRow(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= vcWorldRows.size()) return;
+  const auto &x = vcWorldRows[i];
+  vcDetailTitle = x.name;
+  String t = String(x.country[0] ? x.country : "") + (x.isNew ? "\nNew activity this week" : "\nContinuing activity") + "\n";
+  String wk = weather::eruptionWeek();
+  if (wk.length()) t += "Report for " + wk + "\n";
+  float km;
+  if (weather::volcanoDistanceKm(x.lat, x.lon, km)) t += "Distance: " + distText(km) + " from your ZIP code\n";
+  if (x.summary[0]) t += String("\n") + x.summary + (strlen(x.summary) >= sizeof(x.summary) - 2 ? "..." : "") + "\n";
+  t += "\nSource: Smithsonian / USGS Weekly Volcanic Activity Report";
+  vcDetailText = t;
+  vcDetailColor = x.isNew ? lv_palette_main(LV_PALETTE_DEEP_ORANGE) : theme::text();
+  showVolcanoDetail();
+}
+
+// A tappable two-line row: a colored first line and a dimmer second line
+lv_obj_t *twoLineRow(lv_obj_t *parent, const String &l1, lv_color_t c1, const String &l2, lv_event_cb_t cb,
+                     size_t idx) {
+  lv_obj_t *row = lv_obj_create(parent);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_ver(row, 4, 0);
+  lv_obj_set_style_bg_color(row, theme::accent(), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(row, LV_OPA_30, LV_STATE_PRESSED);
+  lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, (void *)(intptr_t)idx);
+  lv_obj_t *a = lv_label_create(row);
+  lv_obj_set_style_text_font(a, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(a, c1, 0);
+  lv_label_set_long_mode(a, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(a, LV_PCT(100));
+  lv_label_set_text(a, l1.c_str());
+  lv_obj_t *b = lv_label_create(row);
+  lv_obj_set_style_text_opa(b, LV_OPA_80, 0);
+  lv_label_set_long_mode(b, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(b, LV_PCT(100));
+  lv_label_set_text(b, l2.c_str());
+  return row;
+}
+
+void refreshVolcanoScreen() {
+  if (!vcStatus) return;
+  weather::volcanoKeepAlive();
+  String st = weather::volcanoStatus() + "\n" + weather::eruptionStatus();
+  setText(vcStatus, st.c_str());
+  int key = (int)(weather::volcanoVersion() * 4096 + (millis() / 60000) % 4096);
+  if (key == vcKey) return;
+  vcKey = key;
+
+  vcUsRows = weather::usVolcanoes();
+  vcWorldRows = weather::eruptions();
+  int nNew = 0;
+  for (const auto &x : vcWorldRows) nNew += x.isNew;
+  char b[96];
+  snprintf(b, sizeof(b), "US elevated: %u\nWorldwide this week: %u (%d new)", (unsigned)vcUsRows.size(),
+           (unsigned)vcWorldRows.size(), nNew);
+  setText(vcSummary, b);
+  lv_obj_set_style_text_color(vcSummary, !vcUsRows.empty() && weather::colorRank(vcUsRows[0].color) >= 3
+                                             ? volcColor(vcUsRows[0].color) : theme::text(), 0);
+
+  lv_obj_clean(vcUsBox);
+  if (vcUsRows.empty()) {
+    lv_obj_t *l = lv_label_create(vcUsBox);
+    lv_label_set_text(l, "No U.S. volcanoes above normal");
+  }
+  for (size_t i = 0; i < vcUsRows.size(); i++) {
+    const auto &v = vcUsRows[i];
+    String l2 = String(v.color) + " / " + v.alert;
+    if (v.obs[0]) l2 += String(" - ") + v.obs;
+    if (v.sent) l2 += " - " + agoText(v.sent);
+    twoLineRow(vcUsBox, v.name, volcColor(v.color), l2, onUsVolcanoRow, i);
+  }
+
+  String wk = weather::eruptionWeek();
+  setText(vcWorldHdr, (wk.length() ? "Worldwide: " + wk : String("Worldwide this week")).c_str());
+  lv_obj_clean(vcWorldBox);
+  if (vcWorldRows.empty()) {
+    lv_obj_t *l = lv_label_create(vcWorldBox);
+    lv_label_set_text(l, "No report loaded yet");
+  }
+  for (size_t i = 0; i < vcWorldRows.size(); i++) {
+    const auto &x = vcWorldRows[i];
+    String l2 = String(x.country) + (x.isNew ? " - NEW this week" : " - continuing");
+    float km;
+    if (weather::volcanoDistanceKm(x.lat, x.lon, km)) l2 += " - " + distText(km) + " away";
+    twoLineRow(vcWorldBox, x.name, x.isNew ? lv_palette_main(LV_PALETTE_DEEP_ORANGE) : theme::text(), l2, onWorldRow, i);
+  }
+}
+
+void showVolcanoes() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Volcanoes", [](lv_event_t *) {
+    if (volcBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  lv_obj_t *card = lv_obj_create(list);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_set_style_pad_row(card, 4, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  vcSummary = lv_label_create(card);
+  lv_obj_set_style_text_font(vcSummary, &lv_font_montserrat_20, 0);
+  lv_label_set_long_mode(vcSummary, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(vcSummary, LV_PCT(100));
+  lv_label_set_text(vcSummary, "");
+  vcStatus = lv_label_create(card);
+  lv_label_set_long_mode(vcStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(vcStatus, LV_PCT(100));
+  lv_obj_set_style_text_opa(vcStatus, LV_OPA_70, 0);
+  lv_label_set_text(vcStatus, "");
+
+  // Settings first, so they're never at the bottom of a long list
+  lv_list_add_text(list, "Settings");
+  auto toggleRow = [&](const char *label, bool on, lv_event_cb_t cb) {
+    lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, label);
+    lv_obj_t *s = lv_switch_create(row);
+    lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, s);
+  };
+  toggleRow("Show on desktop", weather::showVolcanoDesk(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showVolcanoDesk();
+    weather::setShowVolcanoDesk(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  toggleRow("Pop-up when a US level changes", weather::volcanoPopups(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::volcanoPopups();
+    weather::setVolcanoPopups(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get volcano data.");
+          return;
+        }
+        weather::refreshVolcano();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  auto box = [&]() {
+    lv_obj_t *o = lv_obj_create(list);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(o, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_hor(o, 8, 0);
+    lv_obj_set_style_pad_row(o, 2, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+  };
+  lv_list_add_text(list, "US volcanoes above normal (USGS)");
+  vcUsBox = box();
+  vcWorldHdr = lv_list_add_text(list, "Worldwide this week");
+  vcWorldBox = box();
+  lv_list_add_text(list, "World: Smithsonian / USGS weekly report");
+
+  load(scr, Screen::Volcanoes);
+  if (weather::usVolcanoes().empty() && weather::eruptions().empty()) weather::refreshVolcano();
+  vcKey = -1;
+  refreshVolcanoScreen();
+}
+
+void showVolcanoDetail() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, vcDetailTitle.c_str(), [](lv_event_t *) { showVolcanoes(); });
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *big = bodyLabel(body);
+  lv_obj_set_style_text_font(big, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(big, vcDetailColor, 0);
+  lv_label_set_text(big, vcDetailTitle.c_str());
+  lv_obj_t *info = bodyLabel(body);
+  lv_label_set_text(info, vcDetailText.c_str());
+  load(scr, Screen::VolcanoDetail);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -4511,6 +4816,29 @@ void showNextWxAlert() {
       LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
+void showNextVolcanoAlert() {
+  String title, msg;
+  if (!weather::nextVolcanoPopup(title, msg)) return;
+  static const char *btns[] = {"Close", "View", ""};
+  String t = String(LV_SYMBOL_WARNING " ") + title;
+  volcAlertBox = lv_msgbox_create(nullptr, t.c_str(), msg.c_str(), btns, false);
+  lv_obj_set_width(volcAlertBox, W() - 24);
+  lv_obj_center(volcAlertBox);
+  lv_obj_add_event_cb(
+      volcAlertBox,
+      [](lv_event_t *e) {
+        lv_obj_t *box = lv_event_get_current_target(e);
+        bool view = lv_msgbox_get_active_btn(box) == 1;
+        lv_msgbox_close_async(box);
+        volcAlertBox = nullptr;
+        if (view) {
+          volcBack = Screen::Desktop;
+          showVolcanoes();
+        }
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
 void poll(lv_timer_t *) {
   // While an HTTPS download runs, only a few KB of heap are free. Label
   // updates and pop-ups allocate from that same heap, and a failed LVGL
@@ -4519,8 +4847,9 @@ void poll(lv_timer_t *) {
   if (weather::tlsActive()) return;
 
   // Drone Watch alerts, one at a time, on whatever screen is showing
-  if (!droneAlertBox && !wxAlertBox) showNextDroneAlert();
-  if (!droneAlertBox && !wxAlertBox) showNextWxAlert();
+  if (!droneAlertBox && !wxAlertBox && !volcAlertBox) showNextDroneAlert();
+  if (!droneAlertBox && !wxAlertBox && !volcAlertBox) showNextWxAlert();
+  if (!droneAlertBox && !wxAlertBox && !volcAlertBox) showNextVolcanoAlert();
 
   switch (cur) {
     case Screen::Desktop: refreshDesktop(); break;
@@ -4542,6 +4871,7 @@ void poll(lv_timer_t *) {
     case Screen::StockDetail: refreshStockScreen(); break;
     case Screen::Nfl: refreshNflScreen(); break;
     case Screen::Quakes: refreshQuakeScreen(); break;
+    case Screen::Volcanoes: refreshVolcanoScreen(); break;
     default: break;
   }
 }

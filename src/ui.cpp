@@ -131,6 +131,8 @@ lv_obj_t *nfScore = nullptr, *nfTeams = nullptr, *nfDetail = nullptr, *nfStatus 
 uint32_t nfVer = 0;
 Screen nflBack = Screen::Menu;
 lv_obj_t *deskBarWave = nullptr, *deskBarWaveLbl = nullptr;
+lv_obj_t *deskBarFlt = nullptr, *deskBarFltImg = nullptr, *deskBarFltNum = nullptr;  // plane + airliner count
+int deskBarFltKey = -1;
 lv_obj_t *deskAlerts = nullptr, *deskAlertsLbl = nullptr;
 int deskAlertsColor = -1;  // 0 normal, 1 red (unsnoozed alerts)
 Screen wxaBack = Screen::Weather;
@@ -420,6 +422,8 @@ void resetPtrs() {
   deskLayoutKey = -1;
   deskWaveKey = -1;
   deskWave = deskWaveLbl = deskBarWave = deskBarWaveLbl = deskAlerts = deskAlertsLbl = nullptr;
+  deskBarFlt = deskBarFltImg = deskBarFltNum = nullptr;
+  deskBarFltKey = -1;
   deskAlertsColor = -1;
   byWave = byName = byDetail = byStatus = byIdTa = nullptr;
   byVer = 0;
@@ -868,6 +872,23 @@ void refreshDesktop() {
     setHidden(deskVolcDetail, detail.isEmpty());
   }
 
+  // Status bar: plane icon + airliner count badge (dim at zero)
+  if (deskBarFlt) {
+    bool on = weather::showFlightBar() && weather::flightsNearTotal() >= 0;
+    setHidden(deskBarFlt, !on);
+    int k = (int)weather::flightsVersion();
+    if (on && k != deskBarFltKey) {
+      deskBarFltKey = k;
+      size_t n = weather::liveFlights().size();
+      char t[8];
+      snprintf(t, sizeof(t), "%u", (unsigned)n);
+      setText(deskBarFltNum, t);
+      lv_obj_set_style_img_recolor(deskBarFltImg, n ? theme::accent() : theme::text(), 0);
+      lv_obj_set_style_img_opa(deskBarFltImg, n ? LV_OPA_COVER : LV_OPA_50, 0);
+      lv_obj_set_style_bg_color(deskBarFltNum, n ? theme::accent() : lv_palette_main(LV_PALETTE_GREY), 0);
+    }
+  }
+
   // "Near the airport" bubble: how many aircraft are within 10 nm, then each
   // airliner in turn (flight, type, distance / height, climb or descent, speed)
   bool deskNearOn = weather::showNearbyDesk();
@@ -1138,6 +1159,42 @@ void showDesktop() {
   lv_obj_move_to_index(deskBarStock, lv_obj_get_index(deskBarWave));
 
   // NFL: "SEA 21-17 SF", left of the stock; tap for the NFL page
+  // Airliners near the airport: plane icon with the count as a small badge
+  // on its lower right corner, so it takes no more room than the icon
+  deskBarFlt = lv_obj_create(ext);
+  lv_obj_remove_style_all(deskBarFlt);
+  {
+    const lv_img_dsc_t *pi = narrow ? &ui_plane_s : &ui_plane;
+    lv_obj_set_size(deskBarFlt, pi->header.w + 6, 32);
+    lv_obj_clear_flag(deskBarFlt, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(deskBarFlt, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(deskBarFlt, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_ext_click_area(deskBarFlt, 6);
+    lv_obj_add_event_cb(
+        deskBarFlt,
+        [](lv_event_t *) {
+          fltBack = Screen::Desktop;
+          showFlights();
+        },
+        LV_EVENT_CLICKED, nullptr);
+    deskBarFltImg = lv_img_create(deskBarFlt);
+    lv_img_set_src(deskBarFltImg, pi);
+    lv_obj_set_style_img_recolor_opa(deskBarFltImg, LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(deskBarFltImg, theme::text(), 0);
+    lv_obj_clear_flag(deskBarFltImg, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(deskBarFltImg, LV_ALIGN_LEFT_MID, 0, -2);
+    deskBarFltNum = lv_label_create(deskBarFlt);
+    lv_obj_set_style_text_font(deskBarFltNum, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(deskBarFltNum, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(deskBarFltNum, theme::accent(), 0);
+    lv_obj_set_style_bg_opa(deskBarFltNum, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(deskBarFltNum, 5, 0);
+    lv_obj_set_style_pad_hor(deskBarFltNum, 2, 0);
+    lv_obj_clear_flag(deskBarFltNum, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(deskBarFltNum, "0");
+    lv_obj_align(deskBarFltNum, LV_ALIGN_BOTTOM_RIGHT, 0, -3);
+  }
+
   deskBarNfl = lv_label_create(ext);
   lv_obj_set_style_text_font(deskBarNfl, barFont, 0);
   lv_label_set_text(deskBarNfl, "");
@@ -4580,6 +4637,20 @@ void showFlights() {
         lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
         bool on = !weather::showNearbyDesk();
         weather::setShowNearbyDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Airliner count in status bar");
+  sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showFlightBar()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showFlightBar();
+        weather::setShowFlightBar(on);
         if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
         else lv_obj_clear_state(s, LV_STATE_CHECKED);
       },

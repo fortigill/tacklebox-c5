@@ -282,6 +282,8 @@ void setAirportCode(const String &code);  // 3-letter FAA/IATA or 4-letter ICAO
 bool showNearbyDesk();                // desktop widget: aircraft near the airport, airliner details
 void setShowNearbyDesk(bool on);
 int flightsNearTotal();               // all aircraft within 10 NM at the last check (-1 = none yet)
+bool showFlightBar();                 // status bar: plane icon with the airliner count
+void setShowFlightBar(bool on);
 bool showOurFlightsDesk();            // widget for airliners flying to / from this airport (hidden when none)
 void setShowOurFlightsDesk(bool on);
 void refreshFlights();

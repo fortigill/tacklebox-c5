@@ -13,6 +13,7 @@ extern const lv_img_dsc_t ui_wave_s;
 extern const lv_img_dsc_t ui_volcano;
 extern const lv_img_dsc_t ui_plane;
 extern const lv_img_dsc_t ui_plane_land;
+extern const lv_img_dsc_t ui_plane_s;
 
 #ifdef __cplusplus
 }

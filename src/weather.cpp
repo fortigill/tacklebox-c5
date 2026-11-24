@@ -203,6 +203,7 @@ float apMagVar = -6.0f;                     // degrees, east positive (DAB ~6 W)
 bool apHaveLoc = true;
 bool nearDesk = true;                       // "near the airport" widget
 bool oursDesk = true;                       // flights to / from this airport widget
+bool fltBar = true;                         // status-bar airliner count
 int fltNearTotal = -1;                      // all aircraft within the radius at the last check
 std::vector<LiveFlight> fltLive;
 String fltErr;
@@ -2620,6 +2621,7 @@ void begin() {
   volcPop = prefs.getBool("vcPop", true);
   nearDesk = prefs.getBool("flNear", true);
   oursDesk = prefs.getBool("flOurs", true);
+  fltBar = prefs.getBool("flBar", true);
   if (prefs.isKey("flAppr")) prefs.remove("flAppr");  // 1.6.2's approach widget is gone
   if (prefs.isKey("apCode")) {
     apCode = prefs.getString("apCode");
@@ -2739,7 +2741,7 @@ void loop() {
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
   // Airport flights: polled often, so lowest priority (only when nothing else is due)
-  bool fltWanted = nearDesk || oursDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
+  bool fltWanted = nearDesk || oursDesk || fltBar || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
   if (!flags && fltWanted && (millis() >= FLT_BOOT_DELAY_MS || flForce) &&
       (flForce || !flAttempted || millis() - flLastAttempt >= (flLastOk ? FLT_POLL_MS : FLT_RETRY_MS)))
     flags |= DO_FLIGHTS;
@@ -3591,6 +3593,17 @@ void setShowNearbyDesk(bool on) {
 }
 
 bool showOurFlightsDesk() { return oursDesk; }
+bool showFlightBar() { return fltBar; }
+
+void setShowFlightBar(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  fltBar = on;
+  prefs.begin("wx", false);
+  prefs.putBool("flBar", on);
+  prefs.end();
+  if (on) flForce = true;
+  fltVer++;
+}
 
 void setShowOurFlightsDesk(bool on) {
   std::lock_guard<std::mutex> lock(mtx);

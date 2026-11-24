@@ -3,6 +3,18 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.3] - 2026-11-24
+
+### Added
+- **Status bar airliner count:** a plane icon with the number of airliners within 10 NM of
+  the airport as a small badge on its lower right corner (10 px text, like the 5G tag), so
+  it's no wider than the icon.
+  - Accent color while there's at least one airliner. Gray and dimmed at zero.
+  - Tapping it opens the Aircraft near airport page.
+  - Switch: "Airliner count in status bar" on that page (on by default). It keeps the live
+    tracking running on its own too.
+- New 16 px icon `ui_plane_s` for narrow (portrait) layouts.
+
 ## [1.7.2] - 2026-11-24
 
 ### Changed

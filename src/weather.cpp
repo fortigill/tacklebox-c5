@@ -100,6 +100,11 @@ const uint32_t FLT_RETRY_MS = 60000;
 const uint32_t FLT_BOOT_DELAY_MS = 120000;
 const int FLT_RADIUS_NM = 10;
 const char *ADSB_HOST = "opendata.adsb.fi/api/";
+const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";  // callsign -> route (community database)
+const size_t ROUTE_CACHE = 40;
+const uint32_t ROUTE_TTL_MS = 6UL * 3600 * 1000;      // routes rarely change within a day
+const uint32_t ROUTE_MISS_TTL_MS = 3600UL * 1000;     // unknown callsigns: ask again in an hour
+const int ROUTE_LOOKUPS_PER_POLL = 4;
 #if defined(BOARD_NM_CYD_C5)
 const size_t ERUPT_MAX = 40;
 #else
@@ -197,6 +202,7 @@ int apElevFt = 34;
 float apMagVar = -6.0f;                     // degrees, east positive (DAB ~6 W)
 bool apHaveLoc = true;
 bool nearDesk = true;                       // "near the airport" widget
+bool oursDesk = true;                       // flights to / from this airport widget
 int fltNearTotal = -1;                      // all aircraft within the radius at the last check
 std::vector<LiveFlight> fltLive;
 String fltErr;
@@ -204,7 +210,7 @@ uint32_t fltFetchedMs = 0;
 uint32_t fltVer = 0;
 uint32_t fltWantedMs = 0;
 volatile bool apDirty = false;              // task resolved a new airport: save it from loop()
-bool adsbTls = false, avwxTls = false;
+bool adsbTls = false, avwxTls = false, routeTls = false;
 int adsbApi = 3;                            // adsb.fi API version (v3, falls back to v2)
 
 // Scheduling (main task only)
@@ -1859,7 +1865,113 @@ bool resolveAirport(const String &code, float &la, float &lo, int &elevFt, float
   return false;
 }
 
-// One ADS-B poll: update the tracks and detect takeoffs/landings
+// Route cache (weather task only): callsign -> origin / destination
+struct RouteInfo {
+  char callsign[10];
+  bool known;
+  uint32_t fetchedMs;
+  char fromIata[5], fromIcao[5], fromCity[24];
+  char toIata[5], toIcao[5], toCity[24];
+  char midIata[5], midIcao[5];  // one-stop routes (A-B-C): the middle airport
+};
+std::vector<RouteInfo> routeCache;
+
+// adsbdb.com: GET /v0/callsign/DAL3154 -> response.flightroute.{origin,
+// midpoint, destination}.{iata_code, icao_code, municipality}; 404 = unknown.
+// The routes are community data (who flies what callsign where), so a flight
+// that changed routes recently can be wrong.
+bool lookupRoute(const char *cs, RouteInfo &r) {
+  memset(&r, 0, sizeof(r));
+  strncpy(r.callsign, cs, sizeof(r.callsign) - 1);
+  r.fetchedMs = millis();
+  JsonDocument filter;
+  for (const char *leg : {"origin", "midpoint", "destination"})
+    for (const char *k : {"iata_code", "icao_code", "municipality"}) filter["response"]["flightroute"][leg][k] = true;
+  bool parsed = false;
+  String why;
+  int code = streamGet(
+      String(ROUTE_HOST) + cs, routeTls,
+      [&](Stream &body) {
+        JsonDocument doc;
+        if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return;
+        JsonObject fr = doc["response"]["flightroute"];
+        if (fr.isNull()) return;
+        auto leg = [&](const char *name, char *iata, char *icao, char *city) {
+          JsonObject a = fr[name];
+          if (a.isNull()) return;
+          asciiCopy(iata, 5, a["iata_code"] | "");
+          asciiCopy(icao, 5, a["icao_code"] | "");
+          if (city) asciiCopy(city, 24, a["municipality"] | "");
+        };
+        leg("origin", r.fromIata, r.fromIcao, r.fromCity);
+        leg("destination", r.toIata, r.toIcao, r.toCity);
+        leg("midpoint", r.midIata, r.midIcao, nullptr);
+        parsed = true;
+      },
+      why);
+  r.known = code == 200 && parsed && (r.fromIcao[0] || r.fromIata[0]);
+  Serial.printf("[flights] route %s -> %d: %s %s-%s\n", cs, code, r.known ? "" : "unknown",
+                r.fromIata[0] ? r.fromIata : r.fromIcao, r.toIata[0] ? r.toIata : r.toIcao);
+  return code == 200 || code == 404;  // false = network trouble (don't cache)
+}
+
+// Does this airport code (IATA or ICAO) mean the tracked airport?
+bool isOurAirport(const char *iata, const char *icao, const String &ap) {
+  if (ap.length() == 3) {
+    if (iata[0] && ap == iata) return true;
+    if (icao[0] && (String("K") + ap == icao || String("P") + ap == icao)) return true;  // DAB = KDAB
+    return false;
+  }
+  if (icao[0] && ap == icao) return true;
+  return iata[0] && ap.length() == 4 && (ap[0] == 'K' || ap[0] == 'P') && ap.substring(1) == iata;
+}
+
+// Fills in route fields for the live list (looks up a few new callsigns per poll)
+void addRoutes(std::vector<LiveFlight> &live, const String &ap) {
+  int budget = ROUTE_LOOKUPS_PER_POLL;
+  uint32_t now = millis();
+  for (auto &f : live) {
+    RouteInfo *r = nullptr;
+    for (auto &c : routeCache)
+      if (!strcmp(c.callsign, f.callsign)) r = &c;
+    if (r && now - r->fetchedMs > (r->known ? ROUTE_TTL_MS : ROUTE_MISS_TTL_MS)) r = nullptr;  // stale
+    if (!r && budget > 0) {
+      budget--;
+      RouteInfo fresh;
+      if (lookupRoute(f.callsign, fresh)) {
+        routeCache.erase(std::remove_if(routeCache.begin(), routeCache.end(),
+                                        [&](const RouteInfo &c) { return !strcmp(c.callsign, f.callsign); }),
+                         routeCache.end());
+        if (routeCache.size() >= ROUTE_CACHE) {  // drop the oldest
+          auto oldest = std::min_element(routeCache.begin(), routeCache.end(), [](const RouteInfo &a, const RouteInfo &b) {
+            return a.fetchedMs < b.fetchedMs;
+          });
+          routeCache.erase(oldest);
+        }
+        routeCache.push_back(fresh);
+        r = &routeCache.back();
+      }
+    }
+    if (!r || !r->known) continue;
+    f.routeKnown = true;
+    strcpy(f.from, r->fromIata[0] ? r->fromIata : r->fromIcao);
+    strcpy(f.to, r->toIata[0] ? r->toIata : r->toIcao);
+    strcpy(f.fromCity, r->fromCity);
+    strcpy(f.toCity, r->toCity);
+    bool fromUs = isOurAirport(r->fromIata, r->fromIcao, ap);
+    bool toUs = isOurAirport(r->toIata, r->toIcao, ap);
+    bool midUs = isOurAirport(r->midIata, r->midIcao, ap);
+    if (midUs) {  // one-stop flight through here: arriving if descending, else departing
+      f.ours = f.phase == 1 || f.phase == 3 ? 1 : 2;
+      if (f.ours == 1) strcpy(f.to, r->midIata[0] ? r->midIata : r->midIcao);
+      else strcpy(f.from, r->midIata[0] ? r->midIata : r->midIcao);
+    } else {
+      f.ours = toUs ? 1 : fromUs ? 2 : 0;
+    }
+  }
+}
+
+// One ADS-B poll: the aircraft near the airport, with routes for the airliners
 bool pollFlights(String &why) {
   float la, lo, mv;
   int elev;
@@ -1971,8 +2083,11 @@ bool pollFlights(String &why) {
                   ground ? "GROUND " : "", (long)agl, rate, gs);
   }
   std::sort(live.begin(), live.end(), [](const LiveFlight &x, const LiveFlight &y) { return x.distNm < y.distNm; });
-  Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s\n", code.c_str(), total, FLT_RADIUS_NM,
-                airliners, airliners == 1 ? "" : "s");
+  addRoutes(live, code);
+  int ours = 0;
+  for (const auto &f : live) ours += f.ours != 0;
+  Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s, %d to/from %s\n", code.c_str(), total,
+                FLT_RADIUS_NM, airliners, airliners == 1 ? "" : "s", ours, code.c_str());
   std::lock_guard<std::mutex> lock(mtx);
   if (code != apCode) return true;  // airport changed while we were downloading
   fltLive.swap(live);
@@ -2504,6 +2619,7 @@ void begin() {
   volcDesk = prefs.getBool("vcDesk", true);
   volcPop = prefs.getBool("vcPop", true);
   nearDesk = prefs.getBool("flNear", true);
+  oursDesk = prefs.getBool("flOurs", true);
   if (prefs.isKey("flAppr")) prefs.remove("flAppr");  // 1.6.2's approach widget is gone
   if (prefs.isKey("apCode")) {
     apCode = prefs.getString("apCode");
@@ -2623,7 +2739,7 @@ void loop() {
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
   // Airport flights: polled often, so lowest priority (only when nothing else is due)
-  bool fltWanted = nearDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
+  bool fltWanted = nearDesk || oursDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
   if (!flags && fltWanted && (millis() >= FLT_BOOT_DELAY_MS || flForce) &&
       (flForce || !flAttempted || millis() - flLastAttempt >= (flLastOk ? FLT_POLL_MS : FLT_RETRY_MS)))
     flags |= DO_FLIGHTS;
@@ -3469,6 +3585,18 @@ void setShowNearbyDesk(bool on) {
   nearDesk = on;
   prefs.begin("wx", false);
   prefs.putBool("flNear", on);
+  prefs.end();
+  if (on) flForce = true;
+  fltVer++;
+}
+
+bool showOurFlightsDesk() { return oursDesk; }
+
+void setShowOurFlightsDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  oursDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("flOurs", on);
   prefs.end();
   if (on) flForce = true;
   fltVer++;

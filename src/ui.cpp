@@ -118,6 +118,11 @@ int deskNearKey = -1;
 size_t deskNearIdx = 0;
 uint32_t deskNearRotMs = 0;
 const uint32_t NEAR_ROTATE_MS = 5000;  // several airliners: show each for 5 s
+// "To / from this airport" bubble: only shown while such a flight is near
+lv_obj_t *deskOurs = nullptr, *deskOursTop = nullptr, *deskOursL2 = nullptr, *deskOursL3 = nullptr, *deskOursImg = nullptr;
+int deskOursKey = -1;
+size_t deskOursIdx = 0;
+uint32_t deskOursRotMs = 0;
 lv_obj_t *flSummary = nullptr, *flStatus = nullptr, *flLiveBox = nullptr;
 lv_obj_t *flTa = nullptr;
 int flKey = -1;
@@ -401,6 +406,8 @@ void resetPtrs() {
   deskVolcKey = -1;
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
   deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = nullptr;
+  deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
+  deskOursKey = -1;
   deskNearKey = -1;
   flSummary = flStatus = flLiveBox = flTa = nullptr;
   flKey = -1;
@@ -622,14 +629,14 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc || !deskNear)
+      !deskVolc || !deskNear || !deskOurs)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   int key = barH * 1000 + rowH;
   if (key == deskLayoutKey) return;
@@ -885,11 +892,13 @@ void refreshDesktop() {
       } else {
         const auto &f = live[deskNearIdx];
         // Airline + callsign, then flight number / type / distance, then the numbers
+        char route[16] = "";
+        if (f.routeKnown) snprintf(route, sizeof(route), "  %s-%s", f.from, f.to);
         if (live.size() > 1)
-          snprintf(l2, sizeof(l2), "%s  %s (%u/%u)", f.airline, f.callsign, (unsigned)(deskNearIdx + 1),
+          snprintf(l2, sizeof(l2), "%s  %s%s (%u/%u)", f.airline, f.callsign, route, (unsigned)(deskNearIdx + 1),
                    (unsigned)live.size());
         else
-          snprintf(l2, sizeof(l2), "%s  %s", f.airline, f.callsign);
+          snprintf(l2, sizeof(l2), "%s  %s%s", f.airline, f.callsign, route);
         snprintf(l3, sizeof(l3), "%s  %s  %.1f nm", f.flight, f.type, f.distNm);
         if (f.phase == 3)
           snprintf(l4, sizeof(l4), "On the ground, %d kt", f.gsKt);
@@ -906,6 +915,50 @@ void refreshDesktop() {
       setHidden(deskNearL3, !l3[0]);
       setHidden(deskNearL4, !l4[0]);
       lv_obj_set_style_img_recolor(deskNearImg, live.empty() ? theme::text() : theme::accent(), 0);
+    }
+  }
+
+  // "To / from this airport" bubble: airliners whose route starts or ends
+  // here; hidden when there are none
+  if (deskOurs) {
+    std::vector<weather::LiveFlight> ours;
+    if (weather::showOurFlightsDesk())
+      for (const auto &f : weather::liveFlights())
+        if (f.ours) ours.push_back(f);
+    setHidden(deskOurs, ours.empty());
+    if (!ours.empty()) {
+      if (ours.size() > 1 && millis() - deskOursRotMs >= NEAR_ROTATE_MS) {
+        deskOursRotMs = millis();
+        deskOursIdx++;
+      }
+      if (deskOursIdx >= ours.size()) deskOursIdx = 0;
+      int k = (int)(weather::flightsVersion() * 64 + deskOursIdx % 64);
+      if (k != deskOursKey) {
+        deskOursKey = k;
+        const auto &f = ours[deskOursIdx];
+        String ap = weather::airportCode();
+        bool in = f.ours == 1;
+        char top[48], l2[64], l3[48];
+        snprintf(top, sizeof(top), "%s %s: %s", in ? "To" : "From", ap.c_str(), f.flight);
+        const char *city = in ? f.fromCity : f.toCity;
+        const char *other = in ? f.from : f.to;
+        if (ours.size() > 1)
+          snprintf(l2, sizeof(l2), "%s %s (%s) - %s (%u/%u)", in ? "from" : "to", city[0] ? city : other, other,
+                   f.airline, (unsigned)(deskOursIdx + 1), (unsigned)ours.size());
+        else
+          snprintf(l2, sizeof(l2), "%s %s (%s) - %s", in ? "from" : "to", city[0] ? city : other, other, f.airline);
+        if (f.phase == 3)
+          snprintf(l3, sizeof(l3), "On the ground  %s", f.type);
+        else if (f.rateFpm >= 100 || f.rateFpm <= -100)
+          snprintf(l3, sizeof(l3), "%.1f nm  %ld ft  %s%d  %d kt", f.distNm, (long)f.altFt,
+                   f.rateFpm > 0 ? LV_SYMBOL_UP : LV_SYMBOL_DOWN, abs(f.rateFpm), f.gsKt);
+        else
+          snprintf(l3, sizeof(l3), "%.1f nm  %ld ft  %d kt", f.distNm, (long)f.altFt, f.gsKt);
+        setText(deskOursTop, top);
+        setText(deskOursL2, l2);
+        setText(deskOursL3, l3);
+        lv_img_set_src(deskOursImg, in ? &ui_plane_land : &ui_plane);
+      }
     }
   }
 
@@ -1414,6 +1467,45 @@ void showDesktop() {
   deskNearL2 = smallLine();
   deskNearL3 = smallLine();
   deskNearL4 = smallLine();
+
+  // "To / from this airport" bubble (accent color, hidden until such a flight shows up)
+  deskOurs = widget([](lv_event_t *) {
+    fltBack = Screen::Desktop;
+    showFlights();
+  });
+  lv_obj_set_flex_flow(deskOurs, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskOurs, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(deskOurs, 0, 0);
+  lv_obj_set_style_border_color(deskOurs, theme::accent(), 0);
+  lv_obj_t *oline = lv_obj_create(deskOurs);
+  lv_obj_remove_style_all(oline);
+  lv_obj_set_size(oline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(oline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(oline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(oline, 6, 0);
+  lv_obj_clear_flag(oline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(oline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskOursImg = lv_img_create(oline);
+  lv_img_set_src(deskOursImg, &ui_plane_land);
+  lv_obj_set_style_img_recolor_opa(deskOursImg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(deskOursImg, theme::accent(), 0);
+  lv_obj_clear_flag(deskOursImg, LV_OBJ_FLAG_CLICKABLE);
+  deskOursTop = lv_label_create(oline);
+  lv_obj_set_style_text_color(deskOursTop, theme::accent(), 0);
+  lv_label_set_text(deskOursTop, "");
+  chevron(oline);
+  auto oursLine = [&]() {
+    lv_obj_t *l = lv_label_create(deskOurs);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_opa(l, LV_OPA_90, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_max_width(l, W() - 40, 0);
+    lv_obj_set_height(l, lv_font_get_line_height(&lv_font_montserrat_14));
+    lv_label_set_text(l, "");
+    return l;
+  };
+  deskOursL2 = oursLine();
+  deskOursL3 = oursLine();
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -4392,7 +4484,7 @@ void refreshFlightsScreen() {
   flKey = key;
 
   String code = weather::airportCode();
-  char b[160];
+  char b[256];
   int total = weather::flightsNearTotal();
   size_t nAir = weather::liveFlights().size();
   if (total < 0) snprintf(b, sizeof(b), "Near %s: --", code.c_str());
@@ -4411,14 +4503,20 @@ void refreshFlightsScreen() {
     lv_obj_t *l = lv_label_create(flLiveBox);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(l, LV_PCT(100));
+    char route[80];
+    if (f.routeKnown)
+      snprintf(route, sizeof(route), "%s (%s) to %s (%s)%s", f.fromCity[0] ? f.fromCity : f.from, f.from,
+               f.toCity[0] ? f.toCity : f.to, f.to, f.ours == 1 ? " - ARRIVING HERE" : f.ours == 2 ? " - DEPARTED HERE" : "");
+    else
+      snprintf(route, sizeof(route), "Route unknown");
     if (f.phase == 3)
-      snprintf(b, sizeof(b), "%s %s (%s)\n%s - %s, %.1f nm", f.airline, f.flight, f.callsign, f.type,
+      snprintf(b, sizeof(b), "%s %s (%s)\n%s\n%s - %s, %.1f nm", f.airline, f.flight, f.callsign, route, f.type,
                phaseTxt[f.phase], f.distNm);
     else
-      snprintf(b, sizeof(b), "%s %s (%s)\n%s - %s, %.1f nm, %ld ft, %d kt", f.airline, f.flight, f.callsign, f.type,
-               phaseTxt[f.phase], f.distNm, (long)f.altFt, f.gsKt);
+      snprintf(b, sizeof(b), "%s %s (%s)\n%s\n%s - %s, %.1f nm, %ld ft, %d kt", f.airline, f.flight, f.callsign, route,
+               f.type, phaseTxt[f.phase], f.distNm, (long)f.altFt, f.gsKt);
     lv_label_set_text(l, b);
-    if (f.phase == 1 || f.phase == 2) lv_obj_set_style_text_color(l, theme::accent(), 0);
+    if (f.ours) lv_obj_set_style_text_color(l, theme::accent(), 0);
   }
 }
 
@@ -4469,6 +4567,21 @@ void showFlights() {
         else lv_obj_clear_state(s, LV_STATE_CHECKED);
       },
       LV_EVENT_CLICKED, sw);
+  String ot = "Flights to/from " + weather::airportCode() + " widget";
+  row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, ot.c_str());
+  sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showOurFlightsDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showOurFlightsDesk();
+        weather::setShowOurFlightsDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
   b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
   lv_obj_add_event_cb(
       b,
@@ -4494,6 +4607,7 @@ void showFlights() {
   lv_list_add_text(list, "Airliners within 10 nm now");
   flLiveBox = box();
   lv_list_add_text(list, "Live ADS-B data: adsb.fi (adsb.fi)");
+  lv_list_add_text(list, "Routes: adsbdb.com (community data)");
 
   load(scr, Screen::Flights);
   weather::flightsKeepAlive();

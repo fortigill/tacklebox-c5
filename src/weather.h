@@ -256,7 +256,8 @@ bool volcanoDistanceKm(float vlat, float vlon, float &km);  // from the ZIP code
 // ---- Aircraft near an airport (live ADS-B from adsb.fi) ----
 // Every ~30 s: how many aircraft are within 10 NM of one airport, and the
 // airliners among them (airline, callsign, flight number, type, distance,
-// height, climb/descent, speed). The airport's position comes from
+// height, climb/descent, speed), each with its route (origin / destination)
+// looked up by callsign on adsbdb.com. The airport's position comes from
 // AviationWeather.gov (NOAA).
 struct LiveFlight {       // an airliner near the airport right now
   char callsign[10] = ""; // radio callsign, e.g. "AAY2871"
@@ -268,6 +269,11 @@ struct LiveFlight {       // an airliner near the airport right now
   int16_t gsKt = 0;
   int16_t rateFpm = 0;    // climb (+) / descent (-)
   uint8_t phase = 0;      // 0 nearby, 1 approaching, 2 departing, 3 on the ground
+  // Route from the adsbdb.com callsign database ("" when unknown)
+  bool routeKnown = false;
+  char from[5] = "", to[5] = "";            // airport codes (IATA, or ICAO without one)
+  char fromCity[24] = "", toCity[24] = "";
+  uint8_t ours = 0;       // 1 = flying TO this airport, 2 = FROM it, 0 = passing / unknown
 };
 std::vector<LiveFlight> liveFlights();        // nearest first
 String airportCode();                 // e.g. "DAB"
@@ -276,6 +282,8 @@ void setAirportCode(const String &code);  // 3-letter FAA/IATA or 4-letter ICAO
 bool showNearbyDesk();                // desktop widget: aircraft near the airport, airliner details
 void setShowNearbyDesk(bool on);
 int flightsNearTotal();               // all aircraft within 10 NM at the last check (-1 = none yet)
+bool showOurFlightsDesk();            // widget for airliners flying to / from this airport (hidden when none)
+void setShowOurFlightsDesk(bool on);
 void refreshFlights();
 void flightsKeepAlive();              // the page is open: keep polling with the widget off
 uint32_t flightsVersion();

@@ -3,6 +3,31 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.0] - 2026-11-24
+
+### Added
+- **Routes for airliners near the airport.** Each airliner's callsign is looked up on
+  adsbdb.com, a free public route database (no key). That gives its origin and destination,
+  with city names. One-stop routes are handled too.
+  - Up to 4 new callsigns are looked up per check. Results are cached for 6 hours (unknown
+    callsigns for 1 hour), so a flight is looked up once, not every 30 s.
+  - The routes are community data: usually right for scheduled airline flights, but a
+    recently changed route can be out of date.
+- **Flights to/from DAB widget** (switch on the Aircraft near airport page, on by default).
+  It appears **only while** an airliner near the airport is flying to or from it, and hides
+  itself otherwise.
+  - Line 1: a landing or takeoff plane icon and "To DAB: DL 3154" / "From DAB: AA 5462", in
+    the accent color with an accent border.
+  - Line 2: the other end and the airline ("from Atlanta (ATL) - Delta"), plus "(1/2)" when
+    several take turns every 5 s.
+  - Line 3: distance, height, climb / descent and speed, or "On the ground".
+- Near-the-airport widget: the route follows the callsign ("Allegiant  AAY2871  PIE-BWI").
+- Page list: each airliner gets a route line ("St. Petersburg (PIE) to Baltimore (BWI)").
+  Flights to or from this airport are marked "ARRIVING HERE" / "DEPARTED HERE" and shown in
+  the accent color.
+- The serial log shows each route lookup and how many airliners are flying to or from the
+  airport.
+
 ## [1.6.5] - 2026-11-24
 
 ### Removed

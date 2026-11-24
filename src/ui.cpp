@@ -6,6 +6,7 @@
 #include <lvgl.h>
 
 #include <algorithm>
+#include <time.h>
 #include <cmath>
 #include <vector>
 
@@ -48,6 +49,7 @@ lv_obj_t *deskWifiIcon = nullptr;
 lv_obj_t *deskWifi5g = nullptr;  // green "5G" badge over the Wi-Fi icon (dual-band boards)
 lv_obj_t *deskWifiLbl = nullptr;
 lv_obj_t *deskClock = nullptr;
+lv_obj_t *deskAmPm = nullptr;  // small AM/PM after the status-bar clock
 lv_obj_t *deskWx = nullptr, *deskWxImg = nullptr;
 lv_obj_t *deskDrone = nullptr;  // status-bar drone icon while Drone Watch runs
 int deskDroneState = -1;        // last color applied: 0 steady, 1 blue, 2 red
@@ -280,7 +282,7 @@ lv_color_t pctColor(const weather::Stock &s) {
 // ---------- helpers ----------
 
 void resetPtrs() {
-  deskWifiIcon = deskWifi5g = deskWifiLbl = deskClock = nullptr;
+  deskWifiIcon = deskWifi5g = deskWifiLbl = deskClock = deskAmPm = nullptr;
   deskWx = deskWxImg = wxImg = wxPlace = wxDesc = wxDetail = wxStatus = wxZipTa = nullptr;
   deskDrone = nullptr;
   deskDroneState = -1;
@@ -568,8 +570,18 @@ void refreshDesktop() {
   setText(deskWifiLbl, buf);
 
   char clk[16];
-  timesvc::formatTime(clk, sizeof(clk), timesvc::barAmPm());
+  timesvc::formatTime(clk, sizeof(clk), false);  // AM/PM goes in its own, smaller label
   setText(deskClock, clk);
+  if (deskAmPm) {
+    bool amPm = timesvc::barAmPm() && !timesvc::use24h() && timesvc::valid();
+    if (amPm) {
+      time_t now = time(nullptr);
+      struct tm t;
+      localtime_r(&now, &t);
+      setText(deskAmPm, t.tm_hour < 12 ? "AM" : "PM");
+    }
+    setHidden(deskAmPm, !amPm);
+  }
 
   // Drone Watch icon: steady while watching, flashing blue/red while a drone
   // has been heard within the last watch cycle
@@ -878,16 +890,30 @@ void showDesktop() {
   lv_obj_set_style_img_recolor(deskDrone, theme::text(), 0);
   lv_obj_add_event_cb(deskDrone, [](lv_event_t *) { showDrones(); }, LV_EVENT_CLICKED, nullptr);
 
-  // Clock; tap it for Date & time settings
-  deskClock = lv_label_create(bar);  // stays on the top line
+  // Clock; tap it for Date & time settings. The time and a small AM/PM sit
+  // together in one transparent box, the AM/PM on the time's baseline.
+  lv_obj_t *clk = lv_obj_create(bar);  // stays on the top line
+  lv_obj_remove_style_all(clk);
+  lv_obj_set_size(clk, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(clk, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(clk, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+  lv_obj_set_style_pad_column(clk, 2, 0);
+  lv_obj_clear_flag(clk, LV_OBJ_FLAG_SCROLLABLE);
+  // Centered on the 32 px top line (the bar aligns its children to the top)
+  lv_obj_set_style_translate_y(clk, (32 - lv_font_get_line_height(barFont)) / 2, 0);
+  lv_obj_add_flag(clk, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(clk, 8);
+  lv_obj_add_event_cb(clk, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED, nullptr);
+  deskClock = lv_label_create(clk);
   lv_obj_set_style_text_font(deskClock, barFont, 0);
   lv_label_set_text(deskClock, "--:--");
-  // Centered on the 32 px top line (the bar aligns its children to the top)
-  lv_obj_set_style_translate_y(deskClock, (32 - lv_font_get_line_height(barFont)) / 2, 0);
-  lv_obj_add_flag(deskClock, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_ext_click_area(deskClock, 8);
-  lv_obj_add_event_cb(deskClock, [](lv_event_t *) { showDateTime(); }, LV_EVENT_CLICKED,
-                      nullptr);
+  deskAmPm = lv_label_create(clk);
+  lv_obj_set_style_text_font(deskAmPm, &lv_font_montserrat_10, 0);  // same size as the 5G tag
+  lv_label_set_text(deskAmPm, "");
+  // Bottom-aligned boxes put the two baselines this far apart; lift it to match
+  lv_obj_set_style_translate_y(deskAmPm,
+                               -(lv_coord_t)(barFont->base_line - lv_font_montserrat_10.base_line), 0);
+  lv_obj_add_flag(deskAmPm, LV_OBJ_FLAG_HIDDEN);
 
   // Wi-Fi icon: a transparent button so it's an easy stylus target
   lv_obj_t *wb = lv_btn_create(bar);
@@ -911,11 +937,7 @@ void showDesktop() {
     // Small green "5G" tag on the lower right of the icon while on 5 GHz
     deskWifi5g = lv_label_create(wb);
     lv_label_set_text(deskWifi5g, "5G");
-#if LV_FONT_MONTSERRAT_10
-    lv_obj_set_style_text_font(deskWifi5g, &lv_font_montserrat_10, 0);  // ~25% smaller than 14
-#else
-    lv_obj_set_style_text_font(deskWifi5g, &lv_font_montserrat_14, 0);
-#endif
+    lv_obj_set_style_text_font(deskWifi5g, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(deskWifi5g, lv_color_white(), 0);
     lv_obj_set_style_bg_color(deskWifi5g, lv_palette_main(LV_PALETTE_GREEN), 0);
     lv_obj_set_style_bg_opa(deskWifi5g, LV_OPA_COVER, 0);

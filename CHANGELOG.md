@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.2.3] - 2026-11-24
+
+### Changed
+- Status bar clock: AM/PM is now small 10 px text on the time's baseline, the same size as the
+  5G tag, so it takes much less room. It's still controlled by **AM/PM in status bar**. Both
+  boards now include the 10 px font (about 5-8 KB of flash on the classic CYD).
+
 ## [1.2.2] - 2026-11-24
 
 ### Changed

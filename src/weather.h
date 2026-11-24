@@ -271,6 +271,7 @@ struct FlightEvent {
   int32_t altFt = -1;     // height above the field at detection
 };
 struct LiveFlight {       // an airliner near the airport right now
+  char callsign[10] = ""; // radio callsign, e.g. "AAY2871"
   char flight[10] = "";
   char airline[28] = "";
   char type[6] = "";

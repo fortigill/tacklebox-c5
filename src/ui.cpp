@@ -114,7 +114,8 @@ lv_obj_t *volcAlertBox = nullptr;  // level-change pop-up (top layer)
 lv_obj_t *deskFlt = nullptr, *deskFltTop = nullptr, *deskFltDetail = nullptr;
 int deskFltKey = -1;
 // "Near the airport" bubble: aircraft count, then one airliner's details
-lv_obj_t *deskNear = nullptr, *deskNearTop = nullptr, *deskNearL2 = nullptr, *deskNearL3 = nullptr, *deskNearImg = nullptr;
+lv_obj_t *deskNear = nullptr, *deskNearTop = nullptr, *deskNearL2 = nullptr, *deskNearL3 = nullptr, *deskNearL4 = nullptr,
+         *deskNearImg = nullptr;
 int deskNearKey = -1;
 size_t deskNearIdx = 0;
 uint32_t deskNearRotMs = 0;
@@ -407,7 +408,7 @@ void resetPtrs() {
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
   deskFlt = deskFltTop = deskFltDetail = nullptr;
   deskFltKey = -1;
-  deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearImg = nullptr;
+  deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = nullptr;
   deskNearKey = -1;
   flSummary = flStatus = flLiveBox = flDepBox = flArrBox = flTa = nullptr;
   flKey = -1;
@@ -914,31 +915,35 @@ void refreshDesktop() {
     if (nearKey != deskNearKey) {
       deskNearKey = nearKey;
       int total = weather::flightsNearTotal();
-      char top[40], l2[48], l3[48];
+      char top[40], l2[56], l3[48], l4[48];
       if (total < 0) snprintf(top, sizeof(top), "Near %s: --", weather::airportCode().c_str());
       else snprintf(top, sizeof(top), "%d near %s", total, weather::airportCode().c_str());
+      l3[0] = l4[0] = 0;
       if (live.empty()) {
         snprintf(l2, sizeof(l2), total < 0 ? "Checking..." : "No airliners within 10 nm");
-        l3[0] = 0;
       } else {
         const auto &f = live[deskNearIdx];
+        // Airline + callsign, then flight number / type / distance, then the numbers
         if (live.size() > 1)
-          snprintf(l2, sizeof(l2), "%s %s  %.1f nm (%u/%u)", f.flight, f.type, f.distNm, (unsigned)(deskNearIdx + 1),
+          snprintf(l2, sizeof(l2), "%s  %s (%u/%u)", f.airline, f.callsign, (unsigned)(deskNearIdx + 1),
                    (unsigned)live.size());
         else
-          snprintf(l2, sizeof(l2), "%s %s  %.1f nm", f.flight, f.type, f.distNm);
+          snprintf(l2, sizeof(l2), "%s  %s", f.airline, f.callsign);
+        snprintf(l3, sizeof(l3), "%s  %s  %.1f nm", f.flight, f.type, f.distNm);
         if (f.phase == 3)
-          snprintf(l3, sizeof(l3), "On the ground, %d kt", f.gsKt);
+          snprintf(l4, sizeof(l4), "On the ground, %d kt", f.gsKt);
         else if (f.rateFpm >= 100 || f.rateFpm <= -100)
-          snprintf(l3, sizeof(l3), "%ld ft  %s%d fpm  %d kt", (long)f.altFt, f.rateFpm > 0 ? LV_SYMBOL_UP : LV_SYMBOL_DOWN,
+          snprintf(l4, sizeof(l4), "%ld ft  %s%d fpm  %d kt", (long)f.altFt, f.rateFpm > 0 ? LV_SYMBOL_UP : LV_SYMBOL_DOWN,
                    abs(f.rateFpm), f.gsKt);
         else
-          snprintf(l3, sizeof(l3), "%ld ft  level  %d kt", (long)f.altFt, f.gsKt);
+          snprintf(l4, sizeof(l4), "%ld ft  level  %d kt", (long)f.altFt, f.gsKt);
       }
       setText(deskNearTop, top);
       setText(deskNearL2, l2);
       setText(deskNearL3, l3);
+      setText(deskNearL4, l4);
       setHidden(deskNearL3, !l3[0]);
+      setHidden(deskNearL4, !l4[0]);
       lv_obj_set_style_img_recolor(deskNearImg, live.empty() ? theme::text() : theme::accent(), 0);
     }
   }
@@ -1479,6 +1484,7 @@ void showDesktop() {
   };
   deskNearL2 = smallLine();
   deskNearL3 = smallLine();
+  deskNearL4 = smallLine();
 
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
@@ -4451,7 +4457,7 @@ void showVolcanoDetail() {
 String eventLine2(const weather::FlightEvent &e) {
   char when[32];
   timesvc::formatEpoch(e.time, when, sizeof(when));
-  String t = String(when) + " (" + agoText(e.time) + ")";
+  String t = String(e.callsign) + " - " + when + " (" + agoText(e.time) + ")";
   if (e.type[0]) t += String(" - ") + e.type;
   if (e.runway > 0) t += " - rwy " + String(e.runway);
   return t;
@@ -4477,7 +4483,7 @@ void refreshFlightsScreen() {
   flKey = key;
 
   String code = weather::airportCode(), name = weather::airportName();
-  char b[128];
+  char b[160];
   snprintf(b, sizeof(b), "Today at %s:\n%d takeoffs, %d landings", code.c_str(), weather::flightsDepToday(),
            weather::flightsArrToday());
   setText(flSummary, b);
@@ -4495,10 +4501,11 @@ void refreshFlightsScreen() {
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(l, LV_PCT(100));
     if (f.phase == 3)
-      snprintf(b, sizeof(b), "%s  %s - %s, %.1f nm", f.flight, f.type, phaseTxt[f.phase], f.distNm);
+      snprintf(b, sizeof(b), "%s %s (%s)\n%s - %s, %.1f nm", f.airline, f.flight, f.callsign, f.type,
+               phaseTxt[f.phase], f.distNm);
     else
-      snprintf(b, sizeof(b), "%s  %s - %s, %.1f nm, %ld ft, %d kt", f.flight, f.type, phaseTxt[f.phase], f.distNm,
-               (long)f.altFt, f.gsKt);
+      snprintf(b, sizeof(b), "%s %s (%s)\n%s - %s, %.1f nm, %ld ft, %d kt", f.airline, f.flight, f.callsign, f.type,
+               phaseTxt[f.phase], f.distNm, (long)f.altFt, f.gsKt);
     lv_label_set_text(l, b);
     if (f.phase == 1 || f.phase == 2) lv_obj_set_style_text_color(l, theme::accent(), 0);
   }
@@ -4516,7 +4523,7 @@ void refreshFlightsScreen() {
     }
     for (size_t i = 0; i < rows.size(); i++) {
       const auto &e = rows[i];
-      String l1 = String(e.flight) + "  " + e.airline;
+      String l1 = String(e.airline) + "  " + e.flight;
       twoLineRow(box, l1, dep ? theme::accent() : theme::text(), eventLine2(e), onFlightRow,
                  dep ? i : 100 + i);
     }

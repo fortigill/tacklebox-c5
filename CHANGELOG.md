@@ -3,6 +3,18 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.6.4] - 2026-11-24
+
+### Changed
+- Airline names and callsigns everywhere the flight tracker lists an airliner:
+  - **Near-the-airport widget** is now four lines: count; airline and callsign ("Allegiant
+    AAY2871", plus "(1/3)" when rotating); flight number, type and distance ("G4 2871  B38M
+    7.9 nm"); height, climb or descent and speed.
+  - **Airliners near the airport now** (flights page): "Allegiant G4 2871 (AAY2871)", then
+    type, phase, distance, height and speed on the second line.
+  - **Last 10 takeoffs / landings:** the airline name comes first ("Delta  DL 3154") and the
+    callsign starts the second line.
+
 ## [1.6.3] - 2026-11-24
 
 ### Changed

@@ -2095,6 +2095,7 @@ bool pollFlights(String &why) {
     t->seenNow = true;
 
     LiveFlight lf;
+    strcpy(lf.callsign, cs);
     strcpy(lf.flight, flight);
     strcpy(lf.airline, airline);
     strcpy(lf.type, t->type);

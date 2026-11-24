@@ -3,6 +3,15 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.6.1] - 2026-11-24
+
+### Changed
+- Airport flights: every ADS-B check is logged on the serial monitor, not just detected
+  takeoffs and landings. Each check prints the reply code, how many aircraft were within
+  10 NM, and one line per airliner (flight, callsign, type, distance, height, climb rate,
+  speed). A reply without an aircraft list is now reported as an error instead of being
+  treated as "no aircraft".
+
 ## [1.6.0] - 2026-11-24
 
 ### Added

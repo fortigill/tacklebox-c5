@@ -1995,11 +1995,17 @@ bool pollFlights(String &why) {
     }
     break;
   }
+  Serial.printf("[flights] adsb.fi v%d -> %d (%s)\n", adsbApi, code2, adsbTls ? "https" : "http");
   if (code2 != 200 || !parsed) {
     if (why.isEmpty()) why = String("adsb.fi replied ") + code2;
     return false;
   }
   JsonArray acs = doc["ac"].is<JsonArray>() ? doc["ac"].as<JsonArray>() : doc["aircraft"].as<JsonArray>();
+  if (acs.isNull()) {
+    why = "no aircraft list in the ADS-B reply";
+    return false;
+  }
+  int total = 0, airliners = 0;
 
   uint32_t nowMs = millis();
   std::vector<LiveFlight> live;
@@ -2013,6 +2019,7 @@ bool pollFlights(String &why) {
     fltVer++;
   }
   for (JsonObject a : acs) {
+    total++;
     char cs[10];
     asciiCopy(cs, sizeof(cs), a["flight"] | "");
     for (int i = (int)strlen(cs) - 1; i >= 0 && cs[i] == ' '; i--) cs[i] = 0;  // padded with spaces
@@ -2020,6 +2027,7 @@ bool pollFlights(String &why) {
     uint8_t cat = (catS[0] == 'A' && catS[1] >= '0' && catS[1] <= '9') ? catS[1] - '0' : 0;
     char flight[10], airline[28];
     if (!airlineFor(cs, cat, flight, sizeof(flight), airline, sizeof(airline))) continue;
+    airliners++;
     if (a["lat"].isNull() || a["alt_baro"].isNull()) continue;
     float seen = a["seen_pos"] | (a["seen"] | 0.0f);
     if (seen > 30) continue;  // stale position
@@ -2094,6 +2102,8 @@ bool pollFlights(String &why) {
     lf.rateFpm = rate;
     lf.phase = ground ? 3 : rate >= 300 ? 2 : (rate <= -300 && agl < 6000) ? 1 : 0;
     live.push_back(lf);
+    Serial.printf("[flights]   %s %s %s: %.1f nm, %s%ld ft, %d fpm, %d kt\n", flight, cs, t->type, dist,
+                  ground ? "GROUND " : "", (long)agl, rate, gs);
   }
   // Landing out of sight: last seen low, close in and descending, then gone
   // (below the receivers' coverage on short final)
@@ -2113,6 +2123,8 @@ bool pollFlights(String &why) {
                                  [&](const FltTrack &t) { return nowMs - t.lastMs > 10UL * 60 * 1000; }),
                   fltTracks.end());
   std::sort(live.begin(), live.end(), [](const LiveFlight &x, const LiveFlight &y) { return x.distNm < y.distNm; });
+  Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s; today %d takeoffs, %d landings\n",
+                code.c_str(), total, FLT_RADIUS_NM, airliners, airliners == 1 ? "" : "s", fltDepToday, fltArrToday);
   fltLive.swap(live);
   fltVer++;
   why = "";

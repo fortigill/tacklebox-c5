@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.1] - 2026-11-24
+
+### Changed
+- Near-the-airport widget, line 2: airline and route ("Allegiant  PIE to BWI") instead of
+  airline, callsign and route. The flight number is on line 3 anyway. It reads "route
+  unknown" when adsbdb has no route for the callsign. The callsign is still on the page list.
+
 ## [1.7.0] - 2026-11-24
 
 ### Added

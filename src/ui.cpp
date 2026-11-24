@@ -892,13 +892,15 @@ void refreshDesktop() {
       } else {
         const auto &f = live[deskNearIdx];
         // Airline + callsign, then flight number / type / distance, then the numbers
-        char route[16] = "";
-        if (f.routeKnown) snprintf(route, sizeof(route), "  %s-%s", f.from, f.to);
+        // Airline and route (the flight number is on the next line already)
+        char route[24];
+        if (f.routeKnown) snprintf(route, sizeof(route), "%s to %s", f.from, f.to);
+        else snprintf(route, sizeof(route), "route unknown");
         if (live.size() > 1)
-          snprintf(l2, sizeof(l2), "%s  %s%s (%u/%u)", f.airline, f.callsign, route, (unsigned)(deskNearIdx + 1),
+          snprintf(l2, sizeof(l2), "%s  %s (%u/%u)", f.airline, route, (unsigned)(deskNearIdx + 1),
                    (unsigned)live.size());
         else
-          snprintf(l2, sizeof(l2), "%s  %s%s", f.airline, f.callsign, route);
+          snprintf(l2, sizeof(l2), "%s  %s", f.airline, route);
         snprintf(l3, sizeof(l3), "%s  %s  %.1f nm", f.flight, f.type, f.distNm);
         if (f.phase == 3)
           snprintf(l4, sizeof(l4), "On the ground, %d kt", f.gsKt);

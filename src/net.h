@@ -8,10 +8,17 @@
 // Wi-Fi manager: async scanning, DHCP connect, credentials saved in NVS.
 namespace net {
 
+// Bands an SSID was seen on (AccessPoint::bands)
+const uint8_t BAND_24 = 1;
+const uint8_t BAND_5 = 2;
+
+inline bool is5GHz(uint8_t channel) { return channel > 14; }
+
 struct AccessPoint {
   String ssid;
-  int32_t rssi;
+  int32_t rssi;    // strongest access point of this SSID
   bool secure;
+  uint8_t bands;   // BAND_24 | BAND_5
 };
 
 // One access point as the analyzer sees it (not deduplicated by SSID)
@@ -56,6 +63,9 @@ String ssid();       // network we're connected/connecting to
 String savedSsid();  // network stored in NVS ("" if none)
 String ip();
 int rssi();
+int channel();  // channel of the current connection, 0 if none
+int band();     // 2 or 5 (GHz) while connected, else 0
+bool dualBand();  // this board's radio does 5 GHz too
 
 int signalPercent(int32_t rssi);
 

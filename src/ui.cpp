@@ -127,11 +127,19 @@ uint8_t huntWifiChannel = 0;
 Screen huntBack = Screen::BleDetail;
 
 // Wi-Fi analyzer
-const int WFA_CHANNELS = 13;
+// The graph has one bar per 2.4 GHz channel (1-13). On 5 GHz there are too
+// many channels for the screen, so each bar is an 80 MHz block (the width most
+// 5 GHz routers use), labeled with its first channel.
+const int WFA_CHANNELS = 13;  // most bars on either band
+const int WFA_5G_BINS = 7;
+const uint8_t WFA_5G_FIRST[WFA_5G_BINS] = {36, 52, 100, 116, 132, 149, 165};
+const uint8_t WFA_5G_LAST[WFA_5G_BINS] = {48, 64, 112, 128, 144, 161, 177};
 const size_t WFA_MAX_ROWS = 40;
+lv_obj_t *wfaCols[WFA_CHANNELS + 1] = {nullptr};
 lv_obj_t *wfaBars[WFA_CHANNELS + 1] = {nullptr};
 lv_obj_t *wfaChLbl[WFA_CHANNELS + 1] = {nullptr};
-lv_obj_t *wfaList = nullptr, *wfaStatus = nullptr, *wfaScanBtn = nullptr;
+lv_obj_t *wfaList = nullptr, *wfaStatus = nullptr, *wfaScanBtn = nullptr, *wfaBandBtn = nullptr;
+uint8_t wfaBand = 2;  // band shown: 2 (2.4 GHz) or 5
 net::ScanState wfaLastSt = net::ScanState::Idle;
 std::vector<net::ApInfo> wfaRows;
 
@@ -2186,34 +2194,90 @@ void onApClicked(lv_event_t *e) {
   showHunt();
 }
 
+int wfaBins() { return wfaBand == 5 ? WFA_5G_BINS : WFA_CHANNELS; }
+
+// Bar (1-based) a channel falls in on the band being shown; 0 = not shown
+int wfaBin(uint8_t ch) {
+  if (wfaBand == 5) {
+    for (int i = 0; i < WFA_5G_BINS; i++)
+      if (ch >= WFA_5G_FIRST[i] && ch <= WFA_5G_LAST[i]) return i + 1;
+    return 0;
+  }
+  return ch >= 1 && ch <= WFA_CHANNELS ? ch : 0;
+}
+
+uint8_t wfaBinChannel(int bin) { return wfaBand == 5 ? WFA_5G_FIRST[bin - 1] : bin; }
+
+// Size and label the bars for the band being shown
+void wfaLayoutGraph() {
+  int bins = wfaBins();
+  int colW = (W() - 10) / bins;
+  if (colW > 40) colW = 40;
+  for (int c = 1; c <= WFA_CHANNELS; c++) {
+    if (!wfaCols[c]) continue;
+    setHidden(wfaCols[c], c > bins);
+    if (c > bins) continue;
+    lv_obj_set_width(wfaCols[c], colW);
+    lv_obj_set_width(wfaBars[c], colW - 6);
+    lv_label_set_text_fmt(wfaChLbl[c], "%u", wfaBinChannel(c));
+    lv_bar_set_value(wfaBars[c], 0, LV_ANIM_OFF);
+  }
+  if (wfaBandBtn) lv_label_set_text(lv_obj_get_child(wfaBandBtn, 0), wfaBand == 5 ? "5G" : "2.4G");
+}
+
 void wfaFill() {
   if (!wfaList) return;
   const auto &aps = net::rawResults();
-  wfaRows.assign(aps.begin(), aps.begin() + (aps.size() < WFA_MAX_ROWS ? aps.size() : WFA_MAX_ROWS));
+  bool dual = net::dualBand();
 
+  // Rows: the band being shown (all of them on a 2.4 GHz-only board)
+  wfaRows.clear();
+  unsigned n24 = 0, n5 = 0;
+  for (const auto &ap : aps) {
+    bool five = net::is5GHz(ap.channel);
+    (five ? n5 : n24)++;
+    if (dual && five != (wfaBand == 5)) continue;
+    if (wfaRows.size() < WFA_MAX_ROWS) wfaRows.push_back(ap);
+  }
+
+  int bins = wfaBins();
   int cnt[WFA_CHANNELS + 1] = {0};
-  for (const auto &ap : aps)
-    if (ap.channel >= 1 && ap.channel <= WFA_CHANNELS) cnt[ap.channel]++;
+  for (const auto &ap : aps) {
+    int b = wfaBin(ap.channel);
+    if (b) cnt[b]++;
+  }
   int mx = 1;
-  for (int c = 1; c <= WFA_CHANNELS; c++) mx = cnt[c] > mx ? cnt[c] : mx;
+  for (int c = 1; c <= bins; c++) mx = cnt[c] > mx ? cnt[c] : mx;
 
-  int myCh = net::state() == net::State::Connected ? WiFi.channel() : 0;
-  for (int c = 1; c <= WFA_CHANNELS; c++) {
+  int myBin = wfaBin(net::channel());
+  for (int c = 1; c <= bins; c++) {
     lv_bar_set_range(wfaBars[c], 0, mx);
     lv_bar_set_value(wfaBars[c], cnt[c], LV_ANIM_OFF);
     lv_obj_set_style_bg_color(wfaBars[c], congestionColor(cnt[c]), LV_PART_INDICATOR);
-    lv_obj_set_style_text_color(wfaChLbl[c], c == myCh ? lv_palette_main(LV_PALETTE_BLUE)
-                                                      : theme::text(), 0);
+    lv_obj_set_style_text_color(wfaChLbl[c], c == myBin ? lv_palette_main(LV_PALETTE_BLUE)
+                                                       : theme::text(), 0);
   }
 
-  // Suggest the least crowded of the non-overlapping 2.4 GHz channels
-  int best = 1;
-  for (int c : {6, 11})
-    if (cnt[c] < cnt[best]) best = c;
-  char buf[96];
+  // Suggest the least crowded channel that needs no radar check: 1/6/11 on
+  // 2.4 GHz, the 36 or 149 block on 5 GHz
+  int best;
+  if (wfaBand == 5) {
+    best = cnt[6] < cnt[1] ? 6 : 1;
+  } else {
+    best = 1;
+    for (int c : {6, 11})
+      if (cnt[c] < cnt[best]) best = c;
+  }
+  char buf[112];
   if (aps.empty()) snprintf(buf, sizeof(buf), "No networks found");
-  else snprintf(buf, sizeof(buf), "%u networks  -  best channel: %d%s", (unsigned)aps.size(), best,
-                myCh ? "  (blue = yours)" : "");
+  else if (dual)
+    snprintf(buf, sizeof(buf), "%s: %u networks (%s: %u)  -  best ch %u%s",
+             wfaBand == 5 ? "5 GHz" : "2.4 GHz", wfaBand == 5 ? n5 : n24,
+             wfaBand == 5 ? "2.4 GHz" : "5 GHz", wfaBand == 5 ? n24 : n5, wfaBinChannel(best),
+             myBin ? "  (blue = yours)" : "");
+  else
+    snprintf(buf, sizeof(buf), "%u networks  -  best channel: %d%s", (unsigned)aps.size(), best,
+             myBin ? "  (blue = yours)" : "");
   setText(wfaStatus, buf);
 
   lv_obj_clean(wfaList);
@@ -2227,6 +2291,8 @@ void wfaFill() {
     lv_obj_add_event_cb(b, onApClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
   if (!wfaRows.empty()) lv_list_add_text(wfaList, "Tap a network to hunt it");
+  else if (!aps.empty() && dual)
+    lv_list_add_text(wfaList, wfaBand == 5 ? "No 5 GHz networks in range" : "No 2.4 GHz networks in range");
 }
 
 void pollWifiAnalyzer() {
@@ -2235,17 +2301,38 @@ void pollWifiAnalyzer() {
   else lv_obj_clear_state(wfaScanBtn, LV_STATE_DISABLED);
   if (s == wfaLastSt) return;
   wfaLastSt = s;
-  if (s == net::ScanState::Running) setText(wfaStatus, "Scanning all channels...");
+  if (s == net::ScanState::Running)
+    setText(wfaStatus, net::dualBand() ? "Scanning 2.4 + 5 GHz..." : "Scanning all channels...");
   else if (s == net::ScanState::Failed) setText(wfaStatus, "Scan failed - tap Scan to retry");
   else if (s == net::ScanState::Done) wfaFill();
 }
 
 void showWifiAnalyzer() {
   lv_obj_t *scr = newScreen();
-  const int btnW = 76;
-  lv_obj_t *hdr = makeHeader(scr, "Wi-Fi analyzer", [](lv_event_t *) { showMenu(); }, btnW);
-  wfaScanBtn = flatBtn(hdr, LV_SYMBOL_REFRESH " Scan", btnW, 32);
-  lv_obj_align(wfaScanBtn, LV_ALIGN_RIGHT_MID, 0, 0);
+  wfaBandBtn = nullptr;
+  if (net::dualBand()) {
+    // Band switch + icon-only Scan, so the title still fits in portrait
+    const int scanW = 48, bandW = 60;
+    lv_obj_t *hdr = makeHeader(scr, W() >= 300 ? "Analyzer" : "Wi-Fi",
+                               [](lv_event_t *) { showMenu(); }, scanW + bandW + 4);
+    wfaScanBtn = flatBtn(hdr, LV_SYMBOL_REFRESH, scanW, 32);
+    lv_obj_align(wfaScanBtn, LV_ALIGN_RIGHT_MID, 0, 0);
+    wfaBandBtn = flatBtn(hdr, "2.4G", bandW, 32);
+    lv_obj_align(wfaBandBtn, LV_ALIGN_RIGHT_MID, -(scanW + 4), 0);
+    lv_obj_add_event_cb(wfaBandBtn,
+                        [](lv_event_t *) {
+                          wfaBand = wfaBand == 5 ? 2 : 5;
+                          wfaLayoutGraph();
+                          if (net::scanState() == net::ScanState::Done) wfaFill();
+                        },
+                        LV_EVENT_CLICKED, nullptr);
+  } else {
+    const int btnW = 76;
+    lv_obj_t *hdr = makeHeader(scr, "Wi-Fi analyzer", [](lv_event_t *) { showMenu(); }, btnW);
+    wfaScanBtn = flatBtn(hdr, LV_SYMBOL_REFRESH " Scan", btnW, 32);
+    lv_obj_align(wfaScanBtn, LV_ALIGN_RIGHT_MID, 0, 0);
+    wfaBand = 2;
+  }
   lv_obj_add_event_cb(wfaScanBtn, [](lv_event_t *) { net::startScan(true); }, LV_EVENT_CLICKED,
                       nullptr);
 
@@ -2261,6 +2348,7 @@ void showWifiAnalyzer() {
   int colW = (W() - 10) / WFA_CHANNELS;
   for (int c = 1; c <= WFA_CHANNELS; c++) {
     lv_obj_t *col = lv_obj_create(graph);
+    wfaCols[c] = col;
     lv_obj_remove_style_all(col);
     lv_obj_set_size(col, colW, graphH);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
@@ -2273,6 +2361,7 @@ void showWifiAnalyzer() {
     wfaChLbl[c] = lv_label_create(col);
     lv_label_set_text_fmt(wfaChLbl[c], "%d", c);
   }
+  wfaLayoutGraph();
 
   lv_obj_t *body = makeBody(scr, HEADER_H + graphH + 2);
   wfaStatus = bodyLabel(body);
@@ -3610,8 +3699,16 @@ void fillList() {
     lv_obj_t *b = lv_list_add_btn(wifiList, isCurrent ? LV_SYMBOL_OK : LV_SYMBOL_WIFI,
                                   ap.ssid.c_str());
     lv_obj_t *r = lv_label_create(b);  // right-hand detail
-    lv_label_set_text_fmt(r, "%s %d%%", ap.secure ? "WPA" : "open",
-                          net::signalPercent(ap.rssi));
+    if (net::dualBand()) {
+      const char *bands = ap.bands == (net::BAND_24 | net::BAND_5) ? "2.4+5G"
+                          : ap.bands == net::BAND_5                 ? "5G"
+                                                                    : "2.4G";
+      lv_label_set_text_fmt(r, "%s %s %d%%", ap.secure ? "WPA" : "open", bands,
+                            net::signalPercent(ap.rssi));
+    } else {
+      lv_label_set_text_fmt(r, "%s %d%%", ap.secure ? "WPA" : "open",
+                            net::signalPercent(ap.rssi));
+    }
     lv_obj_set_style_text_opa(r, LV_OPA_60, 0);
 
     listSsids.push_back(ap.ssid);
@@ -3626,7 +3723,11 @@ void refreshWifi() {
   char buf[96];
   switch (net::state()) {
     case net::State::Connected:
-      snprintf(buf, sizeof(buf), "Connected: %s (%s)", net::ssid().c_str(), net::ip().c_str());
+      if (net::dualBand())
+        snprintf(buf, sizeof(buf), "Connected: %s, %s GHz (%s)", net::ssid().c_str(),
+                 net::band() == 5 ? "5" : "2.4", net::ip().c_str());
+      else
+        snprintf(buf, sizeof(buf), "Connected: %s (%s)", net::ssid().c_str(), net::ip().c_str());
       break;
     case net::State::Connecting:
       snprintf(buf, sizeof(buf), "Connecting to %s...", net::ssid().c_str());
@@ -3838,6 +3939,8 @@ void showAbout() {
 
   char buf[384];
   bool up = net::state() == net::State::Connected;
+  String wifiTxt = up ? net::ssid() : String("not connected");
+  if (up) wifiTxt += String(" (") + (net::band() == 5 ? "5" : "2.4") + " GHz ch " + net::channel() + ")";
   uint16_t rev = ESP.getChipRevision();  // e.g. 301 = v3.1
   snprintf(buf, sizeof(buf),
            "Firmware: v%s (%s)\n"
@@ -3854,7 +3957,7 @@ void showAbout() {
            ESP.getChipCores() == 1 ? "" : "s", (unsigned long)ESP.getCpuFreqMHz(),
            (unsigned long)(ESP.getFlashChipSize() / 1024), (unsigned long)(ESP.getPsramSize() / 1024),
            (unsigned long)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
-           up ? net::ssid().c_str() : "not connected", up ? net::ip().c_str() : "-",
+           wifiTxt.c_str(), up ? net::ip().c_str() : "-",
            ota::ready() ? (String(ota::hostname()) + ".local").c_str() : "waiting for Wi-Fi");
 
   // Product name and slogan

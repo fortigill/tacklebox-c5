@@ -20,6 +20,10 @@ ESP-IDF esp_lcd with the XPT2046 on the same SPI bus). On first boot the C5 asks
 calibration, like a new classic board. If the colors look wrong, use **Display & touch > Invert
 colors** or **Swap red/blue**.
 
+On the C5, Wi-Fi uses both bands. It joins a network's 5 GHz access point when the signal is
+good, drops to 2.4 GHz when 5 GHz gets weak or disappears, and moves back when 5 GHz recovers.
+The Wi-Fi analyzer has a 2.4G / 5G switch to view each band separately.
+
 - **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
   connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
 - **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer,

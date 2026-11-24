@@ -3,6 +3,33 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.2.0] - 2026-11-24
+
+### Added (NM-CYD-C5 / dual-band boards)
+- **5 GHz Wi-Fi.** The radio runs in 2.4 + 5 GHz mode, so scans, connections and the
+  analyzer cover both bands.
+- **Prefers 5 GHz, falls back to 2.4 GHz.** When joining a network, Tackle Box picks that
+  network's 5 GHz access point if it's at least -72 dBm, otherwise the strongest one on either
+  band. While connected:
+  - on 5 GHz, if the signal averages below -80 dBm for 15 s, it looks for a clearly stronger
+    access point (5 dB or more) and moves to it, normally the same router's 2.4 GHz side;
+  - on 2.4 GHz, it checks every 3 minutes whether 5 GHz is back to -67 dBm or better and
+    moves up if so;
+  - if the connection drops, it rescans both bands after 8 s (then every 30 s) and joins
+    whatever is best, instead of retrying only the access point it lost.
+  The up and down thresholds are far apart, so it doesn't flip back and forth. Each decision
+  is logged on the serial monitor ("[net] 5 GHz signal weak: joining ...").
+- **Wi-Fi analyzer:** a 2.4G / 5G switch in the header shows each band on its own: its own
+  network list, and its own congestion graph. On 5 GHz each bar is one 80 MHz block (36, 52,
+  100, 116, 132, 149, 165), and the best-channel tip picks the 36 or 149 block, which need no
+  radar check. The status line counts both bands. Hunting a 5 GHz access point works as on
+  2.4 GHz.
+- **Wi-Fi list:** each network shows the bands it's on (2.4G, 5G or 2.4+5G).
+- **Wi-Fi status and About** show the band and channel of the current connection.
+
+### Unchanged
+- The classic CYD (2.4 GHz only) behaves exactly as before.
+
 ## [1.1.0] - 2026-11-24
 
 ### Added

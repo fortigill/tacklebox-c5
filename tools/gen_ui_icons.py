@@ -77,7 +77,8 @@ def plane_land(n):
 
 
 ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22),
-         ("plane", plane, 22), ("plane_land", plane_land, 22), ("plane_s", plane, 16)]
+         ("plane", plane, 22), ("plane_land", plane_land, 22), ("plane_s", plane, 16),
+         ("plane_bar", plane, 26), ("plane_bar_s", plane, 20)]
 
 
 def to_alpha4(img):

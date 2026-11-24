@@ -1164,8 +1164,8 @@ void showDesktop() {
   deskBarFlt = lv_obj_create(ext);
   lv_obj_remove_style_all(deskBarFlt);
   {
-    const lv_img_dsc_t *pi = narrow ? &ui_plane_s : &ui_plane;
-    lv_obj_set_size(deskBarFlt, pi->header.w + 10, 32);
+    const lv_img_dsc_t *pi = narrow ? &ui_plane_bar_s : &ui_plane_bar;  // 20 / 26 px, a bit larger than the other bar icons
+    lv_obj_set_size(deskBarFlt, pi->header.w + 8, 32);
     lv_obj_clear_flag(deskBarFlt, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(deskBarFlt, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(deskBarFlt, LV_OBJ_FLAG_HIDDEN);
@@ -1182,7 +1182,7 @@ void showDesktop() {
     lv_obj_set_style_img_recolor_opa(deskBarFltImg, LV_OPA_COVER, 0);
     lv_obj_set_style_img_recolor(deskBarFltImg, theme::text(), 0);
     lv_obj_clear_flag(deskBarFltImg, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(deskBarFltImg, LV_ALIGN_LEFT_MID, 0, -2);
+    lv_obj_align(deskBarFltImg, LV_ALIGN_LEFT_MID, 0, -3);
     deskBarFltNum = lv_label_create(deskBarFlt);
     // Notification-style badge: white 14 px digits on red with a white rim,
     // readable on any theme and over the icon

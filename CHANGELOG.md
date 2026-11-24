@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.5] - 2026-11-24
+
+### Changed
+- The plane icon behind the status-bar airliner count is larger: 26 px (20 px in portrait),
+  was 22 / 16 px. New icons `ui_plane_bar` / `ui_plane_bar_s`.
+
 ## [1.7.4] - 2026-11-24
 
 ### Changed

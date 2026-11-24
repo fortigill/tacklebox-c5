@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.2.2] - 2026-11-24
+
+### Changed
+- The green 5G tag on the Wi-Fi icon is about 25% smaller: 10 px text instead of 14 px, with
+  slimmer padding. The 10 px font is only built into the C5 firmware.
+
 ## [1.2.1] - 2026-11-24
 
 ### Added

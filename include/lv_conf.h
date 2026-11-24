@@ -29,6 +29,9 @@
 
 // Fonts (built-in Montserrat includes LV_SYMBOL_* icons such as WIFI)
 #define LV_FONT_MONTSERRAT_14  1
+#if defined(BOARD_NM_CYD_C5)
+#define LV_FONT_MONTSERRAT_10  1  // the 5G tag on the Wi-Fi icon (C5 only: plenty of flash)
+#endif
 #define LV_FONT_MONTSERRAT_20  1
 #define LV_FONT_MONTSERRAT_48  1   // hunt mode RSSI readout
 #define LV_FONT_DEFAULT        &lv_font_montserrat_14

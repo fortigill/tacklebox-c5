@@ -911,12 +911,16 @@ void showDesktop() {
     // Small green "5G" tag on the lower right of the icon while on 5 GHz
     deskWifi5g = lv_label_create(wb);
     lv_label_set_text(deskWifi5g, "5G");
+#if LV_FONT_MONTSERRAT_10
+    lv_obj_set_style_text_font(deskWifi5g, &lv_font_montserrat_10, 0);  // ~25% smaller than 14
+#else
     lv_obj_set_style_text_font(deskWifi5g, &lv_font_montserrat_14, 0);
+#endif
     lv_obj_set_style_text_color(deskWifi5g, lv_color_white(), 0);
     lv_obj_set_style_bg_color(deskWifi5g, lv_palette_main(LV_PALETTE_GREEN), 0);
     lv_obj_set_style_bg_opa(deskWifi5g, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(deskWifi5g, 3, 0);
-    lv_obj_set_style_pad_hor(deskWifi5g, 2, 0);
+    lv_obj_set_style_radius(deskWifi5g, 2, 0);
+    lv_obj_set_style_pad_hor(deskWifi5g, 1, 0);
     lv_obj_set_style_pad_ver(deskWifi5g, 0, 0);
     lv_obj_set_style_text_line_space(deskWifi5g, 0, 0);
     lv_obj_add_flag(deskWifi5g, LV_OBJ_FLAG_IGNORE_LAYOUT);

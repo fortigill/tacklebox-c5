@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.2.4] - 2026-11-24
+
+### Added
+- Buoy picker: 12 Gulf buoys that report waves, grouped under regional headings.
+  - Florida Gulf coast: 42097 Pulley Ridge, 42099 Offshore St. Petersburg, 42098 Egmont
+    Channel, 42036 West Tampa.
+  - Panhandle & Alabama: 42039 Pensacola 115 NM SSE, 42012 Orange Beach, 42040 Dauphin Island
+    64 NM S (Luke Offshore).
+  - Central & western Gulf: 42001 Mid Gulf, 42002 West Gulf, 42035 Galveston, 42019 Freeport,
+    42020 Corpus Christi.
+  - Tide gauges and met-only stations (Panama City, Apalachicola, Pensacola pier, the USF COMPS
+    moorings) are left out because they don't measure waves.
+- The existing Atlantic buoys are now under "Florida Atlantic coast" and Satan Shoal under
+  "Florida Keys". 41012 moved next to St. Augustine.
+- A favorite that's now built in shows once, in its region.
+
 ## [1.2.3] - 2026-11-24
 
 ### Changed

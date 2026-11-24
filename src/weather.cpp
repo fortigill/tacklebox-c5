@@ -1693,18 +1693,39 @@ String alertsStatus() {
 // ---------- NDBC buoy API ----------
 
 namespace {
-// Built-in list, north to south along the Florida Atlantic coast, then the Keys
+// Built-in list: wave-reporting buoys only (no tide gauges or met-only
+// platforms). Names are short enough to fit the desktop widget.
+const char *R_ATL = "Florida Atlantic coast";
+const char *R_KEYS = "Florida Keys";
+const char *R_FLGULF = "Florida Gulf coast";
+const char *R_PAN = "Panhandle & Alabama";
+const char *R_GULF = "Central & western Gulf";
 const BuoyPreset PRESETS[] = {
-    // Short enough to fit the desktop widget
-    {"41112", "Fernandina Beach Offshore"},
-    {"41117", "St. Augustine"},
-    {"41070", "Ponce de Leon Inlet"},
-    {"41009", "Canaveral 20 NM East"},
-    {"41012", "St. Augustine 40 NM ENE"},
-    {"41113", "Cape Canaveral Nearshore"},
-    {"41114", "Fort Pierce"},
-    {"41122", "Hollywood Beach"},
-    {"42095", "Satan Shoal, Key West"},
+    // Atlantic, north to south
+    {"41112", "Fernandina Beach Offshore", R_ATL},
+    {"41117", "St. Augustine", R_ATL},
+    {"41012", "St. Augustine 40 NM ENE", R_ATL},
+    {"41070", "Ponce de Leon Inlet", R_ATL},
+    {"41009", "Canaveral 20 NM East", R_ATL},
+    {"41113", "Cape Canaveral Nearshore", R_ATL},
+    {"41114", "Fort Pierce", R_ATL},
+    {"41122", "Hollywood Beach", R_ATL},
+    {"42095", "Satan Shoal, Key West", R_KEYS},
+    // Florida Gulf coast, south to north
+    {"42097", "Pulley Ridge, SW Florida", R_FLGULF},
+    {"42099", "Offshore St. Petersburg", R_FLGULF},
+    {"42098", "Egmont Channel, Tampa Bay", R_FLGULF},
+    {"42036", "West Tampa 112 NM WNW", R_FLGULF},
+    // Panhandle and Alabama, east to west
+    {"42039", "Pensacola 115 NM SSE", R_PAN},
+    {"42012", "Orange Beach 44 NM SE", R_PAN},
+    {"42040", "Dauphin Island 64 NM S", R_PAN},
+    // Offshore and western Gulf, east to west
+    {"42001", "Mid Gulf", R_GULF},
+    {"42002", "West Gulf", R_GULF},
+    {"42035", "Galveston 22 NM E", R_GULF},
+    {"42019", "Freeport 60 NM S", R_GULF},
+    {"42020", "Corpus Christi 60 NM SE", R_GULF},
 };
 const size_t MAX_BUOY_FAVS = 8;
 
@@ -1730,7 +1751,10 @@ bool isPreset(const String &id) {
 
 std::vector<String> buoyFavorites() {
   std::lock_guard<std::mutex> lock(mtx);
-  return buoyFavs;
+  std::vector<String> out;  // a favorite that's now built in is listed once, as a preset
+  for (const auto &f : buoyFavs)
+    if (!isPreset(f)) out.push_back(f);
+  return out;
 }
 
 void addBuoyFavorite(const String &id) {

@@ -3097,8 +3097,12 @@ void showBuoyPick() {
   }
   size_t n;
   const weather::BuoyPreset *p = weather::buoyPresets(n);
-  lv_list_add_text(list, "NOAA buoys");
+  const char *region = nullptr;
   for (size_t i = 0; i < n; i++) {
+    if (!region || strcmp(region, p[i].region) != 0) {  // heading at each new region
+      region = p[i].region;
+      lv_list_add_text(list, region);
+    }
     String t = String(p[i].id) + "  " + p[i].name;
     lv_obj_t *b = lv_list_add_btn(list, curId == p[i].id ? LV_SYMBOL_OK : LV_SYMBOL_GPS, t.c_str());
     lv_obj_add_event_cb(b, onBuoyPicked, LV_EVENT_CLICKED, (void *)p[i].id);

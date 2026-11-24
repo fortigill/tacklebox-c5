@@ -94,6 +94,7 @@ struct Buoy {
 struct BuoyPreset {
   const char *id;
   const char *name;
+  const char *region;  // picker heading; presets are grouped by region in order
 };
 const BuoyPreset *buoyPresets(size_t &n);  // nearby buoys offered in the picker
 String buoyName(const String &id);         // preset name, or "" for other stations

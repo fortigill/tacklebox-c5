@@ -885,7 +885,7 @@ void refreshDesktop() {
       setText(deskBarFltNum, t);
       lv_obj_set_style_img_recolor(deskBarFltImg, n ? theme::accent() : theme::text(), 0);
       lv_obj_set_style_img_opa(deskBarFltImg, n ? LV_OPA_COVER : LV_OPA_50, 0);
-      lv_obj_set_style_bg_color(deskBarFltNum, n ? theme::accent() : lv_palette_main(LV_PALETTE_GREY), 0);
+      lv_obj_set_style_bg_color(deskBarFltNum, n ? lv_palette_main(LV_PALETTE_RED) : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
     }
   }
 
@@ -1165,7 +1165,7 @@ void showDesktop() {
   lv_obj_remove_style_all(deskBarFlt);
   {
     const lv_img_dsc_t *pi = narrow ? &ui_plane_s : &ui_plane;
-    lv_obj_set_size(deskBarFlt, pi->header.w + 6, 32);
+    lv_obj_set_size(deskBarFlt, pi->header.w + 10, 32);
     lv_obj_clear_flag(deskBarFlt, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(deskBarFlt, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(deskBarFlt, LV_OBJ_FLAG_HIDDEN);
@@ -1184,15 +1184,22 @@ void showDesktop() {
     lv_obj_clear_flag(deskBarFltImg, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(deskBarFltImg, LV_ALIGN_LEFT_MID, 0, -2);
     deskBarFltNum = lv_label_create(deskBarFlt);
-    lv_obj_set_style_text_font(deskBarFltNum, &lv_font_montserrat_10, 0);
+    // Notification-style badge: white 14 px digits on red with a white rim,
+    // readable on any theme and over the icon
+    lv_obj_set_style_text_font(deskBarFltNum, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(deskBarFltNum, lv_color_white(), 0);
-    lv_obj_set_style_bg_color(deskBarFltNum, theme::accent(), 0);
+    lv_obj_set_style_bg_color(deskBarFltNum, lv_palette_main(LV_PALETTE_RED), 0);
     lv_obj_set_style_bg_opa(deskBarFltNum, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(deskBarFltNum, 5, 0);
-    lv_obj_set_style_pad_hor(deskBarFltNum, 2, 0);
+    lv_obj_set_style_border_color(deskBarFltNum, lv_color_white(), 0);
+    lv_obj_set_style_border_width(deskBarFltNum, 1, 0);
+    lv_obj_set_style_radius(deskBarFltNum, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_hor(deskBarFltNum, 4, 0);
+    lv_obj_set_style_pad_ver(deskBarFltNum, 0, 0);
+    lv_obj_set_style_text_align(deskBarFltNum, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_min_width(deskBarFltNum, 16, 0);
     lv_obj_clear_flag(deskBarFltNum, LV_OBJ_FLAG_CLICKABLE);
     lv_label_set_text(deskBarFltNum, "0");
-    lv_obj_align(deskBarFltNum, LV_ALIGN_BOTTOM_RIGHT, 0, -3);
+    lv_obj_align(deskBarFltNum, LV_ALIGN_BOTTOM_RIGHT, 0, -1);
   }
 
   deskBarNfl = lv_label_create(ext);

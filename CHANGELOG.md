@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.4] - 2026-11-24
+
+### Changed
+- Status-bar airliner count is easier to read: 14 px digits (was 10 px), white on a red
+  round badge with a thin white rim, like a phone's notification badge. At zero it's dark
+  gray.
+
 ## [1.7.3] - 2026-11-24
 
 ### Added

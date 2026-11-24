@@ -290,8 +290,9 @@ String airportName();                 // e.g. "DAYTONA BEACH INTL" ("" until loo
 void setAirportCode(const String &code);  // 3-letter FAA/IATA or 4-letter ICAO; resets the counts
 bool showFlightDesk();
 void setShowFlightDesk(bool on);
-bool showApproachDesk();              // separate desktop widget: the nearest airliner on approach
-void setShowApproachDesk(bool on);
+bool showNearbyDesk();                // desktop widget: aircraft near the airport, airliner details
+void setShowNearbyDesk(bool on);
+int flightsNearTotal();               // all aircraft within 10 NM at the last check (-1 = none yet)
 void refreshFlights();
 void flightsKeepAlive();              // the page is open: keep polling with the widget off
 uint32_t flightsVersion();

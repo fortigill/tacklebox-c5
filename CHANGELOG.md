@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.6.3] - 2026-11-24
+
+### Changed
+- The "approaching aircraft" widget is replaced by **Aircraft near the airport** (its own
+  switch on the Airport flights page, on by default). It shows what the tracker sees:
+  - Line 1: plane icon and how many aircraft of any kind are within 10 NM ("20 near DAB").
+  - Line 2: an airliner's flight, type and distance ("G4 2871 B38M  7.9 nm"), plus "(1/3)"
+    when there are several. They take turns every 5 s.
+  - Line 3: height above the field, climb or descent with an up/down arrow, and ground speed
+    ("7191 ft  v1152 fpm  277 kt"), or "On the ground".
+  - "No airliners within 10 nm" when there are none. The icon is in the accent color while
+    an airliner is nearby.
+- "Approaching" now means descending within 10 NM below 12,000 ft (was 6,000 ft), so jets
+  starting down toward the field count. This affects the live list's labels and the counts
+  widget's "Inbound" line (shown when the "near" widget is off).
+
 ## [1.6.2] - 2026-11-24
 
 ### Added

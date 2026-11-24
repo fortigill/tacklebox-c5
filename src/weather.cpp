@@ -199,7 +199,8 @@ int apElevFt = 34;
 float apMagVar = -6.0f;                     // degrees, east positive (DAB ~6 W)
 bool apHaveLoc = true;
 bool fltDesk = true;
-bool apprDesk = true;                       // approaching-aircraft widget
+bool nearDesk = true;                       // "near the airport" widget
+int fltNearTotal = -1;                      // all aircraft within the radius at the last check
 std::vector<FlightEvent> fltDeps, fltArrs;  // newest first
 std::vector<LiveFlight> fltLive;
 int fltDepToday = 0, fltArrToday = 0;
@@ -2101,7 +2102,8 @@ bool pollFlights(String &why) {
     lf.altFt = agl;
     lf.gsKt = gs < 0 ? 0 : gs;
     lf.rateFpm = rate;
-    lf.phase = ground ? 3 : rate >= 300 ? 2 : (rate <= -300 && agl < 6000) ? 1 : 0;
+    // Within 10 nm and descending is an approach (jets start down from ~10,000 ft out here)
+    lf.phase = ground ? 3 : rate >= 300 ? 2 : (rate <= -300 && agl < 12000) ? 1 : 0;
     live.push_back(lf);
     Serial.printf("[flights]   %s %s %s: %.1f nm, %s%ld ft, %d fpm, %d kt\n", flight, cs, t->type, dist,
                   ground ? "GROUND " : "", (long)agl, rate, gs);
@@ -2127,6 +2129,7 @@ bool pollFlights(String &why) {
   Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s; today %d takeoffs, %d landings\n",
                 code.c_str(), total, FLT_RADIUS_NM, airliners, airliners == 1 ? "" : "s", fltDepToday, fltArrToday);
   fltLive.swap(live);
+  fltNearTotal = total;
   fltVer++;
   why = "";
   return true;
@@ -2654,7 +2657,8 @@ void begin() {
   volcDesk = prefs.getBool("vcDesk", true);
   volcPop = prefs.getBool("vcPop", true);
   fltDesk = prefs.getBool("flDesk", true);
-  apprDesk = prefs.getBool("flAppr", true);
+  nearDesk = prefs.getBool("flNear", true);
+  if (prefs.isKey("flAppr")) prefs.remove("flAppr");  // 1.6.2's approach widget is gone
   if (prefs.isKey("apCode")) {
     apCode = prefs.getString("apCode");
     apName = prefs.isKey("apName") ? prefs.getString("apName") : String();
@@ -2774,7 +2778,7 @@ void loop() {
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
   // Airport flights: polled often, so lowest priority (only when nothing else is due)
-  bool fltWanted = fltDesk || apprDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
+  bool fltWanted = fltDesk || nearDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
   if (!flags && fltWanted && (millis() >= FLT_BOOT_DELAY_MS || flForce) &&
       (flForce || !flAttempted || millis() - flLastAttempt >= (flLastOk ? FLT_POLL_MS : FLT_RETRY_MS)))
     flags |= DO_FLIGHTS;
@@ -3622,6 +3626,7 @@ void setAirportCode(const String &code) {
   fltDeps.clear();
   fltArrs.clear();
   fltLive.clear();
+  fltNearTotal = -1;
   fltTracks.clear();  // only touched by the task, which checks apCode before committing
   fltDepToday = fltArrToday = 0;
   fltErr = "";
@@ -3636,16 +3641,21 @@ void setAirportCode(const String &code) {
 }
 
 bool showFlightDesk() { return fltDesk; }
-bool showApproachDesk() { return apprDesk; }
+bool showNearbyDesk() { return nearDesk; }
 
-void setShowApproachDesk(bool on) {
+void setShowNearbyDesk(bool on) {
   std::lock_guard<std::mutex> lock(mtx);
-  apprDesk = on;
+  nearDesk = on;
   prefs.begin("wx", false);
-  prefs.putBool("flAppr", on);
+  prefs.putBool("flNear", on);
   prefs.end();
   if (on) flForce = true;
   fltVer++;
+}
+
+int flightsNearTotal() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return fltNearTotal;
 }
 
 void setShowFlightDesk(bool on) {

@@ -3,6 +3,13 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.3.1] - 2026-11-24
+
+### Changed
+- Earthquakes page: the settings (minimum magnitude, area, show on desktop, refresh) now sit
+  right under the summary, above the 24 h / 48 h / 96 h buttons and the quake list. No more
+  scrolling past every quake to reach them.
+
 ## [1.3.0] - 2026-11-24
 
 ### Added

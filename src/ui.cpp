@@ -3850,39 +3850,6 @@ void showQuakes() {
   eqStatus = wrapLabel(card, nullptr);
   lv_obj_set_style_text_opa(eqStatus, LV_OPA_70, 0);
 
-  // 24 h / 48 h / 96 h window buttons
-  lv_obj_t *wins = lv_obj_create(list);
-  lv_obj_remove_style_all(wins);
-  lv_obj_set_size(wins, LV_PCT(100), LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(wins, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(wins, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_ver(wins, 4, 0);
-  lv_obj_clear_flag(wins, LV_OBJ_FLAG_SCROLLABLE);
-  static const char *winTxt[3] = {"24 h", "48 h", "96 h"};
-  static const int winHours[3] = {24, 48, 96};
-  for (int i = 0; i < 3; i++) {
-    eqWinBtn[i] = flatBtn(wins, winTxt[i], (W() - 40) / 3, 36);
-    lv_obj_add_event_cb(
-        eqWinBtn[i],
-        [](lv_event_t *e) {
-          eqWindowH = (int)(intptr_t)lv_event_get_user_data(e);
-          styleWinButtons();
-          eqKey = -1;
-          refreshQuakeScreen();
-        },
-        LV_EVENT_CLICKED, (void *)(intptr_t)winHours[i]);
-  }
-  styleWinButtons();
-
-  eqHeading = lv_list_add_text(list, "");
-  eqBox = lv_obj_create(list);
-  lv_obj_remove_style_all(eqBox);
-  lv_obj_set_size(eqBox, LV_PCT(100), LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(eqBox, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_hor(eqBox, 8, 0);
-  lv_obj_set_style_pad_row(eqBox, 2, 0);
-  lv_obj_clear_flag(eqBox, LV_OBJ_FLAG_SCROLLABLE);
-
   lv_list_add_text(list, "Settings");
   char t[48];
   snprintf(t, sizeof(t), "Minimum magnitude: %.1f", weather::quakeMinMag());
@@ -3934,8 +3901,40 @@ void showQuakes() {
         weather::refreshQuake();
       },
       LV_EVENT_CLICKED, nullptr);
-  lv_list_add_text(list, "Area \"within\" uses the Weather ZIP code");
-  lv_list_add_text(list, "Data: USGS Earthquake Hazards Program");
+  lv_list_add_text(list, "Area uses your Weather ZIP - data: USGS");
+
+  // 24 h / 48 h / 96 h window buttons
+  lv_obj_t *wins = lv_obj_create(list);
+  lv_obj_remove_style_all(wins);
+  lv_obj_set_size(wins, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(wins, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(wins, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_ver(wins, 4, 0);
+  lv_obj_clear_flag(wins, LV_OBJ_FLAG_SCROLLABLE);
+  static const char *winTxt[3] = {"24 h", "48 h", "96 h"};
+  static const int winHours[3] = {24, 48, 96};
+  for (int i = 0; i < 3; i++) {
+    eqWinBtn[i] = flatBtn(wins, winTxt[i], (W() - 40) / 3, 36);
+    lv_obj_add_event_cb(
+        eqWinBtn[i],
+        [](lv_event_t *e) {
+          eqWindowH = (int)(intptr_t)lv_event_get_user_data(e);
+          styleWinButtons();
+          eqKey = -1;
+          refreshQuakeScreen();
+        },
+        LV_EVENT_CLICKED, (void *)(intptr_t)winHours[i]);
+  }
+  styleWinButtons();
+
+  eqHeading = lv_list_add_text(list, "");
+  eqBox = lv_obj_create(list);
+  lv_obj_remove_style_all(eqBox);
+  lv_obj_set_size(eqBox, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(eqBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(eqBox, 8, 0);
+  lv_obj_set_style_pad_row(eqBox, 2, 0);
+  lv_obj_clear_flag(eqBox, LV_OBJ_FLAG_SCROLLABLE);
 
   load(scr, Screen::Quakes);
   // Stale or never fetched: get fresh numbers now

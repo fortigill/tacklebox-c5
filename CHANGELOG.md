@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.6.5] - 2026-11-24
+
+### Removed
+- The takeoff / landing tracker: the "DAB 12 out 11 in" desktop widget, today's counts, the
+  last-10 takeoff and landing lists, the flight detail page and the detection logic. Their
+  saved settings and counts are erased from flash on the first boot.
+
+### Changed
+- The feature is now **Aircraft near airport** (menu). It keeps:
+  - **Near-the-airport widget** (its switch is "Show on desktop" on that page): aircraft count
+    within 10 NM, then each airliner's airline and callsign, flight number / type / distance,
+    and height / climb or descent / speed.
+  - **Page:** "20 aircraft near DAB / 1 airliner", the settings (airport code, show on
+    desktop, refresh) and the airliners within 10 NM now, with the same details.
+  - Same live data (adsb.fi, every 30 s) and the airport lookup.
+
 ## [1.6.4] - 2026-11-24
 
 ### Changed

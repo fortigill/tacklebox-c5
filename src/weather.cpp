@@ -90,7 +90,7 @@ const char *VOLC_ELEVATED = "volcanoes.usgs.gov/hans-public/api/volcano/getEleva
 const char *VOLC_CAP = "volcanoes.usgs.gov/hans-public/api/volcano/getCapElevated";  // adds a synopsis
 const char *ERUPT_RSS = "volcano.si.edu/news/WeeklyVolcanoRSS.xml";
 const size_t VOLC_MAX = 16;
-// Airport flights: live ADS-B (adsb.fi open data) + airport position (AviationWeather.gov)
+// Aircraft near an airport: live ADS-B (adsb.fi open data) + airport position (AviationWeather.gov)
 #if defined(BOARD_NM_CYD_C5)
 const uint32_t FLT_POLL_MS = 30000;
 #else
@@ -99,8 +99,6 @@ const uint32_t FLT_POLL_MS = 60000;  // fewer HTTPS sessions on the classic boar
 const uint32_t FLT_RETRY_MS = 60000;
 const uint32_t FLT_BOOT_DELAY_MS = 120000;
 const int FLT_RADIUS_NM = 10;
-const size_t FLT_KEEP = 10;
-const size_t FLT_TRACKS = 40;
 const char *ADSB_HOST = "opendata.adsb.fi/api/";
 #if defined(BOARD_NM_CYD_C5)
 const size_t ERUPT_MAX = 40;
@@ -198,13 +196,9 @@ float apLat = 29.1799f, apLon = -81.0581f;  // DAB built in; others are looked u
 int apElevFt = 34;
 float apMagVar = -6.0f;                     // degrees, east positive (DAB ~6 W)
 bool apHaveLoc = true;
-bool fltDesk = true;
 bool nearDesk = true;                       // "near the airport" widget
 int fltNearTotal = -1;                      // all aircraft within the radius at the last check
-std::vector<FlightEvent> fltDeps, fltArrs;  // newest first
 std::vector<LiveFlight> fltLive;
-int fltDepToday = 0, fltArrToday = 0;
-uint32_t fltDay = 0;                        // local yyyymmdd the counts belong to
 String fltErr;
 uint32_t fltFetchedMs = 0;
 uint32_t fltVer = 0;
@@ -1816,79 +1810,11 @@ bool airlineFor(const char *cs, uint8_t category, char *flight, size_t fn, char 
   return true;
 }
 
-struct TypeName {
-  const char *code, *name;
-};
-const TypeName TYPES[] = {
-    {"E75L", "Embraer 175"},  {"E75S", "Embraer 175"},   {"E170", "Embraer 170"},  {"E190", "Embraer 190"},
-    {"E195", "Embraer 195"},  {"E290", "Embraer E190-E2"}, {"CRJ2", "Bombardier CRJ200"}, {"CRJ7", "Bombardier CRJ700"},
-    {"CRJ9", "Bombardier CRJ900"}, {"BCS1", "Airbus A220-100"}, {"BCS3", "Airbus A220-300"}, {"A319", "Airbus A319"},
-    {"A320", "Airbus A320"},  {"A20N", "Airbus A320neo"}, {"A321", "Airbus A321"},  {"A21N", "Airbus A321neo"},
-    {"B712", "Boeing 717"},   {"B737", "Boeing 737-700"}, {"B738", "Boeing 737-800"}, {"B739", "Boeing 737-900"},
-    {"B38M", "Boeing 737 MAX 8"}, {"B39M", "Boeing 737 MAX 9"}, {"B752", "Boeing 757-200"}, {"B753", "Boeing 757-300"},
-    {"B763", "Boeing 767-300"}, {"B772", "Boeing 777-200"}, {"B788", "Boeing 787-8"}, {"B789", "Boeing 787-9"},
-    {"MD88", "McDonnell Douglas MD-88"}, {"DH8D", "Dash 8-400"}, {"AT76", "ATR 72-600"},
-};
-
-// Track of one airliner across polls (weather task only)
-struct FltTrack {
-  char hex[8], callsign[10], flight[10], airline[28], type[6], reg[10];
-  uint32_t firstMs, lastMs, loggedMs;
-  int32_t firstAgl, lastAgl, minAgl;
-  float lastDist;
-  int16_t lastRate, lastTrack, lastGs;
-  bool everGround, lastGround, depLogged, arrLogged, seenNow;
-};
-std::vector<FltTrack> fltTracks;
-
 float nmBetween(float la1, float lo1, float la2, float lo2) {
   const float d2r = (float)M_PI / 180.0f;
   float dLat = (la2 - la1) * d2r, dLon = (lo2 - lo1) * d2r;
   float a = sinf(dLat / 2) * sinf(dLat / 2) + cosf(la1 * d2r) * cosf(la2 * d2r) * sinf(dLon / 2) * sinf(dLon / 2);
   return 2 * 3440.065f * atan2f(sqrtf(a), sqrtf(1 - a));
-}
-
-uint32_t localDay(time_t t) {
-  struct tm lt;
-  localtime_r(&t, &lt);
-  return (uint32_t)((lt.tm_year + 1900) * 10000 + (lt.tm_mon + 1) * 100 + lt.tm_mday);
-}
-
-// Records a takeoff or landing (holds mtx)
-void logFlight(bool dep, const FltTrack &t, uint32_t when, int16_t heading, int16_t gs, int32_t agl, float magVar) {
-  FlightEvent e;
-  e.time = when;
-  strcpy(e.callsign, t.callsign);
-  strcpy(e.flight, t.flight);
-  strcpy(e.airline, t.airline);
-  strcpy(e.type, t.type);
-  strcpy(e.reg, t.reg);
-  e.heading = heading;
-  if (heading >= 0) {  // runways are numbered by magnetic heading
-    int mag = (int)lroundf(heading - magVar);
-    mag = ((mag % 360) + 360) % 360;
-    int rw = (mag + 5) / 10;
-    e.runway = rw == 0 ? 36 : (rw > 36 ? rw - 36 : rw);
-  }
-  e.gsKt = gs;
-  e.altFt = agl;
-  auto &list = dep ? fltDeps : fltArrs;
-  list.insert(list.begin(), e);
-  if (list.size() > FLT_KEEP) list.resize(FLT_KEEP);
-  uint32_t day = localDay((time_t)when);
-  if (day != fltDay) {
-    fltDay = day;
-    fltDepToday = fltArrToday = 0;
-  }
-  (dep ? fltDepToday : fltArrToday)++;
-  prefs.begin("wx", false);  // counts survive a restart (same day only)
-  prefs.putUInt("flDay", fltDay);
-  prefs.putInt("flDep", fltDepToday);
-  prefs.putInt("flArr", fltArrToday);
-  prefs.end();
-  fltVer++;
-  Serial.printf("[flights] %s: %s (%s) %s %s, hdg %d, rwy %d, %d kt, %ld ft\n", dep ? "TAKEOFF" : "LANDING", e.flight,
-                e.airline, e.type, e.reg, heading, e.runway, gs, (long)agl);
 }
 
 // Looks up the airport's position (AviationWeather.gov airport data)
@@ -2009,17 +1935,7 @@ bool pollFlights(String &why) {
   }
   int total = 0, airliners = 0;
 
-  uint32_t nowMs = millis();
   std::vector<LiveFlight> live;
-  std::lock_guard<std::mutex> lock(mtx);  // logFlight, the tracks and the lists below need it
-  if (code != apCode) return true;        // airport changed while we were downloading
-  for (auto &t : fltTracks) t.seenNow = false;
-  uint32_t today = localDay(now);
-  if (today != fltDay) {  // midnight: start the day's counts over
-    fltDay = today;
-    fltDepToday = fltArrToday = 0;
-    fltVer++;
-  }
   for (JsonObject a : acs) {
     total++;
     char cs[10];
@@ -2038,67 +1954,12 @@ bool pollFlights(String &why) {
     if (agl < 0) agl = 0;
     float dist = nmBetween(la, lo, a["lat"].as<float>(), a["lon"].as<float>());
     int16_t rate = a["baro_rate"].is<int>() ? a["baro_rate"].as<int>() : (a["geom_rate"] | 0);
-    int16_t trk = a["track"].isNull() ? -1 : (int16_t)a["track"].as<float>();
     int16_t gs = a["gs"].isNull() ? -1 : (int16_t)a["gs"].as<float>();
-    char hex[8];
-    asciiCopy(hex, sizeof(hex), a["hex"] | "");
-
-    FltTrack *t = nullptr;
-    for (auto &x : fltTracks)
-      if (!strcmp(x.hex, hex)) t = &x;
-    bool fresh = !t;
-    if (fresh) {
-      if (fltTracks.size() >= FLT_TRACKS) continue;
-      FltTrack n{};
-      strcpy(n.hex, hex);
-      n.firstMs = nowMs;
-      n.firstAgl = agl;
-      n.minAgl = agl;
-      n.lastGround = ground;
-      fltTracks.push_back(n);
-      t = &fltTracks.back();
-    }
-    strcpy(t->callsign, cs);
-    strcpy(t->flight, flight);
-    strcpy(t->airline, airline);
-    asciiCopy(t->type, sizeof(t->type), a["t"] | "");
-    asciiCopy(t->reg, sizeof(t->reg), a["r"] | "");
-    uint32_t when = (uint32_t)now - (uint32_t)seen;
-    bool recentlyLogged = t->loggedMs && nowMs - t->loggedMs < 20UL * 60 * 1000;
-    bool climbing = rate >= 300 || (!fresh && !t->lastGround && agl - t->lastAgl >= 200);
-
-    // Takeoff: airborne, low and climbing near the field, after being on
-    // the ground or first seen low (receivers often can't see the runway)
-    if (!t->depLogged && !recentlyLogged && !ground && dist <= 6 && agl <= 3500 && climbing &&
-        (t->everGround || t->firstAgl <= 2000 || t->minAgl <= 1500)) {
-      logFlight(true, *t, when, trk, gs, agl, mv);
-      t->depLogged = true;
-      t->loggedMs = nowMs;
-    }
-    // Landing: on the ground at the field after being airborne (or still
-    // rolling fast when first seen)
-    if (!t->arrLogged && !recentlyLogged && ground && dist <= 3 &&
-        ((!fresh && !t->lastGround) || gs >= 50)) {
-      logFlight(false, *t, when, t->lastTrack >= 0 ? t->lastTrack : trk, t->lastGs >= 0 ? t->lastGs : gs, 0, mv);
-      t->arrLogged = true;
-      t->loggedMs = nowMs;
-    }
-    t->lastMs = nowMs;
-    t->lastAgl = agl;
-    t->lastDist = dist;
-    t->lastRate = rate;
-    t->lastTrack = trk;
-    t->lastGs = gs;
-    t->lastGround = ground;
-    t->everGround |= ground;
-    if (agl < t->minAgl) t->minAgl = agl;
-    t->seenNow = true;
-
     LiveFlight lf;
     strcpy(lf.callsign, cs);
     strcpy(lf.flight, flight);
     strcpy(lf.airline, airline);
-    strcpy(lf.type, t->type);
+    asciiCopy(lf.type, sizeof(lf.type), a["t"] | "");
     lf.distNm = dist;
     lf.altFt = agl;
     lf.gsKt = gs < 0 ? 0 : gs;
@@ -2106,29 +1967,14 @@ bool pollFlights(String &why) {
     // Within 10 nm and descending is an approach (jets start down from ~10,000 ft out here)
     lf.phase = ground ? 3 : rate >= 300 ? 2 : (rate <= -300 && agl < 12000) ? 1 : 0;
     live.push_back(lf);
-    Serial.printf("[flights]   %s %s %s: %.1f nm, %s%ld ft, %d fpm, %d kt\n", flight, cs, t->type, dist,
+    Serial.printf("[flights]   %s %s %s: %.1f nm, %s%ld ft, %d fpm, %d kt\n", flight, cs, lf.type, dist,
                   ground ? "GROUND " : "", (long)agl, rate, gs);
   }
-  // Landing out of sight: last seen low, close in and descending, then gone
-  // (below the receivers' coverage on short final)
-  for (auto &t : fltTracks) {
-    if (t.seenNow || t.arrLogged || t.lastGround) continue;
-    uint32_t gone = nowMs - t.lastMs;
-    bool recentlyLogged = t.loggedMs && nowMs - t.loggedMs < 20UL * 60 * 1000;
-    if (!recentlyLogged && gone >= 45000 && gone <= 10UL * 60 * 1000 && t.lastDist <= 4 && t.lastAgl <= 1200 &&
-        (t.lastRate <= -200 || t.lastAgl < t.firstAgl - 300)) {
-      logFlight(false, t, (uint32_t)now - gone / 1000, t.lastTrack, t.lastGs, t.lastAgl, mv);
-      t.arrLogged = true;
-      t.loggedMs = nowMs;
-    }
-  }
-  // Forget aircraft not seen for 10 minutes
-  fltTracks.erase(std::remove_if(fltTracks.begin(), fltTracks.end(),
-                                 [&](const FltTrack &t) { return nowMs - t.lastMs > 10UL * 60 * 1000; }),
-                  fltTracks.end());
   std::sort(live.begin(), live.end(), [](const LiveFlight &x, const LiveFlight &y) { return x.distNm < y.distNm; });
-  Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s; today %d takeoffs, %d landings\n",
-                code.c_str(), total, FLT_RADIUS_NM, airliners, airliners == 1 ? "" : "s", fltDepToday, fltArrToday);
+  Serial.printf("[flights] %s: %d aircraft within %d nm, %d airliner%s\n", code.c_str(), total, FLT_RADIUS_NM,
+                airliners, airliners == 1 ? "" : "s");
+  std::lock_guard<std::mutex> lock(mtx);
+  if (code != apCode) return true;  // airport changed while we were downloading
   fltLive.swap(live);
   fltNearTotal = total;
   fltVer++;
@@ -2657,7 +2503,6 @@ void begin() {
   quakeDesk = prefs.getBool("eqDesk", true);
   volcDesk = prefs.getBool("vcDesk", true);
   volcPop = prefs.getBool("vcPop", true);
-  fltDesk = prefs.getBool("flDesk", true);
   nearDesk = prefs.getBool("flNear", true);
   if (prefs.isKey("flAppr")) prefs.remove("flAppr");  // 1.6.2's approach widget is gone
   if (prefs.isKey("apCode")) {
@@ -2671,9 +2516,8 @@ void begin() {
       apMagVar = prefs.getFloat("apMag", 0);
     }
   }
-  fltDay = prefs.getUInt("flDay", 0);
-  fltDepToday = prefs.getInt("flDep", 0);
-  fltArrToday = prefs.getInt("flArr", 0);
+  for (const char *k : {"flDesk", "flDay", "flDep", "flArr"})  // takeoff/landing tracker (1.6.0-1.6.4) is gone
+    if (prefs.isKey(k)) prefs.remove(k);
   if (prefs.isKey("eqWk")) prefs.remove("eqWk");  // 1.4.0's weekly history is no longer kept
   String fv = prefs.isKey("bfav") ? prefs.getString("bfav") : String();
   for (int i = 0; i < (int)fv.length();) {
@@ -2779,7 +2623,7 @@ void loop() {
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
   // Airport flights: polled often, so lowest priority (only when nothing else is due)
-  bool fltWanted = fltDesk || nearDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
+  bool fltWanted = nearDesk || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
   if (!flags && fltWanted && (millis() >= FLT_BOOT_DELAY_MS || flForce) &&
       (flForce || !flAttempted || millis() - flLastAttempt >= (flLastOk ? FLT_POLL_MS : FLT_RETRY_MS)))
     flags |= DO_FLIGHTS;
@@ -3584,26 +3428,9 @@ bool volcanoDistanceKm(float vlat, float vlon, float &km) {
 
 // ---------- Airport flights ----------
 
-std::vector<FlightEvent> flightDepartures() {
-  std::lock_guard<std::mutex> lock(mtx);
-  return fltDeps;
-}
-std::vector<FlightEvent> flightArrivals() {
-  std::lock_guard<std::mutex> lock(mtx);
-  return fltArrs;
-}
 std::vector<LiveFlight> liveFlights() {
   std::lock_guard<std::mutex> lock(mtx);
   return fltLive;
-}
-// Today's counts (0 once the day has rolled over, even before the next poll)
-int flightsDepToday() {
-  std::lock_guard<std::mutex> lock(mtx);
-  return time(nullptr) > 1700000000 && localDay(time(nullptr)) != fltDay ? 0 : fltDepToday;
-}
-int flightsArrToday() {
-  std::lock_guard<std::mutex> lock(mtx);
-  return time(nullptr) > 1700000000 && localDay(time(nullptr)) != fltDay ? 0 : fltArrToday;
 }
 String airportCode() {
   std::lock_guard<std::mutex> lock(mtx);
@@ -3624,24 +3451,17 @@ void setAirportCode(const String &code) {
   apCode = c;
   apName = "";
   apHaveLoc = false;
-  fltDeps.clear();
-  fltArrs.clear();
   fltLive.clear();
   fltNearTotal = -1;
-  fltTracks.clear();  // only touched by the task, which checks apCode before committing
-  fltDepToday = fltArrToday = 0;
   fltErr = "";
   fltVer++;
   prefs.begin("wx", false);
   prefs.putString("apCode", c);
   prefs.putBool("apLoc", false);
-  prefs.putInt("flDep", 0);
-  prefs.putInt("flArr", 0);
   prefs.end();
   flForce = true;
 }
 
-bool showFlightDesk() { return fltDesk; }
 bool showNearbyDesk() { return nearDesk; }
 
 void setShowNearbyDesk(bool on) {
@@ -3657,16 +3477,6 @@ void setShowNearbyDesk(bool on) {
 int flightsNearTotal() {
   std::lock_guard<std::mutex> lock(mtx);
   return fltNearTotal;
-}
-
-void setShowFlightDesk(bool on) {
-  std::lock_guard<std::mutex> lock(mtx);
-  fltDesk = on;
-  prefs.begin("wx", false);
-  prefs.putBool("flDesk", on);
-  prefs.end();
-  if (on) flForce = true;
-  fltVer++;
 }
 
 void refreshFlights() {
@@ -3690,12 +3500,6 @@ String flightsStatus() {
   unsigned long s = (millis() - fltFetchedMs) / 1000;
   snprintf(b, sizeof(b), "Live: updated %lu s ago, every %lu s", s, (unsigned long)(FLT_POLL_MS / 1000));
   return b;
-}
-
-const char *aircraftName(const char *code) {
-  for (const auto &t : TYPES)
-    if (!strcmp(code, t.code)) return t.name;
-  return code;
 }
 
 }  // namespace weather

@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.8.1] - 2026-11-24
+
+### Changed
+- **Desktop widgets scroll instead of switching pages.** When the active widgets don't all
+  fit, they line up in one column and drift slowly up the screen (20 px/s) in a window under
+  the status bar. Each widget rejoins the bottom of the column once it has scrolled off the
+  top, so the loop runs continuously with no gap or jump.
+  - Widgets stay tappable while they move.
+  - While scrolling, the Menu button is the compact icon in the status bar and the Wi-Fi line
+    is hidden, so the window gets all the space.
+  - When everything fits, the desktop is laid out exactly as before (side by side in
+    landscape), with no movement.
+  - The 1.8.0 page counter is gone.
+  - On the classic CYD, scrolling pauses during HTTPS downloads like the other screen
+    updates.
+
 ## [1.8.0] - 2026-11-24
 
 ### Added

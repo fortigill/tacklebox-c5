@@ -67,19 +67,20 @@ lv_obj_t *wxStatus = nullptr, *wxZipTa = nullptr;
 // the wave height in the status bar
 lv_obj_t *deskWave = nullptr, *deskWaveLbl = nullptr, *deskWaveName = nullptr;
 lv_obj_t *deskBar = nullptr, *deskRow = nullptr, *deskMenu = nullptr;
-// Desktop widget pages: when the switched-on widgets don't all fit, they're
-// split into pages that take turns
+// Desktop widget ticker: when the switched-on widgets don't all fit, they
+// scroll slowly up through a window under the status bar, looping forever
 struct DeskSlot {
   lv_obj_t *o;
   bool want;  // the widget wants to be shown (switch on and has something to show)
 };
 DeskSlot deskSlots[12];
 int deskSlotN = 0;
-size_t deskPage = 0;
-uint32_t deskPageMs = 0;
-bool deskPaging = false;
-lv_obj_t *deskPageLbl = nullptr;  // "1/2" at the bottom while paging
-const uint32_t DESK_PAGE_MS = 7000;
+lv_obj_t *deskView = nullptr;      // clipping window the widget column scrolls in
+lv_timer_t *deskTickTimer = nullptr;
+bool deskTicker = false;           // scrolling (widgets don't all fit)
+int deskTickH = 0;                 // height of the window while scrolling
+int deskTickOfs = 0;               // how far the column has scrolled up (px)
+const uint32_t DESK_TICK_MS = 50;  // 1 px per tick = 20 px/s
 int deskLayoutKey = -1;  // bar + widget-row heights the layout was last done for
 int deskWaveKey = -1;    // buoy data version the wave texts were built from
 lv_obj_t *aboutUptime = nullptr;  // live uptime line on the About screen
@@ -434,8 +435,11 @@ void resetPtrs() {
   nfVer = 0;
   deskBar = deskRow = deskMenu = nullptr;
   deskSlotN = 0;
-  deskPaging = false;
-  deskPageLbl = nullptr;
+  deskView = nullptr;
+  if (deskTickTimer) lv_timer_del(deskTickTimer);  // the desktop is going away
+  deskTickTimer = nullptr;
+  deskTicker = false;
+  deskTickOfs = 0;
   deskLayoutKey = -1;
   deskWaveKey = -1;
   deskWave = deskWaveLbl = deskBarWave = deskBarWaveLbl = deskAlerts = deskAlertsLbl = nullptr;
@@ -646,7 +650,7 @@ void setImg(lv_obj_t *img, const lv_img_dsc_t *src) {
 
 // ---------- Desktop ----------
 
-// Records whether a desktop widget wants to be shown; pageWidgets() decides
+// Records whether a desktop widget wants to be shown; applyWidgets() decides
 // whether it actually is (it may be on another page)
 void wantWidget(lv_obj_t *o, bool show) {
   if (!o) return;
@@ -664,64 +668,74 @@ bool widgetWanted(lv_obj_t *o) {
   return false;
 }
 
-// Splits the wanted widgets into pages that fit between the status bar and
-// the bottom of the screen (the Menu button becomes the small bar icon while
-// paging), and shows one page at a time, switching every DESK_PAGE_MS
-void pageWidgets() {
-  if (!deskRow || !deskBar) return;
-  lv_obj_update_layout(deskBar);
-  lv_obj_update_layout(deskRow);  // sizes are kept up to date for hidden widgets too
+// Height the wanted widgets need in the normal layout (side by side and
+// wrapping in landscape, one per line in portrait)
+int packedHeight() {
   const bool portrait = H() > W();
-  int rowY = lv_obj_get_height(deskBar) + (portrait ? 10 : 5);
-  int avail = H() - rowY - 18;  // leave room for the page counter
   const int padR = 8, padC = 12, maxW = W();
-  std::vector<std::vector<lv_obj_t *>> pages(1);
   int usedH = 0, lineW = 0, lineH = 0;
   for (uint32_t i = 0; i < lv_obj_get_child_cnt(deskRow); i++) {
     lv_obj_t *c = lv_obj_get_child(deskRow, i);
     if (!widgetWanted(c)) continue;
     int w = lv_obj_get_width(c), h = lv_obj_get_height(c);
-    if (portrait || (lineW && lineW + padC + w > maxW)) {  // a new line (portrait: one widget per line)
+    if (portrait || (lineW && lineW + padC + w > maxW)) {
       if (lineW) usedH += (usedH ? padR : 0) + lineH;
       lineW = lineH = 0;
     }
-    int newLineH = std::max(lineH, h);
-    if (usedH + (usedH ? padR : 0) + newLineH > avail && !pages.back().empty()) {  // doesn't fit: next page
-      pages.emplace_back();
-      usedH = lineW = 0;
-      newLineH = h;
-    }
-    pages.back().push_back(c);
     lineW += (lineW ? padC : 0) + w;
-    lineH = newLineH;
+    lineH = std::max(lineH, h);
   }
-  deskPaging = pages.size() > 1;
-  if (!deskPaging) {
-    deskPage = 0;
-  } else if (millis() - deskPageMs >= DESK_PAGE_MS) {
-    deskPageMs = millis();
-    deskPage++;
+  if (lineW) usedH += (usedH ? padR : 0) + lineH;
+  return usedH;
+}
+
+// Shows the wanted widgets and decides whether they fit or need to scroll.
+// Scrolling uses one column so widgets can rejoin at the bottom one by one.
+void applyWidgets() {
+  if (!deskRow || !deskBar || !deskView) return;
+  for (int i = 0; i < deskSlotN; i++) setHidden(deskSlots[i].o, !deskSlots[i].want);
+  lv_obj_update_layout(deskBar);
+  lv_obj_update_layout(deskRow);
+  const bool portrait = H() > W();
+  int rowY = lv_obj_get_height(deskBar) + (portrait ? 10 : 5);
+  int avail = H() - rowY - 4;  // the Menu button moves to the status bar while scrolling
+  bool want = packedHeight() > avail;
+  if (want != deskTicker) {
+    deskTicker = want;
+    deskTickOfs = 0;
+    lv_obj_set_style_translate_y(deskRow, 0, 0);
+    lv_obj_set_flex_flow(deskRow, (want || portrait) ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW_WRAP);
   }
-  if (deskPage >= pages.size()) deskPage = 0;
-  const auto &cur = pages[deskPage];
-  for (int i = 0; i < deskSlotN; i++) {
-    bool show = deskSlots[i].want && std::find(cur.begin(), cur.end(), deskSlots[i].o) != cur.end();
-    setHidden(deskSlots[i].o, !show);
-  }
-  if (deskPageLbl) {
-    setHidden(deskPageLbl, !deskPaging);
-    if (deskPaging) {
-      char t[12];
-      snprintf(t, sizeof(t), "%u / %u", (unsigned)(deskPage + 1), (unsigned)pages.size());
-      setText(deskPageLbl, t);
+  deskTickH = avail;
+}
+
+// Ticker step: move the column up 1 px; once the top widget has scrolled out
+// of the window, move it to the end so the loop never runs dry
+void deskTick(lv_timer_t *) {
+  if (!deskTicker || !deskRow || weather::tlsActive()) return;
+  deskTickOfs++;
+  lv_obj_t *first = nullptr;
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(deskRow); i++) {
+    lv_obj_t *c = lv_obj_get_child(deskRow, i);
+    if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) {
+      first = c;
+      break;
     }
   }
+  if (first) {
+    int step = lv_obj_get_height(first) + 8;  // widget + row gap
+    if (deskTickOfs >= step) {
+      lv_obj_move_to_index(first, (int32_t)lv_obj_get_child_cnt(deskRow) - 1);
+      deskTickOfs -= step;
+    }
+  }
+  lv_obj_set_style_translate_y(deskRow, -deskTickOfs, 0);
 }
 
 // Places the widget row under the (possibly two-row) status bar and the Menu
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
-  if (!deskBar || !deskRow || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
+  if (!deskBar || !deskRow || !deskView || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
       !deskVolc || !deskNear || !deskOurs)
     return;
   lv_obj_update_layout(deskBar);
@@ -731,12 +745,15 @@ void layoutDesktop() {
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
-  int key = barH * 1000 + rowH + (deskPaging ? 500000 : 0);
+  if (deskTicker) rowH = deskTickH;  // the scrolling window fills the space
+  int key = barH * 1000 + rowH + (deskTicker ? 500000 : 0);
   if (key == deskLayoutKey) return;
   deskLayoutKey = key;
   const bool portrait = H() > W();
   int rowY = barH + (portrait ? 10 : 5);
-  lv_obj_align(deskRow, LV_ALIGN_TOP_MID, 0, rowY);
+  lv_obj_align(deskView, LV_ALIGN_TOP_MID, 0, rowY);
+  if (deskTicker) lv_obj_set_height(deskView, deskTickH);
+  else lv_obj_set_height(deskView, LV_SIZE_CONTENT);
   const int fullH = 70, minH = 40;
   int usual = (H() - fullH) / 2 + (portrait ? 42 : 22);
   int below = (rowH ? rowY + rowH : barH) + 10;
@@ -751,7 +768,7 @@ void layoutDesktop() {
     limit = H() - 4;
   }
   if (y + minH > limit) bigMenu = false;
-  if (deskPaging) wifiLine = bigMenu = false;  // pages use all the room; the page counter sits at the bottom
+  if (deskTicker) wifiLine = bigMenu = false;  // the scrolling widgets use all the room
   setHidden(deskWifiLbl, !wifiLine);
   setHidden(deskMenu, !bigMenu);
   setHidden(deskBarMenu, bigMenu);
@@ -1112,7 +1129,7 @@ void refreshDesktop() {
     lv_obj_set_style_text_color(deskWx, wxAlert ? lv_palette_main(LV_PALETTE_RED) : theme::text(), 0);
   }
 
-  pageWidgets();    // which widgets show now (all of them if they fit)
+  applyWidgets();   // show the wanted widgets; scroll them if they don't all fit
   layoutDesktop();  // the bar may have wrapped or a widget appeared/disappeared
 
   // Restyle only on change: setting a style invalidates (redraws) the widget
@@ -1420,7 +1437,13 @@ void showDesktop() {
   lv_obj_add_event_cb(mb, [](lv_event_t *) { showMenu(); }, LV_EVENT_CLICKED, nullptr);
 
   // Widgets between the status bar and the menu: wave height and alert count
-  lv_obj_t *wrow = lv_obj_create(scr);
+  // The widgets live in a clipping window, so they can scroll inside it
+  deskView = lv_obj_create(scr);
+  lv_obj_remove_style_all(deskView);
+  lv_obj_set_size(deskView, W(), LV_SIZE_CONTENT);
+  lv_obj_clear_flag(deskView, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_align(deskView, LV_ALIGN_TOP_MID, 0, portrait ? 46 : 41);
+  lv_obj_t *wrow = lv_obj_create(deskView);
   deskRow = wrow;
   lv_obj_remove_style_all(wrow);
   lv_obj_set_size(wrow, W(), LV_SIZE_CONTENT);
@@ -1431,7 +1454,7 @@ void showDesktop() {
   lv_obj_set_style_pad_column(wrow, 12, 0);
   lv_obj_set_style_pad_row(wrow, 8, 0);
   lv_obj_clear_flag(wrow, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, portrait ? 46 : 41);
+  lv_obj_align(wrow, LV_ALIGN_TOP_MID, 0, 0);
 
   // Each widget is a rounded "bubble" (themed panel) that reacts to a press
   auto widget = [&](lv_event_cb_t cb) {
@@ -1696,13 +1719,7 @@ void showDesktop() {
   lv_label_set_text(deskWifiLbl, "");
   lv_obj_align(deskWifiLbl, LV_ALIGN_BOTTOM_MID, 0, -10);
 
-  deskPageLbl = lv_label_create(scr);  // "1 / 2" while the widgets take turns
-  lv_obj_set_style_text_font(deskPageLbl, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_opa(deskPageLbl, LV_OPA_60, 0);
-  lv_label_set_text(deskPageLbl, "");
-  lv_obj_align(deskPageLbl, LV_ALIGN_BOTTOM_MID, 0, -2);
-  lv_obj_add_flag(deskPageLbl, LV_OBJ_FLAG_HIDDEN);
-
+  deskTickTimer = lv_timer_create(deskTick, DESK_TICK_MS, nullptr);
   load(scr, Screen::Desktop);
   refreshDesktop();
 }

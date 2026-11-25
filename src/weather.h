@@ -315,24 +315,24 @@ void newsKeepAlive();                    // the news page is open: keep polling 
 uint32_t newsVersion();
 String newsStatus();
 
-// ---- Outages (DownStatus, isitdownstatus.com) ----
-// Checks a list of popular services every 5 minutes and lists the ones that
-// aren't operational, worst first. Service names are DownStatus's ids
-// ("discord", "github"...), editable on the Outages page.
+// ---- Outages (OutageDeck, outagedeck.com) ----
+// Every 5 minutes, one list of the incidents active right now across the
+// ~180 services OutageDeck follows (from each company's own status page),
+// worst first. Filter by minimum severity and, optionally, by provider.
 struct Outage {
-  char id[24] = "";        // DownStatus service id
-  char name[28] = "";      // display name
-  char status[24] = "";    // as reported ("major_outage"...), underscores shown as spaces
-  uint8_t level = 1;       // 1 minor/degraded, 2 partial outage, 3 major outage / down
-  uint32_t since = 0;      // updated_at, epoch UTC (0 = unknown)
-  int reports = -1;        // user reports, when the API gives them (-1 = not given)
+  char provider[24] = "";  // OutageDeck slug ("discord")
+  char name[28] = "";      // "Discord"
+  char title[100] = "";    // "Voice connection issues"
+  char state[16] = "";     // investigating / identified / monitoring
+  uint8_t level = 1;       // 1 minor, 2 major, 3 critical
+  uint32_t since = 0;      // startedAt, epoch UTC
 };
-String outageServices();                  // comma-separated ids
-void setOutageServices(const String &csv);
-void resetOutageServices();
-BigVec<Outage> outages();                 // problems now, worst first
-String outageUnknown();                   // ids DownStatus doesn't know ("" if none)
-int outageChecked();                      // services answered in the last check
+BigVec<Outage> outages();                 // shown incidents (after the filters), worst first
+int outageActiveTotal();                  // active incidents across all providers (-1 = not yet)
+int outageMinLevel();                     // 1 minor+, 2 major+, 3 critical only
+void setOutageMinLevel(int lvl);
+String outageProviders();                 // "" = all providers, else comma-separated slugs
+void setOutageProviders(const String &csv);
 bool showOutageDesk();
 void setShowOutageDesk(bool on);
 void refreshOutages();

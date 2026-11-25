@@ -103,27 +103,16 @@ const int FLT_RADIUS_NM = 10;
 const char *ADSB_HOST = "opendata.adsb.fi/api/";
 const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";
 // Email (IMAP)
-// Outages (DownStatus)
-const char *DS_HOST = "isitdownstatus.com/api/status/";
+// Outages (OutageDeck)
+const char *OD_PATH = "outagedeck.com/api/v1/incidents?state=active&page=";
 const uint32_t OUT_REFRESH_MS = 5UL * 60 * 1000;
 const uint32_t OUT_RETRY_MS = 5UL * 60 * 1000;
-// One service per request, spread over the 5 minutes (DownStatus answers
-// HTTP 429 to bursts). After a 429: pause, then go at half the pace.
-const uint32_t OUT_MIN_GAP_MS = 8000;
-const uint32_t OUT_MAX_GAP_MS = 60000;
-const uint32_t OUT_429_PAUSE_MS = 3UL * 60 * 1000;
 const uint32_t OUT_BOOT_DELAY_MS = 75000;
+const int OUT_MAX_PAGES = 4;  // 50 per page
 #if defined(BOARD_NM_CYD_C5)
-const int OUT_MAX_SERVICES = 40;
-const char *OUT_DEFAULT =
-    "discord,reddit,youtube,netflix,instagram,facebook,whatsapp,x,tiktok,snapchat,spotify,steam,playstation,xbox,"
-    "roblox,fortnite,gmail,google,outlook,microsoft-teams,zoom,slack,icloud,amazon,aws,cloudflare,github,chatgpt,"
-    "verizon,att,t-mobile,xfinity,spectrum,hulu,disney-plus";
+const size_t OUT_KEEP = 40;
 #else
-const int OUT_MAX_SERVICES = 20;
-const char *OUT_DEFAULT =
-    "discord,reddit,youtube,netflix,instagram,facebook,x,spotify,steam,playstation,xbox,roblox,gmail,outlook,zoom,"
-    "icloud,amazon,aws,cloudflare,chatgpt";
+const size_t OUT_KEEP = 15;
 #endif
 const uint32_t MAIL_REFRESH_MS = 5UL * 60 * 1000;
 const uint32_t MAIL_RETRY_MS = 5UL * 60 * 1000;
@@ -276,21 +265,15 @@ uint32_t newsWantedMs = 0;
 bool newsTls[3] = {false, false, false};
 
 // Outages (guarded by mtx)
-String outList;            // comma-separated DownStatus ids
+String outProv;            // provider filter, "" = all
+int outMin = 2;            // minimum severity shown
 bool outDesk = true;
-BigVec<Outage> outItems;   // problems now, worst first
-String outUnknownIds, outErr;
-int outOk = 0;
+BigVec<Outage> outAll;     // every active incident from the last check
+BigVec<Outage> outItems;   // after the filters, worst first
+int outTotal = -1;
+String outErr;
 uint32_t outFetchedMs = 0, outVer = 0, outWantedMs = 0;
-bool dsTls = false;
-struct OutSlot {
-  Outage o;
-  uint8_t state = 0;  // 0 not checked yet, 1 working, 2 problem, 3 unknown id, 4 no answer
-};
-BigVec<OutSlot> outSlots;  // one per service in outList, same order
-size_t outNext = 0;        // next service to ask about
-uint32_t outGapMs = OUT_MIN_GAP_MS, outPauseUntil = 0;
-int outRounds = 0;         // complete passes through the list
+bool odTls = false;
 uint32_t otLastAttempt = 0;
 bool otAttempted = false, otLastOk = false, otForce = false;
 
@@ -3125,193 +3108,105 @@ void newsWork() {
   nwLastOk = ok;
 }
 
-// ---------- Outages (DownStatus) ----------
+// ---------- Outages (OutageDeck) ----------
 
-std::vector<String> splitIds(const String &csv) {
-  std::vector<String> ids;
-  String cur;
-  for (size_t i = 0; i <= csv.length(); i++) {
-    char ch = i < csv.length() ? csv[i] : ',';
-    if (ch == ',' || ch == ' ' || ch == ';') {
-      cur.trim();
-      cur.toLowerCase();
-      if (cur.length() && cur.length() < 24 && (int)ids.size() < OUT_MAX_SERVICES &&
-          std::find(ids.begin(), ids.end(), cur) == ids.end())
-        ids.push_back(cur);
-      cur = "";
-    } else if (isalnum((unsigned char)ch) || ch == '-' || ch == '_' || ch == '.') {
-      cur += ch;
-    }
+uint8_t severityLevel(const char *sv) {
+  if (!strcasecmp(sv, "critical")) return 3;
+  if (!strcasecmp(sv, "major")) return 2;
+  return 1;
+}
+
+// Applies the severity and provider filters to outAll (caller holds mtx)
+void outFilter() {
+  BigVec<Outage> v;
+  String prov = "," + outProv + ",";
+  for (const auto &o : outAll) {
+    if (o.level < outMin) continue;
+    if (outProv.length() && prov.indexOf(String(",") + o.provider + ",") < 0) continue;
+    v.push_back(o);
   }
-  return ids;
-}
-
-// "major_outage" -> 3, "partial_outage" -> 2, "degraded_performance" -> 1, "operational" -> 0
-uint8_t outageLevel(const char *st) {
-  String s = st;
-  s.toLowerCase();
-  if (s.isEmpty() || s == "operational" || s == "up" || s == "ok" || s == "online" || s == "normal" || s == "none")
-    return 0;
-  if (s.indexOf("partial") >= 0) return 2;
-  if (s.indexOf("major") >= 0 || s.indexOf("outage") >= 0 || s.indexOf("down") >= 0 || s.indexOf("critical") >= 0)
-    return 3;
-  return 1;  // degraded, minor, maintenance, investigating, anything else
-}
-
-// "github" -> "GitHub"-ish: capitalize words, keep known spellings
-void prettyName(const char *id, char *out, size_t n) {
-  static const char *const known[][2] = {
-      {"github", "GitHub"},   {"youtube", "YouTube"},     {"tiktok", "TikTok"},         {"whatsapp", "WhatsApp"},
-      {"playstation", "PlayStation"}, {"chatgpt", "ChatGPT"}, {"icloud", "iCloud"},      {"aws", "AWS"},
-      {"att", "AT&T"},        {"t-mobile", "T-Mobile"},   {"x", "X (Twitter)"},         {"microsoft-teams", "Microsoft Teams"},
-      {"disney-plus", "Disney+"}, {"openai", "OpenAI"},   {"linkedin", "LinkedIn"},     {"paypal", "PayPal"},
-      {"gmail", "Gmail"},     {"xfinity", "Xfinity"},     {"cloudflare", "Cloudflare"}};
-  for (auto &k : known)
-    if (!strcmp(id, k[0])) {
-      snprintf(out, n, "%s", k[1]);
-      return;
-    }
-  size_t j = 0;
-  bool up = true;
-  for (const char *p = id; *p && j < n - 1; p++) {
-    char ch = *p == '-' || *p == '_' ? ' ' : *p;
-    out[j++] = up ? (char)toupper((unsigned char)ch) : ch;
-    up = ch == ' ';
-  }
-  out[j] = 0;
-}
-
-// Pace: the whole list once per OUT_REFRESH_MS, never faster than OUT_MIN_GAP_MS
-uint32_t outBaseGap(size_t n) {
-  uint32_t g = n ? OUT_REFRESH_MS / n : OUT_REFRESH_MS;
-  return g < OUT_MIN_GAP_MS ? OUT_MIN_GAP_MS : g;
-}
-
-// Rebuilds the problem list and the unknown names from the slots (caller holds mtx)
-void outRebuild() {
-  BigVec<Outage> found;
-  String unknown;
-  int ok = 0;
-  for (const auto &sl : outSlots) {
-    if (sl.state == 1 || sl.state == 2) ok++;
-    if (sl.state == 2) found.push_back(sl.o);
-    if (sl.state == 3) unknown += (unknown.length() ? ", " : "") + String(sl.o.id);
-  }
-  std::sort(found.begin(), found.end(), [](const Outage &a, const Outage &b) {
+  std::sort(v.begin(), v.end(), [](const Outage &a, const Outage &b) {
     if (a.level != b.level) return a.level > b.level;
-    if (a.reports != b.reports) return a.reports > b.reports;
-    return a.since > b.since;
+    return a.since > b.since;  // newest first
   });
-  outItems = found;
-  outUnknownIds = unknown;
-  outOk = ok;
+  if (v.size() > OUT_KEEP) v.resize(OUT_KEEP);
+  outItems = v;
 }
 
-// The slots follow outList (caller holds mtx)
-void outSyncSlots() {
-  auto ids = splitIds(outList);
-  bool same = ids.size() == outSlots.size();
-  for (size_t i = 0; same && i < ids.size(); i++) same = ids[i] == outSlots[i].o.id;
-  if (same) return;
-  outSlots.clear();
-  for (const auto &id : ids) {
-    OutSlot sl;
-    snprintf(sl.o.id, sizeof(sl.o.id), "%s", id.c_str());
-    prettyName(id.c_str(), sl.o.name, sizeof(sl.o.name));
-    outSlots.push_back(sl);
-  }
-  outNext = 0;
-  outRounds = 0;
-  outRebuild();
-}
-
-// Asks DownStatus about ONE service (the next in the list)
 void outageWork() {
-  String id;
-  bool tls;
-  size_t idx, n;
-  {
-    std::lock_guard<std::mutex> lock(mtx);
-    outSyncSlots();
-    n = outSlots.size();
-    if (!n) {
-      otLastOk = true;
-      return;
-    }
-    if (outNext >= n) outNext = 0;
-    idx = outNext;
-    id = outSlots[idx].o.id;
-    tls = dsTls;
-  }
-  Outage o;
-  snprintf(o.id, sizeof(o.id), "%s", id.c_str());
-  bool parsed = false;
+  BigVec<Outage> all;
+  int total = -1, pages = 1;
   String why;
-  int code = streamGet(
-      String(DS_HOST) + id, tls,
-      [&](Stream &body) {
-        JsonDocument doc;
-        if (deserializeJson(doc, body)) return;
-        JsonObject r = doc.as<JsonObject>();
-        if (r.isNull()) return;
-        if (r["data"].is<JsonObject>()) r = r["data"].as<JsonObject>();  // in case it's wrapped
-        const char *st = r["status"] | "";
-        if (r["status"].is<JsonObject>()) st = r["status"]["indicator"] | (r["status"]["status"] | "");
-        asciiCopy(o.status, sizeof(o.status), st);
-        for (char *p = o.status; *p; p++)
-          if (*p == '_') *p = ' ';
-        o.level = outageLevel(st);
-        const char *nm = r["name"] | (r["display_name"] | "");
-        if (*nm) asciiCopy(o.name, sizeof(o.name), nm);
-        else prettyName(id.c_str(), o.name, sizeof(o.name));
-        o.since = parseIso(r["updated_at"] | (r["since"] | (r["last_updated"] | "")));
-        for (const char *k : {"reports", "user_reports", "reports_count", "report_count", "reports_24h"})
-          if (r[k].is<int>()) {
-            o.reports = r[k];
-            break;
+  bool tls = odTls, ok = true;
+  JsonDocument filter;
+  filter["data"]["totalPages"] = true;
+  filter["data"]["totalIncidents"] = true;
+  JsonObject fi = filter["data"]["incidents"][0].to<JsonObject>();
+  for (const char *k : {"title", "status", "stale", "severity", "startedAt"}) fi[k] = true;
+  fi["provider"]["slug"] = true;
+  fi["provider"]["name"] = true;
+  for (int page = 1; page <= pages && page <= OUT_MAX_PAGES; page++) {
+    bool parsed = false;
+    int code = streamGet(
+        String(OD_PATH) + page, tls,
+        [&](Stream &body) {
+          JsonDocument doc;
+          DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+          if (err) {
+            why = String("bad reply (") + err.c_str() + ")";
+            return;
           }
-        parsed = true;
-      },
-      why);
-  bool limited = code == 429;
-  {
-    std::lock_guard<std::mutex> lock(mtx);
-    dsTls = tls;
-    if (idx < outSlots.size() && id == outSlots[idx].o.id) {
-      OutSlot &sl = outSlots[idx];
-      if (limited) {
-        // Ask about the same service again after the pause, at half the pace
-        outPauseUntil = millis() + OUT_429_PAUSE_MS;
-        outGapMs = std::min(OUT_MAX_GAP_MS, std::max(outGapMs, outBaseGap(n)) * 2);
-        outErr = "DownStatus asked us to slow down (HTTP 429); now one service every " + String(outGapMs / 1000) + " s";
-      } else {
-        if (code == 200 && parsed) {
-          sl.o = o;
-          sl.state = o.level ? 2 : 1;
-          outErr = "";
-          // Ease back toward the normal pace after a slow-down
-          uint32_t base = outBaseGap(n);
-          if (outGapMs > base) outGapMs = std::max(base, outGapMs - 1000);
-        } else if (code == 404) {
-          sl.state = 3;
-        } else {
-          sl.state = 4;
-          outErr = String(sl.o.name) + ": " + (why.length() ? why : String("unreadable reply"));
-        }
-        if (++outNext >= n) {
-          outNext = 0;
-          outRounds++;
-          outFetchedMs = millis();
-        }
-        outRebuild();
-      }
-      outVer++;
+          JsonObject d = doc["data"];
+          if (d.isNull()) {
+            why = "unexpected reply";
+            return;
+          }
+          pages = d["totalPages"] | 1;
+          if (page == 1) total = d["totalIncidents"] | -1;
+          for (JsonObject in : d["incidents"].as<JsonArray>()) {
+            const char *st = in["status"] | "";
+            if (!strcasecmp(st, "resolved") || (in["stale"] | false)) continue;  // finished or no longer updated
+            Outage o;
+            asciiCopy(o.provider, sizeof(o.provider), in["provider"]["slug"] | "");
+            asciiCopy(o.name, sizeof(o.name), in["provider"]["name"] | (const char *)o.provider);
+            asciiCopy(o.title, sizeof(o.title), in["title"] | "");
+            asciiCopy(o.state, sizeof(o.state), st);
+            o.level = severityLevel(in["severity"] | "");
+            o.since = parseIso(in["startedAt"] | "");
+            bool dup = false;  // in case a page repeats an incident
+            for (const auto &x : all)
+              if (!strcmp(x.provider, o.provider) && !strcmp(x.title, o.title)) dup = true;
+            if (!dup) all.push_back(o);
+          }
+          parsed = true;
+        },
+        why);
+    Serial.printf("[outages] page %d -> %d%s\n", page, code, parsed ? "" : (" " + why).c_str());
+    if (code != 200 || !parsed) {
+      if (code == 200 && why.isEmpty()) why = "unreadable reply";
+      ok = page > 1;  // a later page failing still leaves a usable (partial) list
+      break;
     }
   }
-  if (limited) Serial.printf("[outages] HTTP 429 at %s: pausing 3 min, then one every %lu s\n", id.c_str(),
-                             (unsigned long)(outGapMs / 1000));
-  else Serial.printf("[outages] %s -> %d %s\n", id.c_str(), code, parsed ? o.status : why.c_str());
-  otLastOk = !limited;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    odTls = tls;
+    if (ok) {
+      outAll = all;
+      outTotal = total;
+      outFetchedMs = millis();
+      outErr = why;
+      outFilter();
+    } else {
+      outErr = why.length() ? why : String("no answer");
+    }
+    outVer++;
+  }
+  if (ok) {
+    Serial.printf("[outages] %d active, %u kept, %u shown\n", total, (unsigned)all.size(), (unsigned)outItems.size());
+    for (const auto &o : outItems) Serial.printf("[outages]   %s (%d): %s\n", o.name, o.level, o.title);
+  }
+  otLastOk = ok;
 }
 
 void mailWork() {
@@ -3619,7 +3514,10 @@ void begin() {
   if (newsSrc < 0 || newsSrc >= NEWS_SOURCES) newsSrc = 0;
   newsDesk = prefs.getBool("nwDesk", true);
   {
-    outList = prefs.isKey("otList") ? prefs.getString("otList") : String(OUT_DEFAULT);
+    if (prefs.isKey("otList")) prefs.remove("otList");  // 1.11's DownStatus service list
+    outProv = prefs.isKey("otProv") ? prefs.getString("otProv") : String();
+    outMin = prefs.getInt("otMin", 2);
+    if (outMin < 1 || outMin > 3) outMin = 2;
     outDesk = prefs.getBool("otDesk", true);
     mlPrefs.begin("mail", false);  // read-write: creates the namespace on first boot
     mlHost = mlPrefs.isKey("host") ? mlPrefs.getString("host") : String();
@@ -3757,8 +3655,8 @@ void loop() {
     flags |= DO_MAIL;
   // Outages: on their own, once nothing else is due
   bool outWanted = outDesk || (outWantedMs && millis() - outWantedMs < QUAKE_WANTED_MS);
-  if (!flags && outWanted && (millis() >= OUT_BOOT_DELAY_MS || otForce) && (long)(millis() - outPauseUntil) >= 0 &&
-      (otForce || !otAttempted || millis() - otLastAttempt >= std::max(outGapMs, outBaseGap(outSlots.size()))))
+  if (!flags && outWanted && (millis() >= OUT_BOOT_DELAY_MS || otForce) &&
+      (otForce || !otAttempted || millis() - otLastAttempt >= (otLastOk ? OUT_REFRESH_MS : OUT_RETRY_MS)))
     flags |= DO_OUTAGE;
   // Breaking news: on its own, once nothing else is due (before the frequent flight polls)
   bool newsWanted = newsDesk || (newsWantedMs && millis() - newsWantedMs < QUAKE_WANTED_MS);
@@ -4732,38 +4630,53 @@ String newsStatus() {
 
 // ---------- Outages ----------
 
-String outageServices() {
-  std::lock_guard<std::mutex> lock(mtx);
-  return outList;
-}
-
-void setOutageServices(const String &csv) {
-  auto ids = splitIds(csv);
-  String clean;
-  for (const auto &id : ids) clean += (clean.length() ? "," : "") + id;
-  std::lock_guard<std::mutex> lock(mtx);
-  outList = clean;
-  prefs.begin("wx", false);
-  prefs.putString("otList", outList);
-  prefs.end();
-  outSyncSlots();
-  outErr = "";
-  outFetchedMs = 0;
-  outVer++;
-  otForce = true;
-}
-
-void resetOutageServices() { setOutageServices(OUT_DEFAULT); }
-
 BigVec<Outage> outages() {
   std::lock_guard<std::mutex> lock(mtx);
   return outItems;
 }
-String outageUnknown() {
+int outageActiveTotal() { return outTotal; }
+int outageMinLevel() { return outMin; }
+
+void setOutageMinLevel(int lvl) {
+  if (lvl < 1 || lvl > 3) return;
   std::lock_guard<std::mutex> lock(mtx);
-  return outUnknownIds;
+  outMin = lvl;
+  prefs.begin("wx", false);
+  prefs.putInt("otMin", lvl);
+  prefs.end();
+  outFilter();
+  outVer++;
 }
-int outageChecked() { return outOk; }
+
+String outageProviders() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return outProv;
+}
+
+void setOutageProviders(const String &csv) {
+  // Normalize to "slug,slug": lower case, words joined by '-'
+  String clean, cur;
+  for (size_t i = 0; i <= csv.length(); i++) {
+    char ch = i < csv.length() ? csv[i] : ',';
+    if (ch == ',' || ch == ';') {
+      cur.trim();
+      cur.toLowerCase();
+      cur.replace(" ", "-");
+      if (cur.length()) clean += (clean.length() ? "," : "") + cur;
+      cur = "";
+    } else if (isalnum((unsigned char)ch) || ch == '-' || ch == ' ') {
+      cur += ch;
+    }
+  }
+  std::lock_guard<std::mutex> lock(mtx);
+  outProv = clean;
+  prefs.begin("wx", false);
+  prefs.putString("otProv", outProv);
+  prefs.end();
+  outFilter();
+  outVer++;
+}
+
 bool showOutageDesk() { return outDesk; }
 
 void setShowOutageDesk(bool on) {
@@ -4776,39 +4689,29 @@ void setShowOutageDesk(bool on) {
   outVer++;
 }
 
-void refreshOutages() {  // start a new pass from the top (at the normal pace)
+void refreshOutages() {
   outWantedMs = millis();
-  std::lock_guard<std::mutex> lock(mtx);
-  outNext = 0;
-  if ((long)(millis() - outPauseUntil) >= 0) otForce = true;
+  otForce = true;
 }
 void outageKeepAlive() { outWantedMs = millis(); }
 uint32_t outageVersion() { return outVer; }
 
 String outageStatus() {
   std::lock_guard<std::mutex> lock(mtx);
-  if (outList.isEmpty()) return "Add some services below.";
   if (bluetoothBusy()) return PAUSED_MSG;
-  if (net::state() != net::State::Connected && !outOk) return "Waiting for Wi-Fi...";
-  size_t n = outSlots.size();
-  uint32_t gap = std::max(outGapMs, outBaseGap(n));
-  String s;
-  char b[112];
-  if ((long)(millis() - outPauseUntil) < 0) {
-    snprintf(b, sizeof(b), "Paused %lu s (DownStatus rate limit). ",
-             (unsigned long)((outPauseUntil - millis()) / 1000));
-    s += b;
+  if (net::state() != net::State::Connected && !outFetchedMs) return "Waiting for Wi-Fi...";
+  if (!outFetchedMs) {
+    if (outErr.length()) return "Check failed: " + outErr;
+    return millis() < OUT_BOOT_DELAY_MS && !otForce ? "First check about a minute after startup..."
+                                                    : String("Checking OutageDeck...");
   }
-  if (!outRounds) {
-    if (!outOk && millis() < OUT_BOOT_DELAY_MS && !otForce) return s + "First check about a minute after startup...";
-    snprintf(b, sizeof(b), "First pass: %u of %u checked, one every %lu s", (unsigned)outNext, (unsigned)n,
-             (unsigned long)(gap / 1000));
-  } else {
-    snprintf(b, sizeof(b), "%d services, each checked every %lu min (one every %lu s)", outOk,
-             (unsigned long)((gap * n + 59999) / 60000), (unsigned long)(gap / 1000));
-  }
-  s += b;
-  if (outErr.length()) s += "\nLast problem: " + outErr;
+  static const char *lv[] = {"", "all", "major and critical", "critical"};
+  char b[140];
+  snprintf(b, sizeof(b), "%d active incidents on all services; showing %u (%s%s). Checked %lu min ago, every 5 min.",
+           outTotal, (unsigned)outItems.size(), lv[outMin], outProv.length() ? ", your providers" : "",
+           (unsigned long)((millis() - outFetchedMs) / 60000));
+  String s = b;
+  if (outErr.length()) s += "\nLast check: " + outErr;
   return s;
 }
 

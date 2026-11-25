@@ -155,7 +155,7 @@ lv_obj_t *deskOut = nullptr, *deskOutTop = nullptr, *deskOutLine = nullptr;
 int deskOutKey = -1;
 size_t deskOutIdx = 0;
 uint32_t deskOutRotMs = 0;
-lv_obj_t *otStatus = nullptr, *otBox = nullptr, *otUnknown = nullptr, *otTa = nullptr;
+lv_obj_t *otStatus = nullptr, *otBox = nullptr, *otTa = nullptr;
 int otKey = -1;
 Screen outBack = Screen::Menu;
 int nwKey = -1;
@@ -478,7 +478,7 @@ void resetPtrs() {
   mlKey = -1;
   deskOut = deskOutTop = deskOutLine = nullptr;
   deskOutKey = -1;
-  otStatus = otBox = otUnknown = otTa = nullptr;
+  otStatus = otBox = otTa = nullptr;
   otKey = -1;
   deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = deskNearCnt = nullptr;
   deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
@@ -1269,13 +1269,12 @@ void refreshDesktop() {
       if (k != deskOutKey) {
         deskOutKey = k;
         char top[48];
-        snprintf(top, sizeof(top), LV_SYMBOL_WARNING " %u service%s having problems", (unsigned)n, n == 1 ? "" : "s");
+        snprintf(top, sizeof(top), LV_SYMBOL_WARNING " %u active incident%s", (unsigned)n, n == 1 ? "" : "s");
         setText(deskOutTop, top);
         lv_obj_set_style_text_color(
             deskOutTop, lv_palette_main(outs[0].level >= 3 ? LV_PALETTE_RED : LV_PALETTE_ORANGE), 0);
         const auto &o = outs[deskOutIdx];
-        String line = String(o.name) + ": " + o.status;
-        if (o.reports > 0) line += " (" + String(o.reports) + " reports)";
+        String line = String(o.name) + ": " + o.title;
         if (n > 1) line = "(" + String(deskOutIdx + 1) + "/" + String(n) + ") " + line;
         setText(deskOutLine, line.c_str());
       }
@@ -5686,20 +5685,21 @@ void refreshOutageScreen() {
   lv_obj_clean(otBox);
   if (outs.empty()) {
     lv_obj_t *l = lv_label_create(otBox);
-    lv_label_set_text(l, weather::outageChecked() ? "Everything checked is working" : "No results yet");
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_label_set_text(l, weather::outageActiveTotal() < 0 ? "No results yet" : "Nothing matching your filters right now");
   }
+  static const char *sev[] = {"", "minor", "major", "critical"};
   for (size_t i = 0; i < outs.size(); i++) {
     const auto &o = outs[i];
-    lv_color_t c = lv_palette_main(o.level >= 3 ? LV_PALETTE_RED : LV_PALETTE_ORANGE);
-    String l2 = o.status;
-    if (o.reports > 0) l2 += "  -  " + String(o.reports) + " reports";
+    lv_color_t c = o.level >= 3 ? lv_palette_main(LV_PALETTE_RED)
+                   : o.level == 2 ? lv_palette_main(LV_PALETTE_ORANGE)
+                                  : theme::text();
+    String l2 = String(sev[o.level]) + "  -  " + o.state;
     String age = o.since ? agoText(o.since) : String("");
-    if (age.length()) l2 += "  -  updated " + age;
-    twoLineRow(otBox, o.name, c, l2, mailNoop, i);
+    if (age.length()) l2 += "  -  started " + age;
+    twoLineRow(otBox, String(o.name) + ": " + o.title, c, l2, mailNoop, i);
   }
-  String unk = weather::outageUnknown();
-  setText(otUnknown, unk.length() ? ("Not found on DownStatus (check the spelling): " + unk).c_str() : "");
-  setHidden(otUnknown, unk.isEmpty());
 }
 
 void showOutages() {
@@ -5734,32 +5734,46 @@ void showOutages() {
         else lv_obj_clear_state(s, LV_STATE_CHECKED);
       },
       LV_EVENT_CLICKED, sw);
-  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Services to check");
+  lv_list_add_text(list, "Show incidents that are");
+  static const char *lvNames[] = {"", "Minor, major or critical", "Major or critical", "Critical only"};
+  for (int lv = 1; lv <= 3; lv++) {
+    lv_obj_t *b = lv_list_add_btn(list, lv == weather::outageMinLevel() ? LV_SYMBOL_OK : nullptr, lvNames[lv]);
+    lv_obj_add_event_cb(
+        b,
+        [](lv_event_t *e) {
+          weather::setOutageMinLevel((int)(intptr_t)lv_event_get_user_data(e));
+          showOutages();
+        },
+        LV_EVENT_CLICKED, (void *)(intptr_t)lv);
+  }
+  lv_list_add_text(list, "Providers");
+  String prov = weather::outageProviders();
+  String pl = prov.length() ? "Only: " + prov : String("All providers (tap to pick)");
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, pl.c_str());
   lv_obj_add_event_cb(b, [](lv_event_t *) { showOutageList(); }, LV_EVENT_CLICKED, nullptr);
-  b = lv_list_add_btn(list, LV_SYMBOL_LOOP, "Reset to the default list");
-  lv_obj_add_event_cb(
-      b,
-      [](lv_event_t *) {
-        confirmBox("Default list?", "Replace your list with the built-in list of popular services?", "Reset",
-                   [](lv_event_t *) {
-                     weather::resetOutageServices();
-                     showOutages();
-                   });
-      },
-      LV_EVENT_CLICKED, nullptr);
+  if (prov.length()) {
+    b = lv_list_add_btn(list, LV_SYMBOL_LOOP, "Show all providers");
+    lv_obj_add_event_cb(
+        b,
+        [](lv_event_t *) {
+          weather::setOutageProviders("");
+          showOutages();
+        },
+        LV_EVENT_CLICKED, nullptr);
+  }
   b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Check now");
   lv_obj_add_event_cb(
       b,
       [](lv_event_t *) {
         if (net::state() != net::State::Connected) {
-          errorBox("No Wi-Fi", "Connect to Wi-Fi to check services.");
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to check for outages.");
           return;
         }
         weather::refreshOutages();
       },
       LV_EVENT_CLICKED, nullptr);
 
-  lv_list_add_text(list, "Having problems now (worst first)");
+  lv_list_add_text(list, "Active now (worst first)");
   otBox = lv_obj_create(list);
   lv_obj_remove_style_all(otBox);
   lv_obj_set_size(otBox, LV_PCT(100), LV_SIZE_CONTENT);
@@ -5767,30 +5781,23 @@ void showOutages() {
   lv_obj_set_style_pad_hor(otBox, 8, 0);
   lv_obj_set_style_pad_row(otBox, 4, 0);
   lv_obj_clear_flag(otBox, LV_OBJ_FLAG_SCROLLABLE);
-  otUnknown = lv_label_create(list);
-  lv_label_set_long_mode(otUnknown, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(otUnknown, LV_PCT(100));
-  lv_obj_set_style_pad_all(otUnknown, 8, 0);
-  lv_obj_set_style_text_color(otUnknown, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  lv_label_set_text(otUnknown, "");
-  lv_obj_add_flag(otUnknown, LV_OBJ_FLAG_HIDDEN);
-  lv_list_add_text(list, "Data: DownStatus (isitdownstatus.com)");
+  lv_list_add_text(list, "Data: OutageDeck (official status pages)");
 
   load(scr, Screen::Outages);
   weather::outageKeepAlive();
-  if (!weather::outageChecked()) weather::refreshOutages();
+  if (weather::outageActiveTotal() < 0) weather::refreshOutages();
   otKey = -1;
   refreshOutageScreen();
 }
 
 void showOutageList() {
   lv_obj_t *scr = newScreen();
-  makeHeader(scr, "Services to check", [](lv_event_t *) { showOutages(); });
+  makeHeader(scr, "Only these providers", [](lv_event_t *) { showOutages(); });
   otTa = lv_textarea_create(scr);
-  lv_textarea_set_max_length(otTa, 600);
-  lv_textarea_set_accepted_chars(otTa, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_., ");
-  lv_textarea_set_placeholder_text(otTa, "discord, netflix, github ...");
-  lv_textarea_set_text(otTa, weather::outageServices().c_str());
+  lv_textarea_set_max_length(otTa, 400);
+  lv_textarea_set_accepted_chars(otTa, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-, ");
+  lv_textarea_set_placeholder_text(otTa, "blank = all. e.g. discord, reddit, zoom, twitch, openai");
+  lv_textarea_set_text(otTa, weather::outageProviders().c_str());
   lv_obj_set_width(otTa, W() - 8);
   int kbH = H() - HEADER_H - 50;
   if (kbH > 170) kbH = 170;
@@ -5813,7 +5820,7 @@ void showOutageList() {
           return;
         }
         if (c != LV_EVENT_READY) return;
-        weather::setOutageServices(lv_textarea_get_text(otTa));
+        weather::setOutageProviders(lv_textarea_get_text(otTa));
         showOutages();
       },
       LV_EVENT_ALL, nullptr);

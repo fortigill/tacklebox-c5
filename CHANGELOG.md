@@ -3,6 +3,28 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.12.0] - 2026-11-24
+
+### Changed
+- **Outages now come from OutageDeck** (outagedeck.com) instead of DownStatus. DownStatus put
+  its API behind a Vercel browser check ("Security Checkpoint", HTTP 429 for every
+  non-browser), so no device can use it at any pace.
+  - One list of the incidents active right now across the ~180 services OutageDeck follows,
+    read from each company's own status page (Discord, Reddit, Twitch, Zoom, Slack, Dropbox,
+    OpenAI, Anthropic, GitHub, AWS, Cloudflare, Google Workspace, Coinbase, Proton...).
+    One or two small requests every 5 minutes (`/api/v1/incidents?state=active`, 50 per
+    page, read with a filter), no key, no per-service polling.
+  - Worst first: critical (red), major (orange), minor; newest first within each.
+    Resolved and "stale" (no longer updated) incidents are skipped.
+  - **Show incidents that are:** minor or worse / major or worse (default) / critical only.
+  - **Only these providers:** optional comma-separated list of OutageDeck names
+    (e.g. `discord, reddit, zoom`); blank shows every provider.
+  - Desktop widget: "N active incidents", then "Provider: incident title" in turn; hidden
+    when nothing matches.
+
+### Removed
+- The DownStatus service list and its request pacing (1.11.x).
+
 ## [1.11.1] - 2026-11-24
 
 ### Fixed

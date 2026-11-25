@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.10] - 2026-11-24
+
+### Changed
+- Near-the-airport widget: lines 2-4 scroll back and forth slowly (25 px/s) when they're too
+  long for the bubble, instead of ending in "...". Short lines stay put.
+
 ## [1.7.9] - 2026-11-24
 
 ### Fixed

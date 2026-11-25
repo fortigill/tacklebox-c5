@@ -1548,7 +1548,9 @@ void showDesktop() {
     lv_obj_t *l = lv_label_create(deskNear);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_opa(l, LV_OPA_90, 0);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    // Too long for the bubble: scroll back and forth instead of cutting off
+    lv_label_set_long_mode(l, LV_LABEL_LONG_SCROLL);
+    lv_obj_set_style_anim_speed(l, 25, 0);  // px/s, slow enough to read
     lv_obj_set_style_max_width(l, W() - 40, 0);
     lv_obj_set_height(l, lv_font_get_line_height(&lv_font_montserrat_14));
     lv_label_set_text(l, "");

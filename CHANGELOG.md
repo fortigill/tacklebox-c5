@@ -3,6 +3,22 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.8.0] - 2026-11-24
+
+### Added
+- **Desktop widget pages.** When more widgets are switched on (and have something to show)
+  than fit between the status bar and the bottom of the screen, they're split into pages
+  that take turns every 7 seconds, so every active widget gets shown, uncut.
+  - Pages are packed the way the desktop lays widgets out: side by side and wrapping in
+    landscape, one per line in portrait. Widget order is kept.
+  - A small "1 / 2" page counter sits at the bottom while paging.
+  - While paging, the big Menu button gives way to the compact menu icon in the status bar,
+    and the Wi-Fi line is hidden, so each page gets the most room and the layout doesn't
+    jump between pages.
+  - When everything fits, the desktop looks exactly as before (no pages, no counter).
+  - Widgets that hide themselves (no airliners near, no flights to/from the airport) don't
+    take a slot. Pages are re-worked out as widgets come and go.
+
 ## [1.7.10] - 2026-11-24
 
 ### Changed

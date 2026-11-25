@@ -3,6 +3,12 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.9.1] - 2026-11-24
+
+### Fixed
+- 1.9.0 didn't compile: the news widget's row variable reused a name already taken in
+  `showDesktop()` ("redeclaration of 'lv_obj_t* nline'"). Renamed.
+
 ## [1.9.0] - 2026-11-24
 
 ### Added

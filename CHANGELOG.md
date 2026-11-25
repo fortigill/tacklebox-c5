@@ -3,6 +3,21 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.7.9] - 2026-11-24
+
+### Fixed
+- **Flights to/from the airport shown in the wrong direction.** The adsbdb route database
+  keeps one direction per callsign and sometimes has it reversed or out of date. For
+  example, DL 3056 was listed ATL-DAB while it was climbing out of DAB toward Atlanta, so
+  the widget said "To DAB ... from Atlanta". What the aircraft is actually doing now decides
+  the direction:
+  - climbing (300+ fpm), or getting farther away since the last check, means it departed
+    from here;
+  - descending, or getting closer, means it's arriving here.
+  When that disagrees with the database, origin and destination (codes and cities) are
+  swapped, the widget shows "From DAB: DL 3056 / to Atlanta (ATL)", and the serial log
+  notes the correction. Aircraft on the ground keep the database's direction.
+
 ## [1.7.8] - 2026-11-24
 
 ### Changed

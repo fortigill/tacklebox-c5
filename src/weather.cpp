@@ -1874,6 +1874,8 @@ struct RouteInfo {
   char fromIata[5], fromIcao[5], fromCity[24];
   char toIata[5], toIcao[5], toCity[24];
   char midIata[5], midIcao[5];  // one-stop routes (A-B-C): the middle airport
+  float lastDist;               // distance from the airport at the previous check
+  uint32_t lastDistMs;          // ...and when (0 = none yet)
 };
 std::vector<RouteInfo> routeCache;
 
@@ -1953,7 +1955,20 @@ void addRoutes(std::vector<LiveFlight> &live, const String &ap) {
         r = &routeCache.back();
       }
     }
-    if (!r || !r->known) continue;
+    if (!r) continue;
+    // Moving away from or toward the airport, from the climb rate, or from the
+    // distance change since the last check (level flight, or no climb rate)
+    int trend = 0;  // +1 moving away (departing), -1 closing in (arriving)
+    if (f.phase == 2) trend = 1;
+    else if (f.phase == 1) trend = -1;
+    else if (f.phase != 3 && r->lastDistMs && now - r->lastDistMs < 120000) {
+      float d = f.distNm - r->lastDist;
+      if (d > 0.3f) trend = 1;
+      else if (d < -0.3f) trend = -1;
+    }
+    r->lastDist = f.distNm;
+    r->lastDistMs = now;
+    if (!r->known) continue;
     f.routeKnown = true;
     strcpy(f.from, r->fromIata[0] ? r->fromIata : r->fromIcao);
     strcpy(f.to, r->toIata[0] ? r->toIata : r->toIcao);
@@ -1968,6 +1983,18 @@ void addRoutes(std::vector<LiveFlight> &live, const String &ap) {
       else strcpy(f.from, r->midIata[0] ? r->midIata : r->midIcao);
     } else {
       f.ours = toUs ? 1 : fromUs ? 2 : 0;
+    }
+    // The database lists one direction per callsign and is sometimes wrong
+    // or reversed (DL3056 listed ATL-DAB while climbing out of DAB for ATL).
+    // What the aircraft is doing wins: climbing away / opening distance means
+    // it left here; descending / closing in means it's arriving here.
+    if (f.ours && trend != 0 && (trend > 0) != (f.ours == 2)) {
+      char t[24];
+      strcpy(t, f.from), strcpy(f.from, f.to), strcpy(f.to, t);
+      strcpy(t, f.fromCity), strcpy(f.fromCity, f.toCity), strcpy(f.toCity, t);
+      f.ours = trend > 0 ? 2 : 1;
+      Serial.printf("[flights] %s: route listed the other way, %s here (now %s-%s)\n", f.callsign,
+                    f.ours == 2 ? "departing" : "arriving", f.from, f.to);
     }
   }
 }

@@ -19,11 +19,13 @@
 #define PIN_TOUCH_CS 1
 #define PIN_SD_CS 10    // kept high (deselected) so the card stays off the bus
 #define PIN_RGB_LED 27  // WS2812
+#define PIN_BOOT_BTN 28 // BOOT button on the back (LOW when pressed)
 #define DEFAULT_INVERT false  // this panel shows correct colors without inversion
 #define BOARD_DUAL_BAND 1     // 2.4 + 5 GHz Wi-Fi
 #else
 // Classic CYD: ESP32-WROOM-32, ILI9341, XPT2046 on its own SPI bus, 3-pin RGB LED
 #define BOARD_NAME "ESP32-2432S028R"
 #define DEFAULT_INVERT true
+#define PIN_BOOT_BTN 0  // BOOT button on the back (LOW when pressed)
 #define BOARD_DUAL_BAND 0     // 2.4 GHz only
 #endif

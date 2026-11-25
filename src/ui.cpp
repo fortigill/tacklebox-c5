@@ -13,6 +13,7 @@
 
 #include "ble.h"
 #include "display.h"
+#include "led.h"
 #include "drone.h"
 #include "net.h"
 #include "ota.h"
@@ -2279,6 +2280,32 @@ void showDisplay() {
         showDisplay();
       },
       LV_EVENT_CLICKED, nullptr);
+
+  // Screen off/on button and the status LED
+  lv_list_add_text(list, "Screen & LED");
+  lv_obj_t *ledRow = lv_list_add_btn(list, LV_SYMBOL_CHARGE, "Status LED on the back");
+  lv_obj_t *ledSw = lv_switch_create(ledRow);
+  lv_obj_clear_flag(ledSw, LV_OBJ_FLAG_CLICKABLE);
+  if (led::enabled()) lv_obj_add_state(ledSw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      ledRow,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !led::enabled();
+        led::setEnabled(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, ledSw);
+  lv_obj_t *offBtn = lv_list_add_btn(list, LV_SYMBOL_POWER, "Turn the screen off now");
+  lv_obj_add_event_cb(offBtn, [](lv_event_t *) { display::setScreenOn(false); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *hint = lv_label_create(list);
+  lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(hint, LV_PCT(100));
+  lv_obj_set_style_pad_all(hint, 8, 0);
+  lv_obj_set_style_text_opa(hint, LV_OPA_70, 0);
+  lv_label_set_text(hint, "The BOOT button on the back turns the screen off and on. While it's off, a tap on the "
+                          "screen also wakes it (that tap doesn't press anything).");
 
   // How desktop widgets scroll when they don't all fit on the screen
   lv_list_add_text(list, "Desktop widgets (when they don't all fit)");

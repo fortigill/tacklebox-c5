@@ -3,6 +3,17 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.13.0] - 2026-11-24
+
+### Added
+- **Screen off/on with the BOOT button on the back** (GPIO0 on the classic CYD, GPIO28 on
+  the NM-CYD-C5). Each press toggles the backlight; everything keeps running while it's off.
+  While the screen is off, a tap also wakes it, and that tap is not passed on to whatever
+  is underneath. Display & touch also has "Turn the screen off now".
+- **Status LED on the back** switch (Display & touch > Screen & LED). Off keeps the LED dark
+  (boot, drone alerts and all); turning it back on restores the current color. Saved
+  across restarts; the LED is dark from the first moment of boot when off.
+
 ## [1.12.0] - 2026-11-24
 
 ### Changed

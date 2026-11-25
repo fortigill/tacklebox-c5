@@ -91,7 +91,10 @@ uint8_t clampBrightness(int pct) {
   return (uint8_t)pct;
 }
 
-void applyBrightness() { ledcWrite(PIN_LCD_BL, (uint32_t)blPct * ((1u << BL_BITS) - 1) / 100); }
+bool scrOn = true;
+bool wakeHold = false;  // swallowing the touch that woke the screen
+
+void applyBrightness() { ledcWrite(PIN_LCD_BL, scrOn ? (uint32_t)blPct * ((1u << BL_BITS) - 1) / 100 : 0); }
 
 // Same orientation semantics as TFT_eSPI's ST7789 rotations (MADCTL MX/MY/MV)
 void applyRotation() {
@@ -165,6 +168,17 @@ void touchCb(lv_indev_drv_t *, lv_indev_data_t *data) {
       lastX = constrain((int)lroundf(sx), 0, dispDrv.hor_res - 1);
       lastY = constrain((int)lroundf(sy), 0, dispDrv.ver_res - 1);
     }
+  }
+  // Screen off: a touch wakes it and is not passed on (nothing gets tapped
+  // blind); the same applies until that finger lifts
+  if (!scrOn && lastPressed) {
+    display::setScreenOn(true);
+    wakeHold = true;
+  }
+  if (wakeHold) {
+    if (!lastPressed) wakeHold = false;
+    data->state = LV_INDEV_STATE_REL;
+    return;
   }
   data->point.x = lastX;
   data->point.y = lastY;
@@ -296,6 +310,15 @@ void display::setRotation(uint8_t r) {
 }
 
 uint8_t display::brightness() { return blPct; }
+
+bool display::screenOn() { return scrOn; }
+
+void display::setScreenOn(bool on) {
+  if (on == scrOn) return;
+  scrOn = on;
+  applyBrightness();
+  Serial.printf("[display] screen %s\n", on ? "on" : "off");
+}
 
 void display::setBrightness(uint8_t pct, bool save) {
   blPct = clampBrightness(pct);

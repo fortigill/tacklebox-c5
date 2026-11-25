@@ -22,6 +22,22 @@
 static const uint32_t BOOT_LED_MAX_MS = 20000;
 static bool bootDone = false;
 
+// BOOT button on the back: each press turns the screen off or back on.
+// Polled with a 40 ms debounce; acts on the press, not the release.
+static void pollBackButton() {
+  static bool stable = false, last = false;
+  static uint32_t changedMs = 0;
+  bool down = digitalRead(PIN_BOOT_BTN) == LOW;
+  if (down != last) {
+    last = down;
+    changedMs = millis();
+  }
+  if (down != stable && millis() - changedMs >= 40) {
+    stable = down;
+    if (down) display::setScreenOn(!display::screenOn());
+  }
+}
+
 static bool networkSettled() {
   net::State s = net::state();
   return s == net::State::Connected || s == net::State::Failed || net::savedSsid().isEmpty();
@@ -49,6 +65,7 @@ void setup() {
                                            : "other";
   Serial.printf("[boot] reset reason: %s (%d)\n", why, (int)rr);
   display::begin();
+  pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
   theme::begin();
   net::begin();
   timesvc::begin();
@@ -60,6 +77,7 @@ void setup() {
 
 void loop() {
   lv_timer_handler();
+  pollBackButton();
   net::loop();
   ble::loop();
   timesvc::loop();

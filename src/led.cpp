@@ -1,6 +1,7 @@
 #include "led.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_timer.h>
 
 #include "board.h"
@@ -17,8 +18,11 @@ const uint8_t PIN_B = 17;
 esp_timer_handle_t timer = nullptr;
 volatile Color blinkColor = Color::Off;
 volatile bool blinkOn = false;
+volatile bool ledEnabled = true;
+Color solidColor = Color::Off;  // last solid color, shown again when re-enabled
 
 void write(Color c) {
+  if (!ledEnabled) c = Color::Off;
   bool r = c == Color::Red || c == Color::Yellow || c == Color::Magenta || c == Color::White;
   bool g = c == Color::Green || c == Color::Yellow || c == Color::Cyan || c == Color::White;
   bool b = c == Color::Blue || c == Color::Cyan || c == Color::Magenta || c == Color::White;
@@ -50,6 +54,11 @@ void begin() {
   pinMode(PIN_G, OUTPUT);
   pinMode(PIN_B, OUTPUT);
 #endif
+  Preferences p;
+  if (p.begin("ui", true)) {
+    ledEnabled = p.getBool("ledOn", true);
+    p.end();
+  }
   write(Color::Off);
   esp_timer_create_args_t args = {};
   args.callback = onTimer;
@@ -59,6 +68,7 @@ void begin() {
 
 void set(Color c) {
   stopTimer();
+  solidColor = c;
   write(c);
 }
 
@@ -68,6 +78,18 @@ void blink(Color c, uint32_t halfPeriodMs) {
   blinkOn = true;
   write(c);
   if (timer) esp_timer_start_periodic(timer, (uint64_t)halfPeriodMs * 1000);
+}
+
+bool enabled() { return ledEnabled; }
+
+void setEnabled(bool on) {
+  ledEnabled = on;
+  Preferences p;
+  if (p.begin("ui", false)) {
+    p.putBool("ledOn", on);
+    p.end();
+  }
+  if (!(timer && esp_timer_is_active(timer))) write(on ? solidColor : Color::Off);  // a blink picks it up itself
 }
 
 }  // namespace led

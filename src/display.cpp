@@ -90,8 +90,11 @@ uint8_t clampBrightness(int pct) {
   return (uint8_t)pct;
 }
 
+bool scrOn = true;
+bool wakeHold = false;  // swallowing the touch that woke the screen
+
 void applyBrightness() {
-  ledcWrite(BL_PIN, (uint32_t)blPct * ((1u << BL_BITS) - 1) / 100);
+  ledcWrite(BL_PIN, scrOn ? (uint32_t)blPct * ((1u << BL_BITS) - 1) / 100 : 0);
 }
 
 void applyRotation() {
@@ -120,7 +123,19 @@ void flushCb(lv_disp_drv_t *drv, const lv_area_t *a, lv_color_t *px) {
 
 void touchCb(lv_indev_drv_t *, lv_indev_data_t *data) {
   int16_t rx, ry;
-  if (calValid && display::readRaw(rx, ry)) {
+  bool down = calValid && display::readRaw(rx, ry);
+  // Screen off: a touch wakes it and is not passed on (nothing gets tapped
+  // blind); the same applies until that finger lifts
+  if (!scrOn && down) {
+    display::setScreenOn(true);
+    wakeHold = true;
+  }
+  if (wakeHold) {
+    if (!down) wakeHold = false;
+    data->state = LV_INDEV_STATE_REL;
+    return;
+  }
+  if (down) {
     float nx = cal.a * rx + cal.b * ry + cal.c;
     float ny = cal.d * rx + cal.e * ry + cal.f;
     float sx, sy;
@@ -220,6 +235,15 @@ void display::setRotation(uint8_t r) {
 }
 
 uint8_t display::brightness() { return blPct; }
+
+bool display::screenOn() { return scrOn; }
+
+void display::setScreenOn(bool on) {
+  if (on == scrOn) return;
+  scrOn = on;
+  applyBrightness();
+  Serial.printf("[display] screen %s\n", on ? "on" : "off");
+}
 
 void display::setBrightness(uint8_t pct, bool save) {
   blPct = clampBrightness(pct);

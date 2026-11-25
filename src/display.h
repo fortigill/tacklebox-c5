@@ -27,6 +27,10 @@ const uint8_t MIN_BRIGHTNESS = 5;
 uint8_t brightness();
 void setBrightness(uint8_t pct, bool save);
 
+// Screen on/off (backlight). While off, the first touch only wakes it.
+bool screenOn();
+void setScreenOn(bool on);
+
 // Some CYD panels show every color inverted (dark looks light, blue looks
 // orange). On by default: this board's panel needs it.
 bool invertColors();

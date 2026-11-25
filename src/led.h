@@ -12,5 +12,7 @@ enum class Color : uint8_t { Off, Red, Green, Blue, Yellow, Cyan, Magenta, White
 void begin();                                  // pins as outputs, LED off
 void set(Color c);                             // solid color (stops blinking)
 void blink(Color c, uint32_t halfPeriodMs);    // on/off every halfPeriodMs
+bool enabled();                                // false: LED kept dark (setting)
+void setEnabled(bool on);                      // saved in NVS; restores the current color
 
 }  // namespace led

@@ -13,6 +13,7 @@
 #endif
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -101,6 +102,16 @@ const uint32_t FLT_BOOT_DELAY_MS = 120000;
 const int FLT_RADIUS_NM = 10;
 const char *ADSB_HOST = "opendata.adsb.fi/api/";
 const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";
+// Email (IMAP)
+const uint32_t MAIL_REFRESH_MS = 5UL * 60 * 1000;
+const uint32_t MAIL_RETRY_MS = 5UL * 60 * 1000;
+const uint32_t MAIL_BOOT_DELAY_MS = 30000;
+const uint32_t IMAP_TIMEOUT_MS = 12000;
+#if defined(BOARD_NM_CYD_C5)
+const int MAIL_SHOW = 5;
+#else
+const int MAIL_SHOW = 3;
+#endif
 // Breaking news (RSS)
 const uint32_t NEWS_REFRESH_MS = 10UL * 60 * 1000;
 const uint32_t NEWS_RETRY_MS = 5UL * 60 * 1000;
@@ -241,6 +252,21 @@ uint32_t newsFetchedMs = 0;
 uint32_t newsVer = 0;
 uint32_t newsWantedMs = 0;
 bool newsTls[3] = {false, false, false};
+
+// Email (guarded by mtx). The password lives in NVS ("mail" namespace) and
+// in RAM only while needed.
+String mlHost, mlUser, mlPass;
+uint16_t mlPort = 993;
+bool mlDesk = true, mlBar = true;
+uint8_t mlFp[32];
+bool mlHaveFp = false;
+uint8_t mlNewFp[32];
+bool mlFpChanged = false;      // the server showed a different certificate
+MailStatus mlStat;
+String mlErr;
+uint32_t mlVer = 0;
+uint32_t mlWantedMs = 0;
+Preferences mlPrefs;
 int adsbApi = 3;                            // adsb.fi API version (v3, falls back to v2)
 
 // Scheduling (main task only)
@@ -264,6 +290,10 @@ uint32_t nfLastAttempt = 0;
 bool nfAttempted = false;
 bool nfLastOk = false;
 bool nfForce = false;
+uint32_t mlLastAttempt = 0;
+bool mlAttempted = false;
+bool mlLastOk = false;
+bool mlForce = false;
 uint32_t nwLastAttempt = 0;
 bool nwAttempted = false;
 bool nwLastOk = false;
@@ -286,7 +316,7 @@ struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256 };
+enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256, DO_MAIL = 512 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -2366,6 +2396,368 @@ bool fetchNews(int src, BigVec<NewsItem> &out, String &why) {
   return true;
 }
 
+// ---------- Email (IMAP over TLS) ----------
+
+// UTF-8 -> ASCII (curly quotes etc. mapped, other characters dropped)
+void toAscii(const char *in, char *out, size_t n) {
+  size_t k = 0;
+  for (const unsigned char *p = (const unsigned char *)in; *p && k < n - 1; p++) {
+    unsigned char c = *p;
+    if (c < 0x80) {
+      if (c >= 32) out[k++] = (char)c;
+      else if (c == '\t') out[k++] = ' ';
+      continue;
+    }
+    if (c < 0xC0) continue;
+    int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+    long cp = c & (0x3F >> extra);
+    for (int i = 1; i <= extra && (p[i] & 0xC0) == 0x80; i++) cp = (cp << 6) | (p[i] & 0x3F);
+    p += extra;
+    for (const char *m = asciiFor(cp); m && *m && k < n - 1; m++) out[k++] = *m;
+  }
+  out[k] = 0;
+}
+
+int b64val(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+// Decodes RFC 2047 encoded words (=?UTF-8?B?...?= and =?...?Q?...?=) in a
+// header value; ISO-8859-1 bytes above 0x7F are dropped by toAscii later
+String decodeHeader(const char *s) {
+  String out;
+  while (*s) {
+    const char *st = strstr(s, "=?");
+    if (!st) {
+      out += s;
+      break;
+    }
+    const char *q1 = strchr(st + 2, '?');
+    const char *q2 = q1 ? strchr(q1 + 1, '?') : nullptr;
+    const char *en = q2 ? strstr(q2 + 1, "?=") : nullptr;
+    if (!en || q2 != q1 + 2) {  // not an encoded word
+      out.concat(s, st + 2 - s);
+      s = st + 2;
+      continue;
+    }
+    // Text between two encoded words that's only whitespace is dropped
+    bool blank = true;
+    for (const char *p = s; p < st; p++)
+      if (*p != ' ' && *p != '\t') blank = false;
+    if (!blank || out.isEmpty()) out.concat(s, st - s);
+    char enc = (char)toupper(q1[1]);
+    const char *d = q2 + 1;
+    if (enc == 'B') {
+      uint32_t acc = 0;
+      int bits = 0;
+      for (const char *p = d; p < en; p++) {
+        int v = b64val(*p);
+        if (v < 0) continue;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+          bits -= 8;
+          out += (char)((acc >> bits) & 0xFF);
+        }
+      }
+    } else {
+      for (const char *p = d; p < en; p++) {
+        if (*p == '_') out += ' ';
+        else if (*p == '=' && p + 2 < en && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
+          char h[3] = {p[1], p[2], 0};
+          out += (char)strtol(h, nullptr, 16);
+          p += 2;
+        } else {
+          out += *p;
+        }
+      }
+    }
+    s = en + 2;
+  }
+  return out;
+}
+
+String hexFp(const uint8_t *fp) {
+  String s;
+  char b[4];
+  for (int i = 0; i < 32; i++) {
+    snprintf(b, sizeof(b), i ? ":%02X" : "%02X", fp[i]);
+    s += b;
+  }
+  return s;
+}
+
+// Minimal IMAP session over a TLS client
+struct Imap {
+  WiFiClientSecure &c;
+  char line[600];
+  bool truncated = false;
+  explicit Imap(WiFiClientSecure &cl) : c(cl) {}
+
+  int readByte() {
+    uint32_t t0 = millis();
+    while (true) {
+      int v = c.read();
+      if (v >= 0) return v;
+      if (!c.connected() && !c.available()) return -1;
+      if (millis() - t0 > IMAP_TIMEOUT_MS) return -1;
+      delay(2);
+    }
+  }
+  // One response line (CRLF stripped). Long lines are cut to fit; the rest
+  // is read and dropped, except that onChar sees every character.
+  template <typename F>
+  bool readLine(F onChar) {
+    size_t k = 0;
+    truncated = false;
+    while (true) {
+      int v = readByte();
+      if (v < 0) return false;
+      if (v == '\n') break;
+      onChar((char)v);
+      if (v == '\r') continue;
+      if (k < sizeof(line) - 1) line[k++] = (char)v;
+      else truncated = true;
+    }
+    line[k] = 0;
+    return true;
+  }
+  bool readLine() {
+    return readLine([](char) {});
+  }
+  void send(const char *tag, const String &cmd) {
+    String s = String(tag) + " " + cmd + "\r\n";
+    c.print(s);
+  }
+  // Waits for the tagged reply; true if it's OK. why gets the server's text otherwise.
+  template <typename F>
+  bool finish(const char *tag, F onUntagged, String &why) {
+    size_t tl = strlen(tag);
+    while (readLine()) {
+      if (!strncmp(line, tag, tl) && line[tl] == ' ') {
+        if (!strncmp(line + tl + 1, "OK", 2)) return true;
+        char t[120];
+        toAscii(line + tl + 1, t, sizeof(t));
+        why = t;
+        return false;
+      }
+      onUntagged(line);
+    }
+    why = "no reply from the mail server";
+    return false;
+  }
+};
+
+// IMAP quoted string: backslash-escape \ and "
+String imapQuote(const String &s) {
+  String q = "\"";
+  for (size_t i = 0; i < s.length(); i++) {
+    char ch = s[i];
+    if (ch == '"' || ch == '\\') q += '\\';
+    q += ch;
+  }
+  return q + "\"";
+}
+
+// SEARCH: counts the result numbers on the "* SEARCH ..." line char by char
+// (it can list thousands of messages) and keeps the highest few (the newest)
+bool imapSearch(Imap &im, const char *tag, const String &criteria, int &count, std::vector<uint32_t> &newest,
+                size_t keep, String &why) {
+  im.send(tag, "SEARCH " + criteria);
+  count = 0;
+  newest.clear();
+  size_t tl = strlen(tag);
+  while (true) {
+    bool isSearch = false;
+    int pos = 0;
+    uint32_t num = 0;
+    bool inNum = false, ok = true;
+    auto take = [&]() {
+      if (!inNum) return;
+      count++;
+      newest.push_back(num);
+      std::sort(newest.begin(), newest.end(), std::greater<uint32_t>());
+      if (newest.size() > keep) newest.pop_back();
+      inNum = false;
+      num = 0;
+    };
+    ok = im.readLine([&](char ch) {
+      static const char PRE[] = "* SEARCH";
+      if (pos < 8) {  // must start with "* SEARCH" (other untagged lines, like "* 3 EXISTS", don't count)
+        isSearch = (pos == 0 || isSearch) && toupper((unsigned char)ch) == PRE[pos];
+        pos++;
+        return;
+      }
+      pos++;
+      if (!isSearch) return;
+      if (ch >= '0' && ch <= '9') {
+        num = num * 10 + (ch - '0');
+        inNum = true;
+      } else {
+        take();
+      }
+    });
+    if (!ok) {
+      why = "no reply from the mail server";
+      return false;
+    }
+    if (isSearch) {
+      take();
+      continue;
+    }
+    if (!strncmp(im.line, tag, tl) && im.line[tl] == ' ') {
+      if (!strncmp(im.line + tl + 1, "OK", 2)) return true;
+      char t[120];
+      toAscii(im.line + tl + 1, t, sizeof(t));
+      why = t;
+      return false;
+    }
+  }
+}
+
+// Pulls one header field out of a header block (unfolding continuation lines)
+String headerField(const String &hdr, const char *name) {
+  String low = hdr;
+  low.toLowerCase();
+  String key = String("\n") + name;
+  key.toLowerCase();
+  key += ":";
+  int i = ("\n" + low).indexOf(key);
+  if (i < 0) return "";
+  i += key.length() - 1;  // "\n" + low shifted it by one
+  String v;
+  for (int j = i; j < (int)hdr.length(); j++) {
+    char ch = hdr[j];
+    if (ch == '\r') continue;
+    if (ch == '\n') {
+      if (j + 1 < (int)hdr.length() && (hdr[j + 1] == ' ' || hdr[j + 1] == '\t')) continue;  // folded
+      break;
+    }
+    v += ch;
+  }
+  v.trim();
+  return v;
+}
+
+// "John Doe" <john@x.com> -> John Doe; <john@x.com> or john@x.com -> john@x.com
+String fromName(const String &from) {
+  String f = from;
+  int lt = f.indexOf('<');
+  String name = lt > 0 ? f.substring(0, lt) : String("");
+  name.trim();
+  name.replace("\"", "");
+  if (name.length()) return name;
+  if (lt >= 0) {
+    int gt = f.indexOf('>', lt);
+    return f.substring(lt + 1, gt > lt ? gt : f.length());
+  }
+  return f;
+}
+
+bool fetchMail(const String &host, uint16_t port, const String &user, const String &pass, MailStatus &st,
+               bool haveFp, const uint8_t *pinned, uint8_t *seenFp, bool &fpMismatch, String &why) {
+  fpMismatch = false;
+  if (time(nullptr) < 1700000000) {
+    why = "waiting for the clock to set";
+    return false;
+  }
+  if (!tlsFits(why)) return false;
+  TlsGuard guard;
+  WiFiClientSecure c;
+  c.setInsecure();  // no CA store here: the certificate is pinned by fingerprint instead (below)
+  c.setTimeout(IMAP_TIMEOUT_MS);  // milliseconds in Arduino-ESP32 3.x
+  Serial.printf("[mail] connecting to %s:%u\n", host.c_str(), port);
+  if (!c.connect(host.c_str(), port)) {
+    why = "can't connect to " + host + ":" + port;
+    return false;
+  }
+  // Certificate check BEFORE anything is sent
+  if (!c.getFingerprintSHA256(seenFp)) {
+    why = "couldn't read the server certificate";
+    c.stop();
+    return false;
+  }
+  if (haveFp && memcmp(seenFp, pinned, 32) != 0) {
+    fpMismatch = true;
+    why = "the server's certificate changed - confirm it on the Email page";
+    c.stop();
+    return false;
+  }
+  Imap im(c);
+  if (!im.readLine() || strncmp(im.line, "* OK", 4)) {  // greeting
+    why = "unexpected greeting from the server";
+    c.stop();
+    return false;
+  }
+  bool ok = true;
+  im.send("a1", "LOGIN " + imapQuote(user) + " " + imapQuote(pass));
+  ok = im.finish("a1", [](char *) {}, why);
+  if (!ok) {
+    why = "sign-in refused: " + why;
+    c.stop();
+    return false;
+  }
+  im.send("a2", "EXAMINE INBOX");  // read-only: nothing gets marked as read
+  ok = im.finish("a2", [](char *) {}, why);
+  if (ok) {
+    // Today's date (local) as IMAP wants it: 24-Nov-2026
+    time_t now = time(nullptr);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    char since[16];
+    strftime(since, sizeof(since), "%d-%b-%Y", &lt);
+    std::vector<uint32_t> newest, dummy;
+    ok = imapSearch(im, "a3", String("UNSEEN SINCE ") + since, st.unreadToday, newest, MAIL_SHOW, why);
+    if (ok) ok = imapSearch(im, "a4", "UNSEEN", st.unreadTotal, dummy, 0, why);
+    // Sender / subject / date of the newest unread from today, without marking them read
+    st.shown = 0;
+    if (ok && !newest.empty()) {
+      String set;
+      for (size_t i = 0; i < newest.size(); i++) set += (i ? "," : "") + String(newest[i]);
+      im.send("a5", "FETCH " + set + " (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])");
+      size_t tl = 2;
+      while (im.readLine()) {
+        if (!strncmp(im.line, "a5", tl) && im.line[tl] == ' ') break;
+        // "* 12 FETCH (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {123}" + literal
+        char *br = strrchr(im.line, '{');
+        if (im.line[0] != '*' || !br) continue;
+        uint32_t seq = strtoul(im.line + 2, nullptr, 10);
+        long len = atol(br + 1);
+        String hdr;
+        for (long i = 0; i < len; i++) {
+          int v = im.readByte();
+          if (v < 0) break;
+          if (hdr.length() < 1500) hdr += (char)v;
+        }
+        if (st.shown >= MAIL_SHOW) continue;
+        // Keep them in newest-first order
+        int slot = 0;
+        for (size_t i = 0; i < newest.size(); i++)
+          if (newest[i] == seq) slot = (int)i;
+        MailMsg &m = st.msgs[slot];
+        toAscii(decodeHeader(fromName(headerField(hdr, "From")).c_str()).c_str(), m.from, sizeof(m.from));
+        toAscii(decodeHeader(headerField(hdr, "Subject").c_str()).c_str(), m.subject, sizeof(m.subject));
+        if (!m.subject[0]) strcpy(m.subject, "(no subject)");
+        m.time = parseRfc822(headerField(hdr, "Date").c_str());
+        st.shown++;
+      }
+      st.shown = (int)newest.size() < st.shown ? (int)newest.size() : st.shown;
+    }
+  }
+  im.send("a6", "LOGOUT");
+  im.readLine();
+  c.stop();
+  if (!ok) return false;
+  st.valid = true;
+  why = "";
+  return true;
+}
+
 // The tracked team's game this week, or nullptr (caller holds mtx)
 const Game *teamGame() {
   if (nflTeamAbbr.isEmpty()) return nullptr;
@@ -2692,7 +3084,57 @@ void newsWork() {
   nwLastOk = ok;
 }
 
+void mailWork() {
+  String host, user, pass;
+  uint16_t port;
+  bool haveFp;
+  uint8_t pinned[32], seen[32];
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    host = mlHost;
+    user = mlUser;
+    pass = mlPass;
+    port = mlPort;
+    haveFp = mlHaveFp;
+    memcpy(pinned, mlFp, 32);
+  }
+  MailStatus st;
+  String why;
+  bool mismatch = false;
+  bool ok = fetchMail(host, port, user, pass, st, haveFp, pinned, seen, mismatch, why);
+  pass = "";
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (host == mlHost && user == mlUser) {
+      if (!haveFp && !mismatch && (ok || why.startsWith("sign-in"))) {  // first contact: pin this certificate
+        memcpy(mlFp, seen, 32);
+        mlHaveFp = true;
+        mlPrefs.begin("mail", false);
+        mlPrefs.putBytes("fp", mlFp, 32);
+        mlPrefs.end();
+        Serial.printf("[mail] pinned certificate %s\n", hexFp(mlFp).c_str());
+      }
+      if (mismatch) {
+        memcpy(mlNewFp, seen, 32);
+        mlFpChanged = true;
+      }
+      if (ok) {
+        st.fetchedMs = millis();
+        mlStat = st;
+        mlErr = "";
+      } else {
+        mlErr = why;
+      }
+      mlVer++;
+    }
+  }
+  if (ok) Serial.printf("[mail] %d unread today, %d unread in the inbox\n", st.unreadToday, st.unreadTotal);
+  else Serial.printf("[mail] failed: %s\n", why.c_str());
+  mlLastOk = ok;
+}
+
 void fetchWork() {
+  if (taskFlags & DO_MAIL) mailWork();
   if (taskFlags & DO_NEWS) newsWork();
   if (taskFlags & DO_FLIGHTS) flightsWork();
   if (taskFlags & DO_VOLCANO) volcanoWork();
@@ -2821,6 +3263,10 @@ void startFetch(uint16_t flags) {
     nwAttempted = true;
     nwLastAttempt = millis();
   }
+  if (flags & DO_MAIL) {
+    mlAttempted = true;
+    mlLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -2860,6 +3306,10 @@ void startFetch(uint16_t flags) {
     if (flags & DO_NEWS) {
       newsErr = "not enough memory";
       nwLastOk = false;
+    }
+    if (flags & DO_MAIL) {
+      mlErr = "not enough memory";
+      mlLastOk = false;
     }
   }
 }
@@ -2929,6 +3379,17 @@ void begin() {
   newsSrc = prefs.getInt("nwSrc", 0);
   if (newsSrc < 0 || newsSrc >= NEWS_SOURCES) newsSrc = 0;
   newsDesk = prefs.getBool("nwDesk", true);
+  {
+    mlPrefs.begin("mail", false);  // read-write: creates the namespace on first boot
+    mlHost = mlPrefs.isKey("host") ? mlPrefs.getString("host") : String();
+    mlPort = mlPrefs.getUShort("port", 993);
+    mlUser = mlPrefs.isKey("user") ? mlPrefs.getString("user") : String();
+    mlPass = mlPrefs.isKey("pass") ? mlPrefs.getString("pass") : String();
+    mlDesk = mlPrefs.getBool("desk", true);
+    mlBar = mlPrefs.getBool("bar", true);
+    mlHaveFp = mlPrefs.getBytesLength("fp") == 32 && mlPrefs.getBytes("fp", mlFp, 32) == 32;
+    mlPrefs.end();
+  }
   if (prefs.isKey("flAppr")) prefs.remove("flAppr");  // 1.6.2's approach widget is gone
   if (prefs.isKey("apCode")) {
     apCode = prefs.getString("apCode");
@@ -3047,6 +3508,12 @@ void loop() {
   if (!flags && volcWanted && (millis() >= VOLC_BOOT_DELAY_MS || vcForce) &&
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
+  // Email: on its own, once nothing else is due; never while a changed certificate waits
+  bool mailWanted = mailConfigured() && !mlFpChanged &&
+                    (mlDesk || mlBar || (mlWantedMs && millis() - mlWantedMs < QUAKE_WANTED_MS));
+  if (!flags && mailWanted && (millis() >= MAIL_BOOT_DELAY_MS || mlForce) &&
+      (mlForce || !mlAttempted || millis() - mlLastAttempt >= (mlLastOk ? MAIL_REFRESH_MS : MAIL_RETRY_MS)))
+    flags |= DO_MAIL;
   // Breaking news: on its own, once nothing else is due (before the frequent flight polls)
   bool newsWanted = newsDesk || (newsWantedMs && millis() - newsWantedMs < QUAKE_WANTED_MS);
   if (!flags && newsWanted && (millis() >= NEWS_BOOT_DELAY_MS || nwForce) &&
@@ -3062,6 +3529,7 @@ void loop() {
     if (flags & DO_QUAKE) qkForce = false;
     if (flags & DO_FLIGHTS) flForce = false;
     if (flags & DO_NEWS) nwForce = false;
+    if (flags & DO_MAIL) mlForce = false;
     if (flags & DO_VOLCANO) vcForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
@@ -4014,5 +4482,151 @@ String newsStatus() {
            (unsigned long)((millis() - newsFetchedMs) / 60000));
   return b;
 }
+
+// ---------- Email ----------
+
+static void mailChanged() {  // caller holds mtx: settings changed, start over
+  mlStat = MailStatus();
+  mlErr = "";
+  mlVer++;
+  mlForce = true;
+}
+
+String mailHost() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlHost;
+}
+uint16_t mailPort() { return mlPort; }
+String mailUser() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlUser;
+}
+bool mailHasPassword() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlPass.length() > 0;
+}
+bool mailConfigured() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlHost.length() && mlUser.length() && mlPass.length();
+}
+
+void setMailServer(const String &host, uint16_t port) {
+  String h = host;
+  h.trim();
+  std::lock_guard<std::mutex> lock(mtx);
+  mlHost = h;
+  mlPort = port ? port : 993;
+  mlHaveFp = false;  // a different server: pin its certificate afresh
+  mlFpChanged = false;
+  mlPrefs.begin("mail", false);
+  mlPrefs.putString("host", mlHost);
+  mlPrefs.putUShort("port", mlPort);
+  mlPrefs.remove("fp");
+  mlPrefs.end();
+  mailChanged();
+}
+
+void setMailUser(const String &user) {
+  String u = user;
+  u.trim();
+  std::lock_guard<std::mutex> lock(mtx);
+  mlUser = u;
+  mlPrefs.begin("mail", false);
+  mlPrefs.putString("user", mlUser);
+  mlPrefs.end();
+  mailChanged();
+}
+
+void setMailPassword(const String &pass) {
+  std::lock_guard<std::mutex> lock(mtx);
+  mlPass = pass;
+  mlPrefs.begin("mail", false);
+  mlPrefs.putString("pass", mlPass);
+  mlPrefs.end();
+  mailChanged();
+}
+
+MailStatus mailStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlStat;
+}
+
+String mailStatusText() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!(mlHost.length() && mlUser.length() && mlPass.length())) return "Set the server, email address and password below.";
+  if (mlFpChanged) return "The server's certificate changed. Nothing was sent. Confirm below if you expected it.";
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (net::state() != net::State::Connected && !mlStat.valid) return "Waiting for Wi-Fi...";
+  if (mlErr.length()) return "Check failed: " + mlErr;
+  if (!mlStat.valid) return "Checking mail...";
+  char b[80];
+  snprintf(b, sizeof(b), "Checked %lu min ago, every 5 min (read-only)",
+           (unsigned long)((millis() - mlStat.fetchedMs) / 60000));
+  return b;
+}
+
+String mailCertFingerprint() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlHaveFp ? hexFp(mlFp) : String("");
+}
+
+bool mailCertChanged(String &newFp) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!mlFpChanged) return false;
+  newFp = hexFp(mlNewFp);
+  return true;
+}
+
+void trustMailCert() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!mlFpChanged) return;
+  memcpy(mlFp, mlNewFp, 32);
+  mlHaveFp = true;
+  mlFpChanged = false;
+  mlPrefs.begin("mail", false);
+  mlPrefs.putBytes("fp", mlFp, 32);
+  mlPrefs.end();
+  mailChanged();
+}
+
+void forgetMailCert() {
+  std::lock_guard<std::mutex> lock(mtx);
+  mlHaveFp = false;
+  mlFpChanged = false;
+  mlPrefs.begin("mail", false);
+  mlPrefs.remove("fp");
+  mlPrefs.end();
+  mailChanged();
+}
+
+bool showMailDesk() { return mlDesk; }
+bool showMailBar() { return mlBar; }
+
+void setShowMailDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  mlDesk = on;
+  mlPrefs.begin("mail", false);
+  mlPrefs.putBool("desk", on);
+  mlPrefs.end();
+  if (on && !mlStat.valid) mlForce = true;
+  mlVer++;
+}
+
+void setShowMailBar(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  mlBar = on;
+  mlPrefs.begin("mail", false);
+  mlPrefs.putBool("bar", on);
+  mlPrefs.end();
+  if (on && !mlStat.valid) mlForce = true;
+  mlVer++;
+}
+
+void refreshMail() {
+  mlWantedMs = millis();
+  mlForce = true;
+}
+void mailKeepAlive() { mlWantedMs = millis(); }
+uint32_t mailVersion() { return mlVer; }
 
 }  // namespace weather

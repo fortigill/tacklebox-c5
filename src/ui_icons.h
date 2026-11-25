@@ -17,6 +17,9 @@ extern const lv_img_dsc_t ui_plane_s;
 extern const lv_img_dsc_t ui_plane_bar;
 extern const lv_img_dsc_t ui_plane_bar_s;
 extern const lv_img_dsc_t ui_news;
+extern const lv_img_dsc_t ui_mail;
+extern const lv_img_dsc_t ui_mail_bar;
+extern const lv_img_dsc_t ui_mail_bar_s;
 
 #ifdef __cplusplus
 }

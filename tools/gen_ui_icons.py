@@ -89,9 +89,22 @@ def news(n):
     return img
 
 
+def mail(n):
+    """Envelope: outline with the flap's V."""
+    img = Image.new("L", (n, n), 0)
+    d = ImageDraw.Draw(img)
+    w = max(2, int(n * 0.09))
+    x0, y0, x1, y1 = n * 0.06, n * 0.20, n * 0.94, n * 0.80
+    d.rounded_rectangle([x0, y0, x1, y1], radius=n * 0.06, outline=255, width=w)
+    d.line([(x0 + w * 0.5, y0 + w * 0.5), (n * 0.5, n * 0.54), (x1 - w * 0.5, y0 + w * 0.5)], fill=255, width=w,
+           joint="curve")
+    return img
+
+
 ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22),
          ("plane", plane, 22), ("plane_land", plane_land, 22), ("plane_s", plane, 16),
-         ("plane_bar", plane, 26), ("plane_bar_s", plane, 20), ("news", news, 22)]
+         ("plane_bar", plane, 26), ("plane_bar_s", plane, 20), ("news", news, 22),
+         ("mail", mail, 22), ("mail_bar", mail, 24), ("mail_bar_s", mail, 18)]
 
 
 def to_alpha4(img):

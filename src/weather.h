@@ -315,6 +315,46 @@ void newsKeepAlive();                    // the news page is open: keep polling 
 uint32_t newsVersion();
 String newsStatus();
 
+// ---- Email (IMAP over TLS) ----
+// Signs in to your IMAP server every 5 minutes, read-only (EXAMINE), and
+// counts unread mail received today plus the total unread in the inbox, with
+// sender and subject of the newest few unread from today. The server's
+// certificate is pinned on first use (SHA-256 fingerprint): if it ever
+// changes, the board won't send your password until you confirm.
+struct MailMsg {
+  uint32_t time = 0;      // Date header, epoch UTC (0 = unknown)
+  char from[40] = "";     // display name, or the address
+  char subject[120] = "";
+};
+struct MailStatus {
+  bool valid = false;
+  int unreadToday = 0, unreadTotal = 0;
+  int shown = 0;          // entries in msgs
+  MailMsg msgs[5];        // newest unread from today first
+  uint32_t fetchedMs = 0;
+};
+String mailHost();
+uint16_t mailPort();
+String mailUser();
+bool mailHasPassword();
+void setMailServer(const String &host, uint16_t port);  // forgets the pinned certificate
+void setMailUser(const String &user);
+void setMailPassword(const String &pass);
+bool mailConfigured();
+MailStatus mailStatus();
+String mailStatusText();
+String mailCertFingerprint();           // "AB:CD:..." of the pinned certificate ("" if none)
+bool mailCertChanged(String &newFp);    // server presented a different certificate: waiting for you
+void trustMailCert();                   // accept the new certificate
+void forgetMailCert();                  // trust whatever the server presents next time
+bool showMailDesk();
+void setShowMailDesk(bool on);
+bool showMailBar();                     // status bar: envelope with today's unread count
+void setShowMailBar(bool on);
+void refreshMail();
+void mailKeepAlive();
+uint32_t mailVersion();
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

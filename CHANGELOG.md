@@ -3,6 +3,27 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.10.0] - 2026-11-24
+
+### Added
+- **Email** (menu, desktop widget, status bar): signs in to your own IMAP server over TLS
+  (port 993 by default) every 5 minutes and shows how many unread messages arrived today,
+  the total unread in the inbox, and the sender and subject of the newest unread from today
+  (5 on the C5, 3 on the classic CYD).
+  - Settings: server name, port, email/username, password (typed in password mode, never
+    shown again), "Show on desktop", "Unread count in status bar", "Check now".
+  - Desktop widget: envelope + "N unread today", then each new message's sender and subject
+    in turn; long subjects scroll.
+  - Status bar: envelope with a red count badge; hidden when nothing unread arrived today.
+- **Security:**
+  - Read-only: opens the inbox with EXAMINE and reads headers with BODY.PEEK, so nothing is
+    marked read, moved or deleted, and nothing is ever sent.
+  - Certificate pinning: the server certificate's SHA-256 fingerprint is saved on the first
+    connection. If it changes, the board disconnects *before* sending the password and the
+    Email page shows old and new fingerprints with "Trust the new certificate". Expect this
+    when your server renews its certificate (every 60-90 days with Let's Encrypt).
+  - The password is stored in the board's flash (NVS), like the Wi-Fi password.
+
 ## [1.9.1] - 2026-11-24
 
 ### Fixed

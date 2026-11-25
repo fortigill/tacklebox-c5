@@ -33,7 +33,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail, Mail, MailField
 };
 
 const int HEADER_H = 40;
@@ -139,6 +139,17 @@ uint32_t deskNewsRotMs = 0;
 const uint32_t NEWS_ROTATE_MS = 8000;  // desktop: next headline every 8 s
 const size_t NEWS_ROTATE_N = 5;        // ...through the newest 5
 lv_obj_t *nwStatus = nullptr, *nwBox = nullptr;
+// Email: desktop bubble, status-bar envelope, page, settings entry
+lv_obj_t *deskMail = nullptr, *deskMailTop = nullptr, *deskMailSubj = nullptr, *deskMailImg = nullptr;
+int deskMailKey = -1;
+size_t deskMailIdx = 0;
+uint32_t deskMailRotMs = 0;
+lv_obj_t *deskBarMail = nullptr, *deskBarMailImg = nullptr, *deskBarMailNum = nullptr;
+int deskBarMailKey = -1;
+lv_obj_t *mlStatusLbl = nullptr, *mlSummary = nullptr, *mlBox = nullptr, *mlTa = nullptr;
+int mlKey = -1;
+int mlField = 0;  // MailField: 0 server, 1 port, 2 email, 3 password
+Screen mailBack = Screen::Menu;
 int nwKey = -1;
 BigVec<weather::NewsItem> nwRows;
 weather::NewsItem nwDetail;
@@ -316,6 +327,8 @@ void showVolcanoDetail();
 void showFlights();
 void showNews();
 void showNewsDetail();
+void showMail();
+void showMailField(int field);
 void showAirportCode();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
@@ -447,6 +460,12 @@ void resetPtrs() {
   deskNewsKey = -1;
   nwStatus = nwBox = nullptr;
   nwKey = -1;
+  deskMail = deskMailTop = deskMailSubj = deskMailImg = nullptr;
+  deskMailKey = -1;
+  deskBarMail = deskBarMailImg = deskBarMailNum = nullptr;
+  deskBarMailKey = -1;
+  mlStatusLbl = mlSummary = mlBox = mlTa = nullptr;
+  mlKey = -1;
   deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = deskNearCnt = nullptr;
   deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
   deskOursKey = -1;
@@ -766,7 +785,7 @@ void deskTick(lv_timer_t *) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskView || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc || !deskNear || !deskOurs || !deskNews)
+      !deskVolc || !deskNear || !deskOurs || !deskNews || !deskMail)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
@@ -774,7 +793,7 @@ void layoutDesktop() {
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskNews, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskNews, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskMail, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   if (deskTicker) rowH = deskTickH;  // the scrolling window fills the space
   int key = barH * 1000 + rowH + (deskTicker ? 500000 : 0);
@@ -1028,6 +1047,24 @@ void refreshDesktop() {
     }
   }
 
+  // Status bar: envelope + today's unread count badge (hidden at zero)
+  if (deskBarMail) {
+    weather::MailStatus ms = weather::mailStatus();
+    String nfp;
+    bool changed = weather::mailCertChanged(nfp);
+    bool on = weather::showMailBar() && weather::mailConfigured() && ((ms.valid && ms.unreadToday > 0) || changed);
+    setHidden(deskBarMail, !on);
+    int k = (int)weather::mailVersion();
+    if (on && k != deskBarMailKey) {
+      deskBarMailKey = k;
+      char t[8];
+      if (changed) snprintf(t, sizeof(t), "!");
+      else if (ms.unreadToday > 99) snprintf(t, sizeof(t), "99+");
+      else snprintf(t, sizeof(t), "%d", ms.unreadToday);
+      setText(deskBarMailNum, t);
+    }
+  }
+
   // "Near the airport" bubble: how many aircraft are within 10 nm, then each
   // airliner in turn (flight, type, distance / height, climb or descent, speed)
   bool deskNearOn = weather::showNearbyDesk();
@@ -1153,6 +1190,49 @@ void refreshDesktop() {
         setText(deskNewsTop, top.c_str());
         lv_obj_set_style_text_color(deskNewsTop, fresh ? theme::accent() : theme::text(), 0);
         setText(deskNewsHead, it.title);
+      }
+    }
+  }
+
+  // Email bubble: envelope + "N unread today", then the newest unread from
+  // today (sender: subject) taking turns, scrolling when too long
+  if (deskMail) {
+    weather::MailStatus ms = weather::mailStatus();
+    String nfp;
+    bool changed = weather::mailCertChanged(nfp);
+    bool on = weather::showMailDesk() && weather::mailConfigured() && (ms.valid || changed);
+    wantWidget(deskMail, on);
+    if (on) {
+      size_t n = changed ? 0 : (size_t)ms.shown;
+      if (n > 1 && millis() - deskMailRotMs >= NEWS_ROTATE_MS) {
+        deskMailRotMs = millis();
+        deskMailIdx++;
+      }
+      if (deskMailIdx >= n) deskMailIdx = 0;
+      int k = (int)(weather::mailVersion() * 64 + deskMailIdx + (changed ? 32 : 0));
+      if (k != deskMailKey) {
+        deskMailKey = k;
+        char top[48];
+        String line;
+        if (changed) {
+          snprintf(top, sizeof(top), "Mail paused");
+          line = "Server certificate changed - tap to review";
+        } else {
+          if (ms.unreadToday) snprintf(top, sizeof(top), "%d unread today", ms.unreadToday);
+          else snprintf(top, sizeof(top), "No unread today");
+          if (n) {
+            const auto &m = ms.msgs[deskMailIdx];
+            line = String(m.from) + ": " + m.subject;
+            if (n > 1) line = "(" + String(deskMailIdx + 1) + "/" + String(n) + ") " + line;
+          } else {
+            line = String(ms.unreadTotal) + " unread in the inbox";
+          }
+        }
+        setText(deskMailTop, top);
+        lv_color_t col = changed ? lv_palette_main(LV_PALETTE_ORANGE) : ms.unreadToday ? theme::accent() : theme::text();
+        lv_obj_set_style_text_color(deskMailTop, col, 0);
+        lv_obj_set_style_img_recolor(deskMailImg, col, 0);
+        setText(deskMailSubj, line.c_str());
       }
     }
   }
@@ -1373,6 +1453,46 @@ void showDesktop() {
     lv_obj_clear_flag(deskBarFltNum, LV_OBJ_FLAG_CLICKABLE);
     lv_label_set_text(deskBarFltNum, "0");
     lv_obj_align(deskBarFltNum, LV_ALIGN_BOTTOM_RIGHT, 0, -1);
+  }
+
+  // Email: envelope with today's unread count as a badge, like the plane
+  deskBarMail = lv_obj_create(ext);
+  lv_obj_remove_style_all(deskBarMail);
+  {
+    const lv_img_dsc_t *mi = narrow ? &ui_mail_bar_s : &ui_mail_bar;
+    lv_obj_set_size(deskBarMail, mi->header.w + 8, 32);
+    lv_obj_clear_flag(deskBarMail, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(deskBarMail, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(deskBarMail, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_ext_click_area(deskBarMail, 6);
+    lv_obj_add_event_cb(
+        deskBarMail,
+        [](lv_event_t *) {
+          mailBack = Screen::Desktop;
+          showMail();
+        },
+        LV_EVENT_CLICKED, nullptr);
+    deskBarMailImg = lv_img_create(deskBarMail);
+    lv_img_set_src(deskBarMailImg, mi);
+    lv_obj_set_style_img_recolor_opa(deskBarMailImg, LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(deskBarMailImg, theme::accent(), 0);
+    lv_obj_clear_flag(deskBarMailImg, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(deskBarMailImg, LV_ALIGN_LEFT_MID, 0, -3);
+    deskBarMailNum = lv_label_create(deskBarMail);
+    lv_obj_set_style_text_font(deskBarMailNum, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(deskBarMailNum, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(deskBarMailNum, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_bg_opa(deskBarMailNum, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(deskBarMailNum, lv_color_white(), 0);
+    lv_obj_set_style_border_width(deskBarMailNum, 1, 0);
+    lv_obj_set_style_radius(deskBarMailNum, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_hor(deskBarMailNum, 4, 0);
+    lv_obj_set_style_pad_ver(deskBarMailNum, 0, 0);
+    lv_obj_set_style_text_align(deskBarMailNum, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_min_width(deskBarMailNum, 16, 0);
+    lv_obj_clear_flag(deskBarMailNum, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(deskBarMailNum, "0");
+    lv_obj_align(deskBarMailNum, LV_ALIGN_BOTTOM_RIGHT, 0, -1);
   }
 
   deskBarNfl = lv_label_create(ext);
@@ -1808,6 +1928,37 @@ void showDesktop() {
   lv_obj_set_style_max_height(deskNewsHead, 3 * lv_font_get_line_height(&lv_font_montserrat_20), 0);  // ...at most 3
   lv_label_set_text(deskNewsHead, "");
 
+  // Email bubble: envelope + "N unread today", then sender: subject (scrolls)
+  deskMail = widget([](lv_event_t *) {
+    mailBack = Screen::Desktop;
+    showMail();
+  });
+  lv_obj_set_flex_flow(deskMail, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskMail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(deskMail, 2, 0);
+  lv_obj_t *mlline = lv_obj_create(deskMail);
+  lv_obj_remove_style_all(mlline);
+  lv_obj_set_size(mlline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(mlline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(mlline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(mlline, 6, 0);
+  lv_obj_clear_flag(mlline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(mlline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskMailImg = lv_img_create(mlline);
+  lv_img_set_src(deskMailImg, &ui_mail);
+  lv_obj_set_style_img_recolor_opa(deskMailImg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(deskMailImg, theme::accent(), 0);
+  lv_obj_clear_flag(deskMailImg, LV_OBJ_FLAG_CLICKABLE);
+  deskMailTop = lv_label_create(mlline);
+  lv_label_set_text(deskMailTop, "");
+  chevron(mlline);
+  deskMailSubj = lv_label_create(deskMail);
+  lv_obj_set_style_text_font(deskMailSubj, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(deskMailSubj, LV_LABEL_LONG_SCROLL_CIRCULAR);  // long subjects scroll
+  lv_obj_set_style_anim_speed(deskMailSubj, 25, 0);
+  lv_obj_set_width(deskMailSubj, W() - 44);
+  lv_label_set_text(deskMailSubj, "");
+
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
   lv_obj_set_width(deskWifiLbl, W() - 16);
@@ -1894,6 +2045,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         newsBack = Screen::Menu;
         showNews();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_ENVELOPE, "Email");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        mailBack = Screen::Menu;
+        showMail();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -5177,6 +5337,260 @@ void showAirportCode() {
   load(scr, Screen::AirportCode);
 }
 
+// ---------- Email ----------
+
+void mailNoop(lv_event_t *) {}
+
+String shortFp(const String &fp) {  // first 8 bytes is plenty to compare by eye
+  return fp.length() > 23 ? fp.substring(0, 23) + "..." : fp;
+}
+
+void refreshMailScreen() {
+  if (!mlStatusLbl) return;
+  weather::mailKeepAlive();
+  setText(mlStatusLbl, weather::mailStatusText().c_str());
+  int key = (int)(weather::mailVersion() * 4096 + (millis() / 60000) % 4096);
+  if (key == mlKey) return;
+  mlKey = key;
+  weather::MailStatus ms = weather::mailStatus();
+  if (ms.valid) {
+    char t[64];
+    snprintf(t, sizeof(t), "%d unread today\n%d unread in the inbox", ms.unreadToday, ms.unreadTotal);
+    setText(mlSummary, t);
+    lv_obj_set_style_text_color(mlSummary, ms.unreadToday ? theme::accent() : theme::text(), 0);
+  } else {
+    setText(mlSummary, "--");
+  }
+  lv_obj_clean(mlBox);
+  if (!ms.valid) return;
+  if (!ms.shown) {
+    lv_obj_t *l = lv_label_create(mlBox);
+    lv_label_set_text(l, "No unread mail from today");
+  }
+  for (int i = 0; i < ms.shown; i++) {
+    const auto &m = ms.msgs[i];
+    String l2 = m.from;
+    String age = m.time ? agoText(m.time) : String("");
+    if (age.length()) l2 += "  -  " + age;
+    twoLineRow(mlBox, m.subject, theme::text(), l2, mailNoop, i);
+  }
+}
+
+void showMail() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Email", [](lv_event_t *) {
+    if (mailBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  mlSummary = lv_label_create(list);
+  lv_obj_set_style_text_font(mlSummary, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_pad_all(mlSummary, 8, 0);
+  lv_label_set_text(mlSummary, "");
+  mlStatusLbl = lv_label_create(list);
+  lv_label_set_long_mode(mlStatusLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(mlStatusLbl, LV_PCT(100));
+  lv_obj_set_style_pad_hor(mlStatusLbl, 8, 0);
+  lv_obj_set_style_pad_bottom(mlStatusLbl, 6, 0);
+  lv_obj_set_style_text_opa(mlStatusLbl, LV_OPA_70, 0);
+  lv_label_set_text(mlStatusLbl, "");
+
+  // A changed certificate comes first: nothing more is sent until you decide
+  String newFp;
+  if (weather::mailCertChanged(newFp)) {
+    lv_list_add_text(list, "Certificate changed");
+    lv_obj_t *l = lv_label_create(list);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_obj_set_style_pad_all(l, 8, 0);
+    lv_obj_set_style_text_color(l, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    String msg = "Was:  " + shortFp(weather::mailCertFingerprint()) + "\nNow:  " + shortFp(newFp) +
+                 "\n\nNormal after your server renews its certificate (Let's Encrypt does it every 60-90 days). "
+                 "If you didn't expect it, don't trust it.";
+    lv_label_set_text(l, msg.c_str());
+    lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_OK, "Trust the new certificate");
+    lv_obj_add_event_cb(
+        b,
+        [](lv_event_t *) {
+          weather::trustMailCert();
+          showMail();
+        },
+        LV_EVENT_CLICKED, nullptr);
+  }
+
+  lv_list_add_text(list, "Account (IMAP over TLS)");
+  auto field = [&](const char *sym, const String &txt, int f) {
+    lv_obj_t *b = lv_list_add_btn(list, sym, txt.c_str());
+    lv_obj_add_event_cb(
+        b, [](lv_event_t *e) { showMailField((int)(intptr_t)lv_event_get_user_data(e)); }, LV_EVENT_CLICKED,
+        (void *)(intptr_t)f);
+  };
+  String host = weather::mailHost(), user = weather::mailUser();
+  field(LV_SYMBOL_HOME, "Server: " + (host.length() ? host : String("(not set)")), 0);
+  field(LV_SYMBOL_SETTINGS, "Port: " + String(weather::mailPort()), 1);
+  field(LV_SYMBOL_ENVELOPE, "Email: " + (user.length() ? user : String("(not set)")), 2);
+  field(LV_SYMBOL_EYE_CLOSE, String("Password: ") + (weather::mailHasPassword() ? "********" : "(not set)"), 3);
+
+  lv_list_add_text(list, "Settings");
+  auto toggle = [&](const char *sym, const char *txt, bool on, lv_event_cb_t cb) {
+    lv_obj_t *row = lv_list_add_btn(list, sym, txt);
+    lv_obj_t *sw = lv_switch_create(row);
+    lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+    if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, sw);
+  };
+  toggle(LV_SYMBOL_IMAGE, "Show on desktop", weather::showMailDesk(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showMailDesk();
+    weather::setShowMailDesk(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  toggle(LV_SYMBOL_BELL, "Unread count in status bar", weather::showMailBar(), [](lv_event_t *e) {
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+    bool on = !weather::showMailBar();
+    weather::setShowMailBar(on);
+    if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+    else lv_obj_clear_state(s, LV_STATE_CHECKED);
+  });
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Check now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (!weather::mailConfigured()) {
+          errorBox("Email", "Set the server, email address and password first.");
+          return;
+        }
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to check mail.");
+          return;
+        }
+        weather::refreshMail();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  lv_list_add_text(list, "Unread today (newest first)");
+  mlBox = lv_obj_create(list);
+  lv_obj_remove_style_all(mlBox);
+  lv_obj_set_size(mlBox, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(mlBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(mlBox, 8, 0);
+  lv_obj_set_style_pad_row(mlBox, 4, 0);
+  lv_obj_clear_flag(mlBox, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_list_add_text(list, "Security");
+  String fp = weather::mailCertFingerprint();
+  lv_obj_t *l = lv_label_create(list);
+  lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(l, LV_PCT(100));
+  lv_obj_set_style_pad_all(l, 8, 0);
+  lv_obj_set_style_text_opa(l, LV_OPA_70, 0);
+  String sec = fp.length() ? "Server certificate pinned:\n" + shortFp(fp) +
+                                 "\nThe password is only sent to a server showing this certificate."
+                           : String("The server's certificate will be pinned at the first connection.");
+  sec += "\nRead-only: messages are never marked read, moved or deleted. The password is stored on this device.";
+  lv_label_set_text(l, sec.c_str());
+  if (fp.length()) {
+    b = lv_list_add_btn(list, LV_SYMBOL_TRASH, "Forget pinned certificate");
+    lv_obj_add_event_cb(
+        b,
+        [](lv_event_t *) {
+          confirmBox("Forget certificate?",
+                     "The next connection will trust whatever certificate the server shows, and pin that one.",
+                     "Forget", [](lv_event_t *) {
+                       weather::forgetMailCert();
+                       showMail();
+                     });
+        },
+        LV_EVENT_CLICKED, nullptr);
+  }
+
+  load(scr, Screen::Mail);
+  weather::mailKeepAlive();
+  if (weather::mailConfigured() && !weather::mailStatus().valid) weather::refreshMail();
+  mlKey = -1;
+  refreshMailScreen();
+}
+
+void showMailField(int f) {
+  mlField = f;
+  static const char *titles[] = {"IMAP server", "IMAP port", "Email / username", "Password"};
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, titles[f], [](lv_event_t *) { showMail(); });
+  mlTa = lv_textarea_create(scr);
+  lv_textarea_set_one_line(mlTa, true);
+  if (f == 0) {
+    lv_textarea_set_max_length(mlTa, 100);
+    lv_textarea_set_placeholder_text(mlTa, "e.g. mail.example.com");
+    lv_textarea_set_text(mlTa, weather::mailHost().c_str());
+  } else if (f == 1) {
+    lv_textarea_set_accepted_chars(mlTa, "0123456789");
+    lv_textarea_set_max_length(mlTa, 5);
+    lv_textarea_set_text(mlTa, String(weather::mailPort()).c_str());
+  } else if (f == 2) {
+    lv_textarea_set_max_length(mlTa, 100);
+    lv_textarea_set_placeholder_text(mlTa, "you@example.com");
+    lv_textarea_set_text(mlTa, weather::mailUser().c_str());
+  } else {
+    lv_textarea_set_max_length(mlTa, 128);
+    lv_textarea_set_password_mode(mlTa, true);  // each character shows briefly, then a dot
+    lv_textarea_set_placeholder_text(mlTa, weather::mailHasPassword() ? "(unchanged - type a new one)" : "password");
+    lv_textarea_set_text(mlTa, "");
+  }
+  lv_obj_set_width(mlTa, W() - 8);
+  lv_obj_align(mlTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
+  lv_obj_add_state(mlTa, LV_STATE_FOCUSED);
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_keyboard_set_mode(kb, f == 1 ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
+  lv_obj_set_size(kb, W(), kbH);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(kb, mlTa);
+  lv_obj_add_event_cb(
+      kb,
+      [](lv_event_t *e) {
+        lv_event_code_t c = lv_event_get_code(e);
+        if (c == LV_EVENT_CANCEL) {
+          showMail();
+          return;
+        }
+        if (c != LV_EVENT_READY) return;
+        String v = lv_textarea_get_text(mlTa);
+        if (mlField != 3) v.trim();
+        switch (mlField) {
+          case 0:
+            if (v.indexOf(' ') >= 0 || v.indexOf('.') < 0) {
+              errorBox("IMAP server", "Enter the server's full name, like mail.example.com.");
+              return;
+            }
+            weather::setMailServer(v, weather::mailPort());
+            break;
+          case 1: {
+            long p = v.toInt();
+            if (p < 1 || p > 65535) {
+              errorBox("IMAP port", "Enter a port from 1 to 65535 (993 is standard for IMAP over TLS).");
+              return;
+            }
+            weather::setMailServer(weather::mailHost(), (uint16_t)p);
+            break;
+          }
+          case 2: weather::setMailUser(v); break;
+          default:
+            if (v.isEmpty()) break;  // left blank: keep the current password
+            weather::setMailPassword(v);
+            break;
+        }
+        lv_textarea_set_text(mlTa, "");  // don't leave the password in the widget
+        showMail();
+      },
+      LV_EVENT_ALL, nullptr);
+  load(scr, Screen::MailField);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -5793,6 +6207,7 @@ void poll(lv_timer_t *) {
     case Screen::Volcanoes: refreshVolcanoScreen(); break;
     case Screen::Flights: refreshFlightsScreen(); break;
     case Screen::News: refreshNewsScreen(); break;
+    case Screen::Mail: refreshMailScreen(); break;
     default: break;
   }
 }

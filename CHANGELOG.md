@@ -3,6 +3,33 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.9.0] - 2026-11-24
+
+### Added
+- **Breaking news** (menu, desktop widget): the latest headlines from your choice of
+  source, refreshed every 10 minutes.
+  - **AP News:** AP's official top-stories feed, published through AP's verified Flipboard
+    account. AP's own apnews.com feeds stopped working in 2024.
+  - **Fox News:** foxnews.com's official "Latest headlines" feed (free for personal,
+    non-commercial use).
+  - **CNN:** CNN's own feeds haven't had a new story since 2024, so this uses a Google News
+    feed limited to cnn.com stories from the last 24 hours. The page says so.
+  - **Page:** the source picker, show on desktop and refresh at the top, then the latest
+    headlines (20 on the C5, 12 on the classic CYD), newest first.
+    - Headlines under 30 minutes old are marked "NEW" in the accent color.
+    - Tap a headline for its time, summary and link (summary and link on the C5 only).
+  - **Desktop bubble:** newspaper icon, source and age ("Fox News  12 min (2/5)"), then the
+    headline on up to 3 lines. The newest 5 take turns every 8 s. It joins the widget
+    scroller like the others.
+  - Feeds are read with a streaming parser that stops after 30 items. Fox's feed carries
+    whole articles, so the rest isn't downloaded.
+- Text from feeds converts curly quotes, dashes, ellipses, non-breaking spaces and common
+  accented letters to plain ASCII instead of dropping them ("Trump's", not "Trumps"). This
+  applies to the volcano report too.
+
+### Changed
+- The background download task takes 16-bit job flags (news is the ninth kind of job).
+
 ## [1.8.3] - 2026-11-24
 
 ### Changed

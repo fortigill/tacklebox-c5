@@ -76,9 +76,22 @@ def plane_land(n):
     return plane(n).rotate(-90, resample=Image.BICUBIC, center=(n / 2, n / 2))
 
 
+def news(n):
+    """Newspaper: a page with a headline bar, a photo block and text lines."""
+    img = Image.new("L", (n, n), 0)
+    d = ImageDraw.Draw(img)
+    w = max(2, int(n * 0.07))
+    d.rounded_rectangle([n * 0.08, n * 0.14, n * 0.92, n * 0.86], radius=n * 0.06, outline=255, width=w)
+    d.rectangle([n * 0.18, n * 0.24, n * 0.82, n * 0.34], fill=255)          # headline
+    d.rectangle([n * 0.18, n * 0.42, n * 0.44, n * 0.70], fill=255)          # photo
+    for y in (0.44, 0.56, 0.68):                                              # text lines
+        d.rectangle([n * 0.52, n * y, n * 0.82, n * y + n * 0.05], fill=255)
+    return img
+
+
 ICONS = [("drone", drone, 22), ("wave", wave, 22), ("wave_s", wave, 16), ("volcano", volcano, 22),
          ("plane", plane, 22), ("plane_land", plane_land, 22), ("plane_s", plane, 16),
-         ("plane_bar", plane, 26), ("plane_bar_s", plane, 20)]
+         ("plane_bar", plane, 26), ("plane_bar_s", plane, 20), ("news", news, 22)]
 
 
 def to_alpha4(img):

@@ -100,7 +100,26 @@ const uint32_t FLT_RETRY_MS = 60000;
 const uint32_t FLT_BOOT_DELAY_MS = 120000;
 const int FLT_RADIUS_NM = 10;
 const char *ADSB_HOST = "opendata.adsb.fi/api/";
-const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";  // callsign -> route (community database)
+const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";
+// Breaking news (RSS)
+const uint32_t NEWS_REFRESH_MS = 10UL * 60 * 1000;
+const uint32_t NEWS_RETRY_MS = 5UL * 60 * 1000;
+const uint32_t NEWS_BOOT_DELAY_MS = 135000;
+const size_t NEWS_PARSE_MAX = 30;  // stop reading after this many items (feeds can be ~1 MB)
+#if defined(BOARD_NM_CYD_C5)
+const size_t NEWS_KEEP = 20;
+#else
+const size_t NEWS_KEEP = 12;
+#endif
+struct NewsFeed {
+  const char *name, *hostPath;
+  bool stripSuffix;  // Google News appends " - CNN" to every title
+};
+const NewsFeed NEWS_FEEDS[3] = {
+    {"AP News", "flipboard.com/@associatedpress/top-stories-u7govdf1z.rss", false},
+    {"Fox News", "moxie.foxnews.com/google-publisher/latest.xml", false},
+    {"CNN", "news.google.com/rss/search?q=when:24h+site:cnn.com&hl=en-US&gl=US&ceid=US:en", true},
+};  // callsign -> route (community database)
 const size_t ROUTE_CACHE = 40;
 const uint32_t ROUTE_TTL_MS = 6UL * 3600 * 1000;      // routes rarely change within a day
 const uint32_t ROUTE_MISS_TTL_MS = 3600UL * 1000;     // unknown callsigns: ask again in an hour
@@ -212,6 +231,16 @@ uint32_t fltVer = 0;
 uint32_t fltWantedMs = 0;
 volatile bool apDirty = false;              // task resolved a new airport: save it from loop()
 bool adsbTls = false, avwxTls = false, routeTls = false;
+
+// Breaking news (guarded by mtx)
+int newsSrc = 0;
+bool newsDesk = true;
+BigVec<NewsItem> newsList;
+String newsErr;
+uint32_t newsFetchedMs = 0;
+uint32_t newsVer = 0;
+uint32_t newsWantedMs = 0;
+bool newsTls[3] = {false, false, false};
 int adsbApi = 3;                            // adsb.fi API version (v3, falls back to v2)
 
 // Scheduling (main task only)
@@ -235,6 +264,10 @@ uint32_t nfLastAttempt = 0;
 bool nfAttempted = false;
 bool nfLastOk = false;
 bool nfForce = false;
+uint32_t nwLastAttempt = 0;
+bool nwAttempted = false;
+bool nwLastOk = false;
+bool nwForce = false;
 uint32_t flLastAttempt = 0;
 bool flAttempted = false;
 bool flLastOk = false;
@@ -253,11 +286,11 @@ struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint8_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128 };
+enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
-uint8_t taskFlags = 0;
+uint16_t taskFlags = 0;
 volatile bool locDirty = false;  // task resolved a location; save it from loop()
 
 // Plain HTTP first (no TLS = far less RAM); fall back to HTTPS if the
@@ -1545,6 +1578,26 @@ bool fetchUsVolcanoes(std::vector<Volcano> &out, String &why) {
 // (often HTML-escaped), and a <georss:point>. A small tag scanner reads it
 // straight off the connection; only the first ~600 characters of each
 // description are kept.
+// ASCII stand-ins for the Unicode punctuation that shows up in headlines
+const char *asciiFor(long cp) {
+  switch (cp) {
+    case 0x2018: case 0x2019: case 0x201A: case 0x2032: return "'";
+    case 0x201C: case 0x201D: case 0x201E: case 0x2033: return "\"";
+    case 0x2013: case 0x2014: case 0x2012: case 0x2212: return "-";
+    case 0x2026: return "...";
+    case 0xA0: case 0x2009: case 0x200A: case 0x202F: return " ";
+    case 0xB0: return " deg";
+    case 0xE9: case 0xE8: case 0xEA: return "e";
+    case 0xE1: case 0xE0: case 0xE2: case 0xE4: return "a";
+    case 0xED: case 0xEF: return "i";
+    case 0xF3: case 0xF6: return "o";
+    case 0xFA: case 0xFC: return "u";
+    case 0xF1: return "n";
+    case 0xE7: return "c";
+    default: return nullptr;
+  }
+}
+
 struct RssScan {
   enum Field { NONE, TITLE, DESC, POINT };
   BigVec<Eruption> *out = nullptr;
@@ -1594,9 +1647,19 @@ struct RssScan {
             break;
           }
         }
-        if (!done && r[1] == '#') {  // numeric: skip it (not in our fonts)
+        if (!done && r[1] == '#') {  // numeric: map the common punctuation, drop the rest
           char *semi = strchr(r, ';');
           if (semi && semi - r < 10) {
+            long cp = (r[2] == 'x' || r[2] == 'X') ? strtol(r + 3, nullptr, 16) : strtol(r + 2, nullptr, 10);
+            const char *m = cp >= 32 && cp < 127 ? nullptr : asciiFor(cp);
+            if (cp >= 32 && cp < 127) *w++ = (char)cp;
+            else if (m) {
+              size_t L = strlen(m);
+              if (w + L <= semi + 1) {  // never longer than the entity it replaces
+                memcpy(w, m, L);
+                w += L;
+              }
+            }
             r = semi + 1;
             continue;
           }
@@ -1623,6 +1686,20 @@ struct RssScan {
         continue;
       }
       if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+      if (c >= 0xC0) {  // UTF-8: curly quotes, dashes and such become ASCII, the rest is dropped
+        long cp = 0;
+        int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+        cp = c & (0x3F >> extra);
+        for (int i = 1; i <= extra && (r[i] & 0xC0) == 0x80; i++) cp = (cp << 6) | (r[i] & 0x3F);
+        r += extra;
+        const char *m = asciiFor(cp);
+        for (; m && *m && k < n - 1; m++) {
+          if (*m == ' ' && space) continue;
+          space = *m == ' ';
+          dst[k++] = *m;
+        }
+        continue;
+      }
       if (c < 32 || c >= 127) continue;
       if (c == ' ') {
         if (space) continue;
@@ -2125,6 +2202,170 @@ bool pollFlights(String &why) {
   return true;
 }
 
+// ---------- Breaking news ----------
+
+// RFC 822 date as used by RSS: "Tue, 24 Nov 2026 19:30:00 GMT" / "+0000" /
+// "-0500" / "EST" (the weekday is optional). Returns epoch UTC, 0 on failure.
+uint32_t parseRfc822(const char *s) {
+  while (*s == ' ') s++;
+  const char *comma = strchr(s, ',');
+  if (comma && comma - s < 10) s = comma + 1;
+  int D, Y, h, m, sec = 0;
+  char mon[4] = "", tz[8] = "";
+  int n = sscanf(s, " %d %3s %d %d:%d:%d %7s", &D, mon, &Y, &h, &m, &sec, tz);
+  if (n < 5) return 0;
+  static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  const char *p = strstr(months, mon);
+  if (!p || strlen(mon) != 3) return 0;
+  int M = (int)(p - months) / 3 + 1;
+  if (Y < 100) Y += 2000;
+  long off = 0;  // seconds east of UTC
+  if (tz[0] == '+' || tz[0] == '-') {
+    long v = atol(tz + 1);
+    off = (v / 100 * 3600 + v % 100 * 60) * (tz[0] == '-' ? -1 : 1);
+  } else {
+    static const struct { const char *z; int h; } zones[] = {{"EST", -5}, {"EDT", -4}, {"CST", -6}, {"CDT", -5},
+                                                             {"MST", -7}, {"MDT", -6}, {"PST", -8}, {"PDT", -7}};
+    for (const auto &z : zones)
+      if (!strcmp(tz, z.z)) off = z.h * 3600L;
+  }
+  return epochUtc(Y, M, D, h, m) + sec - off;
+}
+
+// RSS items -> title / pubDate / description / link (same tag scanner idea
+// as the volcano report, kept separate so each stays simple)
+struct NewsScan {
+  enum Field { NONE, TITLE, DESC, DATE, LINK };
+  BigVec<NewsItem> *out = nullptr;
+  bool stripSuffix = false;
+  bool inItem = false, inTag = false, inCdata = false;
+  Field field = NONE;
+  char tag[24];
+  size_t tagLen = 0;
+  char buf[720];
+  size_t bufLen = 0;
+  char cdEnd[3] = {0, 0, 0};
+  NewsItem cur;
+  size_t items = 0;
+
+  void putText(char c) {
+    if (field != NONE && bufLen < sizeof(buf) - 1) buf[bufLen++] = c;
+  }
+  void endField() {
+    buf[bufLen] = 0;
+    if (field == TITLE) {
+      RssScan::cleanText(buf, cur.title, sizeof(cur.title));
+      if (stripSuffix) {  // "Headline - CNN" -> "Headline"
+        char *dash = strrchr(cur.title, '-');
+        if (dash && dash > cur.title + 2 && dash[-1] == ' ' && strlen(dash) < 24) dash[-1] = 0;
+      }
+    } else if (field == DATE) {
+      cur.time = parseRfc822(buf);
+    }
+#if defined(BOARD_NM_CYD_C5)
+    else if (field == DESC) {
+      if (!stripSuffix) RssScan::cleanText(buf, cur.summary, sizeof(cur.summary));  // Google's is a link list
+    } else if (field == LINK) {
+      char tmp[200];
+      RssScan::cleanText(buf, tmp, sizeof(tmp));
+      const char *u = strstr(tmp, "://");
+      snprintf(cur.link, sizeof(cur.link), "%.127s", u ? u + 3 : tmp);
+    }
+#endif
+    field = NONE;
+  }
+  void onTag() {
+    tag[tagLen] = 0;
+    bool closing = tag[0] == '/';
+    char *name = closing ? tag + 1 : tag;
+    char *sp = strpbrk(name, " \t/");
+    if (sp) *sp = 0;
+    if (!closing && !strcmp(name, "item")) {
+      inItem = true;
+      cur = NewsItem();
+    } else if (closing && !strcmp(name, "item")) {
+      if (inItem && cur.title[0] && out->size() < NEWS_PARSE_MAX) out->push_back(cur);
+      items++;
+      inItem = false;
+    } else if (inItem) {
+      Field f = !strcmp(name, "title") ? TITLE : !strcmp(name, "description") ? DESC
+                : !strcmp(name, "pubDate") ? DATE : !strcmp(name, "link") ? LINK : NONE;
+      if (f != NONE) {
+        if (closing) {
+          if (field == f) endField();
+        } else {
+          field = f;
+          bufLen = 0;
+        }
+      }
+    }
+  }
+  void feed(char c) {
+    if (inCdata) {
+      cdEnd[0] = cdEnd[1];
+      cdEnd[1] = cdEnd[2];
+      cdEnd[2] = c;
+      putText(c);
+      if (cdEnd[0] == ']' && cdEnd[1] == ']' && cdEnd[2] == '>') {
+        inCdata = false;
+        if (bufLen >= 3) bufLen -= 3;
+      }
+      return;
+    }
+    if (inTag) {
+      if (c == '>') {
+        inTag = false;
+        onTag();
+        return;
+      }
+      if (tagLen < sizeof(tag) - 1) tag[tagLen++] = c;
+      if (tagLen == 8 && !strncmp(tag, "![CDATA[", 8)) {
+        inTag = false;
+        inCdata = true;
+        cdEnd[0] = cdEnd[1] = cdEnd[2] = 0;
+      }
+      return;
+    }
+    if (c == '<') {
+      inTag = true;
+      tagLen = 0;
+      return;
+    }
+    putText(c);
+  }
+};
+
+bool fetchNews(int src, BigVec<NewsItem> &out, String &why) {
+  const NewsFeed &f = NEWS_FEEDS[src];
+  out.reserve(NEWS_PARSE_MAX);
+  std::unique_ptr<NewsScan> scan(new NewsScan());  // ~1 KB of buffers: heap, not the task stack
+  scan->out = &out;
+  scan->stripSuffix = f.stripSuffix;
+  int code = streamGet(
+      f.hostPath, newsTls[src],
+      [&](Stream &body) {
+        int c;
+        while ((c = body.read()) >= 0) {
+          scan->feed((char)c);
+          if (scan->items >= NEWS_PARSE_MAX) break;  // enough: don't download the rest
+        }
+      },
+      why);
+  Serial.printf("[news] %s -> %d, %u headlines\n", f.name, code, (unsigned)out.size());
+  if (code != 200) {
+    if (why.isEmpty()) why = String(f.name) + " replied " + code;
+    return false;
+  }
+  if (out.empty()) {
+    if (why.isEmpty()) why = "no headlines in the feed";
+    return false;
+  }
+  std::stable_sort(out.begin(), out.end(), [](const NewsItem &a, const NewsItem &b) { return a.time > b.time; });
+  if (out.size() > NEWS_KEEP) out.resize(NEWS_KEEP);
+  why = "";
+  return true;
+}
+
 // The tracked team's game this week, or nullptr (caller holds mtx)
 const Game *teamGame() {
   if (nflTeamAbbr.isEmpty()) return nullptr;
@@ -2424,7 +2665,35 @@ void flightsWork() {
   flLastOk = ok;
 }
 
+void newsWork() {
+  int src;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    src = newsSrc;
+  }
+  BigVec<NewsItem> fresh;
+  String why;
+  bool ok = fetchNews(src, fresh, why);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (src == newsSrc) {  // ignore if the source was changed meanwhile
+      if (ok) {
+        newsList.swap(fresh);
+        newsErr = "";
+        newsFetchedMs = millis();
+      } else {
+        newsErr = why;
+      }
+      newsVer++;
+    }
+  }
+  if (ok && !newsList.empty()) Serial.printf("[news] top: %s\n", newsList[0].title);
+  else if (!ok) Serial.printf("[news] failed: %s\n", why.c_str());
+  nwLastOk = ok;
+}
+
 void fetchWork() {
+  if (taskFlags & DO_NEWS) newsWork();
   if (taskFlags & DO_FLIGHTS) flightsWork();
   if (taskFlags & DO_VOLCANO) volcanoWork();
   if (taskFlags & DO_QUAKE) quakeWork();
@@ -2443,7 +2712,7 @@ void fetchWork() {
     have = haveLoc;
     place = placeName;
   }
-  uint8_t flags = taskFlags;
+  uint16_t flags = taskFlags;
   bool doForecast = flags & DO_FORECAST;
   Serial.printf("[wx] fetching%s%s for %s, free heap %lu\n", doForecast ? " forecast" : "",
                 (flags & DO_ALERTS) ? " alerts" : "", zip.c_str(), (unsigned long)ESP.getFreeHeap());
@@ -2512,7 +2781,7 @@ void fetchTask(void *) {
   vTaskDelete(nullptr);
 }
 
-void startFetch(uint8_t flags) {
+void startFetch(uint16_t flags) {
   taskFlags = flags;
   taskRunning = true;
   if (flags & DO_FORECAST) {
@@ -2547,6 +2816,10 @@ void startFetch(uint8_t flags) {
   if (flags & DO_FLIGHTS) {
     flAttempted = true;
     flLastAttempt = millis();
+  }
+  if (flags & DO_NEWS) {
+    nwAttempted = true;
+    nwLastAttempt = millis();
   }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
@@ -2583,6 +2856,10 @@ void startFetch(uint8_t flags) {
     if (flags & DO_FLIGHTS) {
       fltErr = "not enough memory";
       flLastOk = false;
+    }
+    if (flags & DO_NEWS) {
+      newsErr = "not enough memory";
+      nwLastOk = false;
     }
   }
 }
@@ -2649,6 +2926,9 @@ void begin() {
   nearDesk = prefs.getBool("flNear", true);
   oursDesk = prefs.getBool("flOurs", true);
   fltBar = prefs.getBool("flBar", true);
+  newsSrc = prefs.getInt("nwSrc", 0);
+  if (newsSrc < 0 || newsSrc >= NEWS_SOURCES) newsSrc = 0;
+  newsDesk = prefs.getBool("nwDesk", true);
   if (prefs.isKey("flAppr")) prefs.remove("flAppr");  // 1.6.2's approach widget is gone
   if (prefs.isKey("apCode")) {
     apCode = prefs.getString("apCode");
@@ -2724,7 +3004,7 @@ void loop() {
   // share the radio and the Bluetooth stack holds memory HTTPS needs. Overdue
   // updates run as soon as Bluetooth is released (1 min after the tool stops).
   if (bluetoothBusy()) return;
-  uint8_t flags = 0;
+  uint16_t flags = 0;
   if (configured()) {
     if (force || !attempted || millis() - lastAttempt >= (lastOk ? REFRESH_MS : RETRY_MS)) flags |= DO_FORECAST;
     if (millis() >= ALERTS_BOOT_DELAY_MS &&
@@ -2767,6 +3047,11 @@ void loop() {
   if (!flags && volcWanted && (millis() >= VOLC_BOOT_DELAY_MS || vcForce) &&
       (vcForce || !vcAttempted || millis() - vcLastAttempt >= (vcLastOk ? VOLC_REFRESH_MS : VOLC_RETRY_MS)))
     flags |= DO_VOLCANO;
+  // Breaking news: on its own, once nothing else is due (before the frequent flight polls)
+  bool newsWanted = newsDesk || (newsWantedMs && millis() - newsWantedMs < QUAKE_WANTED_MS);
+  if (!flags && newsWanted && (millis() >= NEWS_BOOT_DELAY_MS || nwForce) &&
+      (nwForce || !nwAttempted || millis() - nwLastAttempt >= (nwLastOk ? NEWS_REFRESH_MS : NEWS_RETRY_MS)))
+    flags |= DO_NEWS;
   // Airport flights: polled often, so lowest priority (only when nothing else is due)
   bool fltWanted = nearDesk || oursDesk || fltBar || (fltWantedMs && millis() - fltWantedMs < QUAKE_WANTED_MS);
   if (!flags && fltWanted && (millis() >= FLT_BOOT_DELAY_MS || flForce) &&
@@ -2776,6 +3061,7 @@ void loop() {
     force = alForce = false;
     if (flags & DO_QUAKE) qkForce = false;
     if (flags & DO_FLIGHTS) flForce = false;
+    if (flags & DO_NEWS) nwForce = false;
     if (flags & DO_VOLCANO) vcForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
@@ -3667,6 +3953,65 @@ String flightsStatus() {
   char b[96];
   unsigned long s = (millis() - fltFetchedMs) / 1000;
   snprintf(b, sizeof(b), "Live: updated %lu s ago, every %lu s", s, (unsigned long)(FLT_POLL_MS / 1000));
+  return b;
+}
+
+// ---------- Breaking news ----------
+
+const char *newsSourceName(int src) { return src >= 0 && src < NEWS_SOURCES ? NEWS_FEEDS[src].name : "?"; }
+int newsSource() { return newsSrc; }
+
+void setNewsSource(int src) {
+  if (src < 0 || src >= NEWS_SOURCES) return;
+  std::lock_guard<std::mutex> lock(mtx);
+  if (src == newsSrc) return;
+  newsSrc = src;
+  newsList.clear();
+  newsErr = "";
+  newsFetchedMs = 0;
+  newsVer++;
+  prefs.begin("wx", false);
+  prefs.putInt("nwSrc", src);
+  prefs.end();
+  nwForce = true;
+}
+
+BigVec<NewsItem> newsItems() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return newsList;
+}
+
+bool showNewsDesk() { return newsDesk; }
+
+void setShowNewsDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  newsDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("nwDesk", on);
+  prefs.end();
+  if (on && !newsFetchedMs) nwForce = true;
+  newsVer++;
+}
+
+void refreshNews() {
+  newsWantedMs = millis();
+  nwForce = true;
+}
+
+void newsKeepAlive() { newsWantedMs = millis(); }
+uint32_t newsVersion() { return newsVer; }
+
+String newsStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (net::state() != net::State::Connected && !newsFetchedMs) return "Waiting for Wi-Fi...";
+  if (newsErr.length()) return "Update failed: " + newsErr;
+  if (!newsFetchedMs)
+    return millis() < NEWS_BOOT_DELAY_MS && !nwForce ? "First headlines a couple of minutes after startup..."
+                                                     : String("Getting headlines from ") + NEWS_FEEDS[newsSrc].name + "...";
+  char b[96];
+  snprintf(b, sizeof(b), "%s, checked %lu min ago, every 10 min", NEWS_FEEDS[newsSrc].name,
+           (unsigned long)((millis() - newsFetchedMs) / 60000));
   return b;
 }
 

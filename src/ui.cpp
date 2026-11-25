@@ -33,7 +33,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail
 };
 
 const int HEADER_H = 40;
@@ -131,6 +131,18 @@ String vcDetailTitle, vcDetailText;
 lv_color_t vcDetailColor;
 Screen volcBack = Screen::Menu;
 lv_obj_t *volcAlertBox = nullptr;  // level-change pop-up (top layer)
+// Breaking news: desktop bubble, page, story detail
+lv_obj_t *deskNews = nullptr, *deskNewsTop = nullptr, *deskNewsHead = nullptr;
+int deskNewsKey = -1;
+size_t deskNewsIdx = 0;
+uint32_t deskNewsRotMs = 0;
+const uint32_t NEWS_ROTATE_MS = 8000;  // desktop: next headline every 8 s
+const size_t NEWS_ROTATE_N = 5;        // ...through the newest 5
+lv_obj_t *nwStatus = nullptr, *nwBox = nullptr;
+int nwKey = -1;
+BigVec<weather::NewsItem> nwRows;
+weather::NewsItem nwDetail;
+Screen newsBack = Screen::Menu;
 // Aircraft near an airport: desktop bubble, page, airport code entry
 // "Near the airport" bubble: aircraft count, then one airliner's details
 lv_obj_t *deskNearCnt = nullptr;  // airliner count, left of the plane icon
@@ -302,6 +314,8 @@ void showQuakeDetail();
 void showVolcanoes();
 void showVolcanoDetail();
 void showFlights();
+void showNews();
+void showNewsDetail();
 void showAirportCode();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
@@ -429,6 +443,10 @@ void resetPtrs() {
   deskVolc = deskVolcTop = deskVolcDetail = deskVolcImg = nullptr;
   deskVolcKey = -1;
   vcSummary = vcStatus = vcUsBox = vcWorldBox = vcWorldHdr = nullptr;
+  deskNews = deskNewsTop = deskNewsHead = nullptr;
+  deskNewsKey = -1;
+  nwStatus = nwBox = nullptr;
+  nwKey = -1;
   deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = deskNearCnt = nullptr;
   deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
   deskOursKey = -1;
@@ -748,14 +766,15 @@ void deskTick(lv_timer_t *) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskView || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc || !deskNear || !deskOurs)
+      !deskVolc || !deskNear || !deskOurs || !deskNews)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
   bool none = lv_obj_has_flag(deskWave, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskAlerts, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN) &&
+              lv_obj_has_flag(deskNews, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   if (deskTicker) rowH = deskTickH;  // the scrolling window fills the space
   int key = barH * 1000 + rowH + (deskTicker ? 500000 : 0);
@@ -1106,6 +1125,34 @@ void refreshDesktop() {
         setText(deskOursL2, l2);
         setText(deskOursL3, l3);
         lv_img_set_src(deskOursImg, in ? &ui_plane_land : &ui_plane);
+      }
+    }
+  }
+
+  // News bubble: source and age, then the headline (newest 5 take turns)
+  if (deskNews) {
+    auto items = weather::newsItems();
+    bool on = weather::showNewsDesk() && !items.empty();
+    wantWidget(deskNews, on);
+    if (on) {
+      size_t n = std::min(items.size(), NEWS_ROTATE_N);
+      if (n > 1 && millis() - deskNewsRotMs >= NEWS_ROTATE_MS) {
+        deskNewsRotMs = millis();
+        deskNewsIdx++;
+      }
+      if (deskNewsIdx >= n) deskNewsIdx = 0;
+      int k = (int)(weather::newsVersion() * 4096 + ((millis() / 60000) % 64) * 64 + deskNewsIdx);
+      if (k != deskNewsKey) {
+        deskNewsKey = k;
+        const auto &it = items[deskNewsIdx];
+        bool fresh = it.time && (long)time(nullptr) - (long)it.time < 1800;  // under 30 min old
+        String top = String(weather::newsSourceName(weather::newsSource()));
+        String age = it.time ? agoText(it.time) : String("");
+        if (age.length()) top += "  " + age;
+        if (n > 1) top += "  (" + String(deskNewsIdx + 1) + "/" + String(n) + ")";
+        setText(deskNewsTop, top.c_str());
+        lv_obj_set_style_text_color(deskNewsTop, fresh ? theme::accent() : theme::text(), 0);
+        setText(deskNewsHead, it.title);
       }
     }
   }
@@ -1729,6 +1776,38 @@ void showDesktop() {
   deskOursL2 = oursLine();
   deskOursL3 = oursLine();
 
+  // News bubble: newspaper icon + source / age, then the headline (up to 3 lines)
+  deskNews = widget([](lv_event_t *) {
+    newsBack = Screen::Desktop;
+    showNews();
+  });
+  lv_obj_set_flex_flow(deskNews, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskNews, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(deskNews, 2, 0);
+  lv_obj_t *nline = lv_obj_create(deskNews);
+  lv_obj_remove_style_all(nline);
+  lv_obj_set_size(nline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(nline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(nline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(nline, 6, 0);
+  lv_obj_clear_flag(nline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(nline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  lv_obj_t *nimg = lv_img_create(nline);
+  lv_img_set_src(nimg, &ui_news);
+  lv_obj_set_style_img_recolor_opa(nimg, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(nimg, theme::accent(), 0);
+  lv_obj_clear_flag(nimg, LV_OBJ_FLAG_CLICKABLE);
+  deskNewsTop = lv_label_create(nline);
+  lv_obj_set_style_text_font(deskNewsTop, &lv_font_montserrat_14, 0);
+  lv_label_set_text(deskNewsTop, "");
+  chevron(nline);
+  deskNewsHead = lv_label_create(deskNews);
+  lv_label_set_long_mode(deskNewsHead, LV_LABEL_LONG_DOT);  // wraps, "..." after 3 lines
+  lv_obj_set_width(deskNewsHead, W() - 44);
+  lv_obj_set_height(deskNewsHead, LV_SIZE_CONTENT);  // short headlines take 1-2 lines...
+  lv_obj_set_style_max_height(deskNewsHead, 3 * lv_font_get_line_height(&lv_font_montserrat_20), 0);  // ...at most 3
+  lv_label_set_text(deskNewsHead, "");
+
   deskWifiLbl = lv_label_create(scr);
   lv_label_set_long_mode(deskWifiLbl, LV_LABEL_LONG_DOT);
   lv_obj_set_width(deskWifiLbl, W() - 16);
@@ -1806,6 +1885,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         volcBack = Screen::Menu;
         showVolcanoes();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_FILE, "Breaking news");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        newsBack = Screen::Menu;
+        showNews();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -4759,6 +4847,138 @@ void showVolcanoDetail() {
   load(scr, Screen::VolcanoDetail);
 }
 
+// ---------- Breaking news ----------
+
+void onNewsRow(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= nwRows.size()) return;
+  nwDetail = nwRows[i];
+  showNewsDetail();
+}
+
+void refreshNewsScreen() {
+  if (!nwStatus) return;
+  weather::newsKeepAlive();
+  setText(nwStatus, weather::newsStatus().c_str());
+  int key = (int)(weather::newsVersion() * 4096 + (millis() / 60000) % 4096);
+  if (key == nwKey) return;
+  nwKey = key;
+  nwRows = weather::newsItems();
+  lv_obj_clean(nwBox);
+  if (nwRows.empty()) {
+    lv_obj_t *l = lv_label_create(nwBox);
+    lv_label_set_text(l, "No headlines yet");
+  }
+  time_t now = time(nullptr);
+  for (size_t i = 0; i < nwRows.size(); i++) {
+    const auto &it = nwRows[i];
+    bool fresh = it.time && (long)now - (long)it.time < 1800;
+    String when = it.time ? agoText(it.time) : String("time unknown");
+    if (fresh) when = "NEW - " + when;
+    twoLineRow(nwBox, it.title, fresh ? theme::accent() : theme::text(), when, onNewsRow, i);
+  }
+}
+
+void showNews() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Breaking news", [](lv_event_t *) {
+    if (newsBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  nwStatus = lv_label_create(list);
+  lv_label_set_long_mode(nwStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(nwStatus, LV_PCT(100));
+  lv_obj_set_style_pad_all(nwStatus, 8, 0);
+  lv_obj_set_style_text_opa(nwStatus, LV_OPA_70, 0);
+  lv_label_set_text(nwStatus, "");
+
+  lv_list_add_text(list, "Source");
+  for (int i = 0; i < weather::NEWS_SOURCES; i++) {
+    bool sel = i == weather::newsSource();
+    lv_obj_t *b = lv_list_add_btn(list, sel ? LV_SYMBOL_OK : nullptr, weather::newsSourceName(i));
+    lv_obj_add_event_cb(
+        b,
+        [](lv_event_t *e) {
+          weather::setNewsSource((int)(intptr_t)lv_event_get_user_data(e));
+          showNews();
+        },
+        LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  lv_list_add_text(list, "Settings");
+  lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show on desktop");
+  lv_obj_t *sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showNewsDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showNewsDesk();
+        weather::setShowNewsDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to get the news.");
+          return;
+        }
+        weather::refreshNews();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  lv_list_add_text(list, "Latest headlines");
+  nwBox = lv_obj_create(list);
+  lv_obj_remove_style_all(nwBox);
+  lv_obj_set_size(nwBox, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(nwBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(nwBox, 8, 0);
+  lv_obj_set_style_pad_row(nwBox, 4, 0);
+  lv_obj_clear_flag(nwBox, LV_OBJ_FLAG_SCROLLABLE);
+  if (weather::newsSource() == 2) lv_list_add_text(list, "CNN headlines via Google News");
+
+  load(scr, Screen::News);
+  if (weather::newsItems().empty()) weather::refreshNews();
+  weather::newsKeepAlive();
+  nwKey = -1;
+  refreshNewsScreen();
+}
+
+void showNewsDetail() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, weather::newsSourceName(weather::newsSource()), [](lv_event_t *) { showNews(); });
+  lv_obj_t *body = makeBody(scr, HEADER_H);
+  lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+  const auto &it = nwDetail;
+  lv_obj_t *big = bodyLabel(body);
+  lv_obj_set_style_text_font(big, &lv_font_montserrat_20, 0);
+  lv_label_set_text(big, it.title);
+  String t;
+  if (it.time) {
+    char when[32];
+    timesvc::formatEpoch(it.time, when, sizeof(when));
+    t += String(when) + " (" + agoText(it.time) + ")\n";
+  }
+#if defined(BOARD_NM_CYD_C5)
+  if (it.summary[0]) t += String("\n") + it.summary + "\n";
+  if (it.link[0]) t += String("\nRead more: ") + it.link + "\n";
+#endif
+  t += String("\nSource: ") + weather::newsSourceName(weather::newsSource());
+  if (weather::newsSource() == 2) t += " (via Google News)";
+  lv_obj_t *info = bodyLabel(body);
+  lv_obj_set_style_text_opa(info, LV_OPA_80, 0);
+  lv_label_set_text(info, t.c_str());
+  load(scr, Screen::NewsDetail);
+}
+
 // ---------- Airport flights ----------
 
 void refreshFlightsScreen() {
@@ -5572,6 +5792,7 @@ void poll(lv_timer_t *) {
     case Screen::Quakes: refreshQuakeScreen(); break;
     case Screen::Volcanoes: refreshVolcanoScreen(); break;
     case Screen::Flights: refreshFlightsScreen(); break;
+    case Screen::News: refreshNewsScreen(); break;
     default: break;
   }
 }

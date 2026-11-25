@@ -291,6 +291,30 @@ void flightsKeepAlive();              // the page is open: keep polling with the
 uint32_t flightsVersion();
 String flightsStatus();
 
+// ---- Breaking news (RSS) ----
+// Latest headlines from one source, refreshed every 10 min:
+//   0 AP (AP's official Flipboard feed), 1 Fox News (foxnews.com feed),
+//   2 CNN (Google News, CNN stories only: CNN's own feeds stopped in 2024).
+struct NewsItem {
+  uint32_t time = 0;        // published, epoch UTC (0 = unknown)
+  char title[160] = "";
+#if defined(BOARD_NM_CYD_C5)
+  char summary[320] = "";   // short description when the feed has one
+  char link[128] = "";
+#endif
+};
+const int NEWS_SOURCES = 3;
+const char *newsSourceName(int src);     // "AP News", "Fox News", "CNN"
+int newsSource();
+void setNewsSource(int src);             // clears the list and refetches
+BigVec<NewsItem> newsItems();            // newest first, up to 20
+bool showNewsDesk();
+void setShowNewsDesk(bool on);
+void refreshNews();
+void newsKeepAlive();                    // the news page is open: keep polling with the widget off
+uint32_t newsVersion();
+String newsStatus();
+
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);
 const char *describe(int code);

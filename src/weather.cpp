@@ -103,6 +103,23 @@ const int FLT_RADIUS_NM = 10;
 const char *ADSB_HOST = "opendata.adsb.fi/api/";
 const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";
 // Email (IMAP)
+// Outages (DownStatus)
+const char *DS_HOST = "isitdownstatus.com/api/status/";
+const uint32_t OUT_REFRESH_MS = 5UL * 60 * 1000;
+const uint32_t OUT_RETRY_MS = 5UL * 60 * 1000;
+const uint32_t OUT_BOOT_DELAY_MS = 75000;
+#if defined(BOARD_NM_CYD_C5)
+const int OUT_MAX_SERVICES = 40;
+const char *OUT_DEFAULT =
+    "discord,reddit,youtube,netflix,instagram,facebook,whatsapp,x,tiktok,snapchat,spotify,steam,playstation,xbox,"
+    "roblox,fortnite,gmail,google,outlook,microsoft-teams,zoom,slack,icloud,amazon,aws,cloudflare,github,chatgpt,"
+    "verizon,att,t-mobile,xfinity,spectrum,hulu,disney-plus";
+#else
+const int OUT_MAX_SERVICES = 20;
+const char *OUT_DEFAULT =
+    "discord,reddit,youtube,netflix,instagram,facebook,x,spotify,steam,playstation,xbox,roblox,gmail,outlook,zoom,"
+    "icloud,amazon,aws,cloudflare,chatgpt";
+#endif
 const uint32_t MAIL_REFRESH_MS = 5UL * 60 * 1000;
 const uint32_t MAIL_RETRY_MS = 5UL * 60 * 1000;
 const uint32_t MAIL_BOOT_DELAY_MS = 30000;
@@ -253,6 +270,17 @@ uint32_t newsVer = 0;
 uint32_t newsWantedMs = 0;
 bool newsTls[3] = {false, false, false};
 
+// Outages (guarded by mtx)
+String outList;            // comma-separated DownStatus ids
+bool outDesk = true;
+BigVec<Outage> outItems;   // problems now, worst first
+String outUnknownIds, outErr;
+int outOk = 0;
+uint32_t outFetchedMs = 0, outVer = 0, outWantedMs = 0;
+bool dsTls = false;
+uint32_t otLastAttempt = 0;
+bool otAttempted = false, otLastOk = false, otForce = false;
+
 // Email (guarded by mtx). The password lives in NVS ("mail" namespace) and
 // in RAM only while needed.
 String mlHost, mlUser, mlPass;
@@ -316,7 +344,7 @@ struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256, DO_MAIL = 512 };
+enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256, DO_MAIL = 512, DO_OUTAGE = 1024 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -3084,6 +3112,148 @@ void newsWork() {
   nwLastOk = ok;
 }
 
+// ---------- Outages (DownStatus) ----------
+
+std::vector<String> splitIds(const String &csv) {
+  std::vector<String> ids;
+  String cur;
+  for (size_t i = 0; i <= csv.length(); i++) {
+    char ch = i < csv.length() ? csv[i] : ',';
+    if (ch == ',' || ch == ' ' || ch == ';') {
+      cur.trim();
+      cur.toLowerCase();
+      if (cur.length() && cur.length() < 24 && (int)ids.size() < OUT_MAX_SERVICES &&
+          std::find(ids.begin(), ids.end(), cur) == ids.end())
+        ids.push_back(cur);
+      cur = "";
+    } else if (isalnum((unsigned char)ch) || ch == '-' || ch == '_' || ch == '.') {
+      cur += ch;
+    }
+  }
+  return ids;
+}
+
+// "major_outage" -> 3, "partial_outage" -> 2, "degraded_performance" -> 1, "operational" -> 0
+uint8_t outageLevel(const char *st) {
+  String s = st;
+  s.toLowerCase();
+  if (s.isEmpty() || s == "operational" || s == "up" || s == "ok" || s == "online" || s == "normal" || s == "none")
+    return 0;
+  if (s.indexOf("partial") >= 0) return 2;
+  if (s.indexOf("major") >= 0 || s.indexOf("outage") >= 0 || s.indexOf("down") >= 0 || s.indexOf("critical") >= 0)
+    return 3;
+  return 1;  // degraded, minor, maintenance, investigating, anything else
+}
+
+// "github" -> "GitHub"-ish: capitalize words, keep known spellings
+void prettyName(const char *id, char *out, size_t n) {
+  static const char *const known[][2] = {
+      {"github", "GitHub"},   {"youtube", "YouTube"},     {"tiktok", "TikTok"},         {"whatsapp", "WhatsApp"},
+      {"playstation", "PlayStation"}, {"chatgpt", "ChatGPT"}, {"icloud", "iCloud"},      {"aws", "AWS"},
+      {"att", "AT&T"},        {"t-mobile", "T-Mobile"},   {"x", "X (Twitter)"},         {"microsoft-teams", "Microsoft Teams"},
+      {"disney-plus", "Disney+"}, {"openai", "OpenAI"},   {"linkedin", "LinkedIn"},     {"paypal", "PayPal"},
+      {"gmail", "Gmail"},     {"xfinity", "Xfinity"},     {"cloudflare", "Cloudflare"}};
+  for (auto &k : known)
+    if (!strcmp(id, k[0])) {
+      snprintf(out, n, "%s", k[1]);
+      return;
+    }
+  size_t j = 0;
+  bool up = true;
+  for (const char *p = id; *p && j < n - 1; p++) {
+    char ch = *p == '-' || *p == '_' ? ' ' : *p;
+    out[j++] = up ? (char)toupper((unsigned char)ch) : ch;
+    up = ch == ' ';
+  }
+  out[j] = 0;
+}
+
+void outageWork() {
+  String list;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    list = outList;
+  }
+  std::vector<String> ids = splitIds(list);
+  BigVec<Outage> found;
+  String unknown, why, lastWhy;
+  int ok = 0, failed = 0;
+  bool tls = dsTls;
+  for (const auto &id : ids) {
+    if (bluetoothBusy() || net::state() != net::State::Connected) {
+      lastWhy = "interrupted";
+      break;
+    }
+    Outage o;
+    bool parsed = false;
+    int code = streamGet(
+        String(DS_HOST) + id, tls,
+        [&](Stream &body) {
+          JsonDocument doc;
+          if (deserializeJson(doc, body)) return;
+          JsonObject r = doc.as<JsonObject>();
+          if (r.isNull()) return;
+          if (r["data"].is<JsonObject>()) r = r["data"].as<JsonObject>();  // in case it's wrapped
+          const char *st = r["status"] | "";
+          if (r["status"].is<JsonObject>()) st = r["status"]["indicator"] | (r["status"]["status"] | "");
+          asciiCopy(o.status, sizeof(o.status), st);
+          for (char *p = o.status; *p; p++)
+            if (*p == '_') *p = ' ';
+          o.level = outageLevel(st);
+          snprintf(o.id, sizeof(o.id), "%s", id.c_str());
+          const char *nm = r["name"] | (r["display_name"] | "");
+          if (*nm) asciiCopy(o.name, sizeof(o.name), nm);
+          else prettyName(id.c_str(), o.name, sizeof(o.name));
+          o.since = parseIso(r["updated_at"] | (r["since"] | (r["last_updated"] | "")));
+          for (const char *k : {"reports", "user_reports", "reports_count", "report_count", "reports_24h"})
+            if (r[k].is<int>()) {
+              o.reports = r[k];
+              break;
+            }
+          parsed = true;
+        },
+        why);
+    if (code == 200 && parsed) {
+      ok++;
+      if (o.level) found.push_back(o);
+    } else if (code == 404) {
+      unknown += (unknown.length() ? ", " : "") + id;
+    } else {
+      failed++;
+      lastWhy = why.length() ? why : String("unreadable reply");
+      if (failed >= 3 && ok == 0) break;  // the service itself is down or unreachable: stop early
+    }
+    delay(30);
+  }
+  std::sort(found.begin(), found.end(), [](const Outage &a, const Outage &b) {
+    if (a.level != b.level) return a.level > b.level;
+    if (a.reports != b.reports) return a.reports > b.reports;
+    return a.since > b.since;
+  });
+  bool good = ok > 0;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    dsTls = tls;
+    if (list == outList) {
+      if (good) {
+        outItems = found;
+        outUnknownIds = unknown;
+        outOk = ok;
+        outFetchedMs = millis();
+        outErr = failed ? String(failed) + " didn't answer (" + lastWhy + ")" : String("");
+      } else {
+        outErr = ids.empty() ? String("no services in the list") : lastWhy.length() ? lastWhy : String("no answer");
+        if (!unknown.isEmpty() && lastWhy.isEmpty()) outUnknownIds = unknown;
+      }
+      outVer++;
+    }
+  }
+  Serial.printf("[outages] %d of %u answered, %u having problems%s%s\n", ok, (unsigned)ids.size(),
+                (unsigned)found.size(), unknown.length() ? ", unknown: " : "", unknown.c_str());
+  for (const auto &o : found) Serial.printf("[outages]   %s: %s\n", o.name, o.status);
+  otLastOk = good;
+}
+
 void mailWork() {
   String host, user, pass;
   uint16_t port;
@@ -3135,6 +3305,7 @@ void mailWork() {
 
 void fetchWork() {
   if (taskFlags & DO_MAIL) mailWork();
+  if (taskFlags & DO_OUTAGE) outageWork();
   if (taskFlags & DO_NEWS) newsWork();
   if (taskFlags & DO_FLIGHTS) flightsWork();
   if (taskFlags & DO_VOLCANO) volcanoWork();
@@ -3267,6 +3438,10 @@ void startFetch(uint16_t flags) {
     mlAttempted = true;
     mlLastAttempt = millis();
   }
+  if (flags & DO_OUTAGE) {
+    otAttempted = true;
+    otLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -3310,6 +3485,10 @@ void startFetch(uint16_t flags) {
     if (flags & DO_MAIL) {
       mlErr = "not enough memory";
       mlLastOk = false;
+    }
+    if (flags & DO_OUTAGE) {
+      outErr = "not enough memory";
+      otLastOk = false;
     }
   }
 }
@@ -3380,6 +3559,8 @@ void begin() {
   if (newsSrc < 0 || newsSrc >= NEWS_SOURCES) newsSrc = 0;
   newsDesk = prefs.getBool("nwDesk", true);
   {
+    outList = prefs.isKey("otList") ? prefs.getString("otList") : String(OUT_DEFAULT);
+    outDesk = prefs.getBool("otDesk", true);
     mlPrefs.begin("mail", false);  // read-write: creates the namespace on first boot
     mlHost = mlPrefs.isKey("host") ? mlPrefs.getString("host") : String();
     mlPort = mlPrefs.getUShort("port", 993);
@@ -3514,6 +3695,11 @@ void loop() {
   if (!flags && mailWanted && (millis() >= MAIL_BOOT_DELAY_MS || mlForce) &&
       (mlForce || !mlAttempted || millis() - mlLastAttempt >= (mlLastOk ? MAIL_REFRESH_MS : MAIL_RETRY_MS)))
     flags |= DO_MAIL;
+  // Outages: on their own, once nothing else is due
+  bool outWanted = outDesk || (outWantedMs && millis() - outWantedMs < QUAKE_WANTED_MS);
+  if (!flags && outWanted && (millis() >= OUT_BOOT_DELAY_MS || otForce) &&
+      (otForce || !otAttempted || millis() - otLastAttempt >= (otLastOk ? OUT_REFRESH_MS : OUT_RETRY_MS)))
+    flags |= DO_OUTAGE;
   // Breaking news: on its own, once nothing else is due (before the frequent flight polls)
   bool newsWanted = newsDesk || (newsWantedMs && millis() - newsWantedMs < QUAKE_WANTED_MS);
   if (!flags && newsWanted && (millis() >= NEWS_BOOT_DELAY_MS || nwForce) &&
@@ -3530,6 +3716,7 @@ void loop() {
     if (flags & DO_FLIGHTS) flForce = false;
     if (flags & DO_NEWS) nwForce = false;
     if (flags & DO_MAIL) mlForce = false;
+    if (flags & DO_OUTAGE) otForce = false;
     if (flags & DO_VOLCANO) vcForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
@@ -4481,6 +4668,78 @@ String newsStatus() {
   snprintf(b, sizeof(b), "%s, checked %lu min ago, every 10 min", NEWS_FEEDS[newsSrc].name,
            (unsigned long)((millis() - newsFetchedMs) / 60000));
   return b;
+}
+
+// ---------- Outages ----------
+
+String outageServices() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return outList;
+}
+
+void setOutageServices(const String &csv) {
+  auto ids = splitIds(csv);
+  String clean;
+  for (const auto &id : ids) clean += (clean.length() ? "," : "") + id;
+  std::lock_guard<std::mutex> lock(mtx);
+  outList = clean;
+  prefs.begin("wx", false);
+  prefs.putString("otList", outList);
+  prefs.end();
+  outItems.clear();
+  outUnknownIds = "";
+  outErr = "";
+  outFetchedMs = 0;
+  outVer++;
+  otForce = true;
+}
+
+void resetOutageServices() { setOutageServices(OUT_DEFAULT); }
+
+BigVec<Outage> outages() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return outItems;
+}
+String outageUnknown() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return outUnknownIds;
+}
+int outageChecked() { return outOk; }
+bool showOutageDesk() { return outDesk; }
+
+void setShowOutageDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  outDesk = on;
+  prefs.begin("wx", false);
+  prefs.putBool("otDesk", on);
+  prefs.end();
+  if (on && !outFetchedMs) otForce = true;
+  outVer++;
+}
+
+void refreshOutages() {
+  outWantedMs = millis();
+  otForce = true;
+}
+void outageKeepAlive() { outWantedMs = millis(); }
+uint32_t outageVersion() { return outVer; }
+
+String outageStatus() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (outList.isEmpty()) return "Add some services below.";
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (net::state() != net::State::Connected && !outFetchedMs) return "Waiting for Wi-Fi...";
+  if (!outFetchedMs) {
+    if (outErr.length()) return "Check failed: " + outErr;
+    return millis() < OUT_BOOT_DELAY_MS && !otForce ? "First check about a minute after startup..."
+                                                    : String("Checking services (takes a minute)...");
+  }
+  char b[96];
+  snprintf(b, sizeof(b), "%d services checked %lu min ago, every 5 min", outOk,
+           (unsigned long)((millis() - outFetchedMs) / 60000));
+  String s = b;
+  if (outErr.length()) s += "\nLast check: " + outErr;
+  return s;
 }
 
 // ---------- Email ----------

@@ -3,6 +3,24 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.11.0] - 2026-11-24
+
+### Added
+- **Outages** (menu, desktop widget): checks a list of popular services every 5 minutes
+  with DownStatus (isitdownstatus.com, free, no key) and lists the ones having problems,
+  worst first (major outage, then partial, then degraded). User-report counts are shown
+  and used for ranking when the API provides them.
+  - Default list: 35 services on the C5 (Discord, Reddit, YouTube, Netflix, Instagram,
+    Facebook, WhatsApp, X, TikTok, Snapchat, Spotify, Steam, PlayStation, Xbox, Roblox,
+    Fortnite, Gmail, Google, Outlook, Teams, Zoom, Slack, iCloud, Amazon, AWS, Cloudflare,
+    GitHub, ChatGPT, Verizon, AT&T, T-Mobile, Xfinity, Spectrum, Hulu, Disney+), 20 on the
+    classic CYD. Editable as a comma-separated list (up to 40 / 20), with a reset to the
+    default.
+  - Names DownStatus doesn't recognize are listed on the page so they can be corrected.
+  - Desktop widget: "N services having problems", then each one in turn; hidden while
+    everything checked is working.
+  - Downdetector itself has no free API (Enterprise plan only), so it isn't used.
+
 ## [1.10.0] - 2026-11-24
 
 ### Added

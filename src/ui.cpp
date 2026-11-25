@@ -33,7 +33,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail, Mail, MailField
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail, Mail, MailField, Outages, OutageList
 };
 
 const int HEADER_H = 40;
@@ -150,6 +150,14 @@ lv_obj_t *mlStatusLbl = nullptr, *mlSummary = nullptr, *mlBox = nullptr, *mlTa =
 int mlKey = -1;
 int mlField = 0;  // MailField: 0 server, 1 port, 2 email, 3 password
 Screen mailBack = Screen::Menu;
+// Outages: desktop bubble, page, service list entry
+lv_obj_t *deskOut = nullptr, *deskOutTop = nullptr, *deskOutLine = nullptr;
+int deskOutKey = -1;
+size_t deskOutIdx = 0;
+uint32_t deskOutRotMs = 0;
+lv_obj_t *otStatus = nullptr, *otBox = nullptr, *otUnknown = nullptr, *otTa = nullptr;
+int otKey = -1;
+Screen outBack = Screen::Menu;
 int nwKey = -1;
 BigVec<weather::NewsItem> nwRows;
 weather::NewsItem nwDetail;
@@ -329,6 +337,8 @@ void showNews();
 void showNewsDetail();
 void showMail();
 void showMailField(int field);
+void showOutages();
+void showOutageList();
 void showAirportCode();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
@@ -466,6 +476,10 @@ void resetPtrs() {
   deskBarMailKey = -1;
   mlStatusLbl = mlSummary = mlBox = mlTa = nullptr;
   mlKey = -1;
+  deskOut = deskOutTop = deskOutLine = nullptr;
+  deskOutKey = -1;
+  otStatus = otBox = otUnknown = otTa = nullptr;
+  otKey = -1;
   deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = deskNearCnt = nullptr;
   deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
   deskOursKey = -1;
@@ -785,7 +799,7 @@ void deskTick(lv_timer_t *) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskView || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc || !deskNear || !deskOurs || !deskNews || !deskMail)
+      !deskVolc || !deskNear || !deskOurs || !deskNews || !deskMail || !deskOut)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
@@ -793,7 +807,8 @@ void layoutDesktop() {
               lv_obj_has_flag(deskStock, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskNfl, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskNews, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskMail, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskNews, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskMail, LV_OBJ_FLAG_HIDDEN) &&
+              lv_obj_has_flag(deskOut, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   if (deskTicker) rowH = deskTickH;  // the scrolling window fills the space
   int key = barH * 1000 + rowH + (deskTicker ? 500000 : 0);
@@ -1233,6 +1248,36 @@ void refreshDesktop() {
         lv_obj_set_style_text_color(deskMailTop, col, 0);
         lv_obj_set_style_img_recolor(deskMailImg, col, 0);
         setText(deskMailSubj, line.c_str());
+      }
+    }
+  }
+
+  // Outages bubble: "N services having problems", then each in turn, worst
+  // first. Hidden while everything checked is working.
+  if (deskOut) {
+    auto outs = weather::outages();
+    bool on = weather::showOutageDesk() && !outs.empty();
+    wantWidget(deskOut, on);
+    if (on) {
+      size_t n = outs.size();
+      if (n > 1 && millis() - deskOutRotMs >= NEWS_ROTATE_MS) {
+        deskOutRotMs = millis();
+        deskOutIdx++;
+      }
+      if (deskOutIdx >= n) deskOutIdx = 0;
+      int k = (int)(weather::outageVersion() * 256 + deskOutIdx);
+      if (k != deskOutKey) {
+        deskOutKey = k;
+        char top[48];
+        snprintf(top, sizeof(top), LV_SYMBOL_WARNING " %u service%s having problems", (unsigned)n, n == 1 ? "" : "s");
+        setText(deskOutTop, top);
+        lv_obj_set_style_text_color(
+            deskOutTop, lv_palette_main(outs[0].level >= 3 ? LV_PALETTE_RED : LV_PALETTE_ORANGE), 0);
+        const auto &o = outs[deskOutIdx];
+        String line = String(o.name) + ": " + o.status;
+        if (o.reports > 0) line += " (" + String(o.reports) + " reports)";
+        if (n > 1) line = "(" + String(deskOutIdx + 1) + "/" + String(n) + ") " + line;
+        setText(deskOutLine, line.c_str());
       }
     }
   }
@@ -1928,6 +1973,34 @@ void showDesktop() {
   lv_obj_set_style_max_height(deskNewsHead, 3 * lv_font_get_line_height(&lv_font_montserrat_20), 0);  // ...at most 3
   lv_label_set_text(deskNewsHead, "");
 
+  // Outages bubble: warning + count, then service: status (scrolls)
+  deskOut = widget([](lv_event_t *) {
+    outBack = Screen::Desktop;
+    showOutages();
+  });
+  lv_obj_set_flex_flow(deskOut, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskOut, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(deskOut, 2, 0);
+  lv_obj_t *otline = lv_obj_create(deskOut);
+  lv_obj_remove_style_all(otline);
+  lv_obj_set_size(otline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(otline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(otline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(otline, 6, 0);
+  lv_obj_clear_flag(otline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(otline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskOutTop = lv_label_create(otline);
+  lv_label_set_long_mode(deskOutTop, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_max_width(deskOutTop, W() - 60, 0);
+  lv_label_set_text(deskOutTop, "");
+  chevron(otline);
+  deskOutLine = lv_label_create(deskOut);
+  lv_obj_set_style_text_font(deskOutLine, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(deskOutLine, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_anim_speed(deskOutLine, 25, 0);
+  lv_obj_set_width(deskOutLine, W() - 44);
+  lv_label_set_text(deskOutLine, "");
+
   // Email bubble: envelope + "N unread today", then sender: subject (scrolls)
   deskMail = widget([](lv_event_t *) {
     mailBack = Screen::Desktop;
@@ -2045,6 +2118,15 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         newsBack = Screen::Menu;
         showNews();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_WARNING, "Outages");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        outBack = Screen::Menu;
+        showOutages();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -5591,6 +5673,153 @@ void showMailField(int f) {
   load(scr, Screen::MailField);
 }
 
+// ---------- Outages ----------
+
+void refreshOutageScreen() {
+  if (!otStatus) return;
+  weather::outageKeepAlive();
+  setText(otStatus, weather::outageStatus().c_str());
+  int key = (int)(weather::outageVersion() * 4096 + (millis() / 60000) % 4096);
+  if (key == otKey) return;
+  otKey = key;
+  auto outs = weather::outages();
+  lv_obj_clean(otBox);
+  if (outs.empty()) {
+    lv_obj_t *l = lv_label_create(otBox);
+    lv_label_set_text(l, weather::outageChecked() ? "Everything checked is working" : "No results yet");
+  }
+  for (size_t i = 0; i < outs.size(); i++) {
+    const auto &o = outs[i];
+    lv_color_t c = lv_palette_main(o.level >= 3 ? LV_PALETTE_RED : LV_PALETTE_ORANGE);
+    String l2 = o.status;
+    if (o.reports > 0) l2 += "  -  " + String(o.reports) + " reports";
+    String age = o.since ? agoText(o.since) : String("");
+    if (age.length()) l2 += "  -  updated " + age;
+    twoLineRow(otBox, o.name, c, l2, mailNoop, i);
+  }
+  String unk = weather::outageUnknown();
+  setText(otUnknown, unk.length() ? ("Not found on DownStatus (check the spelling): " + unk).c_str() : "");
+  setHidden(otUnknown, unk.isEmpty());
+}
+
+void showOutages() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Outages", [](lv_event_t *) {
+    if (outBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  otStatus = lv_label_create(list);
+  lv_label_set_long_mode(otStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(otStatus, LV_PCT(100));
+  lv_obj_set_style_pad_all(otStatus, 8, 0);
+  lv_obj_set_style_text_opa(otStatus, LV_OPA_70, 0);
+  lv_label_set_text(otStatus, "");
+
+  lv_list_add_text(list, "Settings");
+  lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Show on desktop");
+  lv_obj_t *sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showOutageDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showOutageDesk();
+        weather::setShowOutageDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Services to check");
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showOutageList(); }, LV_EVENT_CLICKED, nullptr);
+  b = lv_list_add_btn(list, LV_SYMBOL_LOOP, "Reset to the default list");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        confirmBox("Default list?", "Replace your list with the built-in list of popular services?", "Reset",
+                   [](lv_event_t *) {
+                     weather::resetOutageServices();
+                     showOutages();
+                   });
+      },
+      LV_EVENT_CLICKED, nullptr);
+  b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Check now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to check services.");
+          return;
+        }
+        weather::refreshOutages();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  lv_list_add_text(list, "Having problems now (worst first)");
+  otBox = lv_obj_create(list);
+  lv_obj_remove_style_all(otBox);
+  lv_obj_set_size(otBox, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(otBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(otBox, 8, 0);
+  lv_obj_set_style_pad_row(otBox, 4, 0);
+  lv_obj_clear_flag(otBox, LV_OBJ_FLAG_SCROLLABLE);
+  otUnknown = lv_label_create(list);
+  lv_label_set_long_mode(otUnknown, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(otUnknown, LV_PCT(100));
+  lv_obj_set_style_pad_all(otUnknown, 8, 0);
+  lv_obj_set_style_text_color(otUnknown, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  lv_label_set_text(otUnknown, "");
+  lv_obj_add_flag(otUnknown, LV_OBJ_FLAG_HIDDEN);
+  lv_list_add_text(list, "Data: DownStatus (isitdownstatus.com)");
+
+  load(scr, Screen::Outages);
+  weather::outageKeepAlive();
+  if (!weather::outageChecked()) weather::refreshOutages();
+  otKey = -1;
+  refreshOutageScreen();
+}
+
+void showOutageList() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Services to check", [](lv_event_t *) { showOutages(); });
+  otTa = lv_textarea_create(scr);
+  lv_textarea_set_max_length(otTa, 600);
+  lv_textarea_set_accepted_chars(otTa, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_., ");
+  lv_textarea_set_placeholder_text(otTa, "discord, netflix, github ...");
+  lv_textarea_set_text(otTa, weather::outageServices().c_str());
+  lv_obj_set_width(otTa, W() - 8);
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
+  int taH = H() - HEADER_H - kbH - 8;
+  if (taH < 44) taH = 44;
+  lv_obj_set_height(otTa, taH);
+  lv_obj_align(otTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
+  lv_obj_add_state(otTa, LV_STATE_FOCUSED);
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+  lv_obj_set_size(kb, W(), kbH);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(kb, otTa);
+  lv_obj_add_event_cb(
+      kb,
+      [](lv_event_t *e) {
+        lv_event_code_t c = lv_event_get_code(e);
+        if (c == LV_EVENT_CANCEL) {
+          showOutages();
+          return;
+        }
+        if (c != LV_EVENT_READY) return;
+        weather::setOutageServices(lv_textarea_get_text(otTa));
+        showOutages();
+      },
+      LV_EVENT_ALL, nullptr);
+  load(scr, Screen::OutageList);
+}
+
 // ---------- Date & time ----------
 
 void refreshDateTime() {
@@ -6208,6 +6437,7 @@ void poll(lv_timer_t *) {
     case Screen::Flights: refreshFlightsScreen(); break;
     case Screen::News: refreshNewsScreen(); break;
     case Screen::Mail: refreshMailScreen(); break;
+    case Screen::Outages: refreshOutageScreen(); break;
     default: break;
   }
 }

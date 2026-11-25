@@ -315,6 +315,31 @@ void newsKeepAlive();                    // the news page is open: keep polling 
 uint32_t newsVersion();
 String newsStatus();
 
+// ---- Outages (DownStatus, isitdownstatus.com) ----
+// Checks a list of popular services every 5 minutes and lists the ones that
+// aren't operational, worst first. Service names are DownStatus's ids
+// ("discord", "github"...), editable on the Outages page.
+struct Outage {
+  char id[24] = "";        // DownStatus service id
+  char name[28] = "";      // display name
+  char status[24] = "";    // as reported ("major_outage"...), underscores shown as spaces
+  uint8_t level = 1;       // 1 minor/degraded, 2 partial outage, 3 major outage / down
+  uint32_t since = 0;      // updated_at, epoch UTC (0 = unknown)
+  int reports = -1;        // user reports, when the API gives them (-1 = not given)
+};
+String outageServices();                  // comma-separated ids
+void setOutageServices(const String &csv);
+void resetOutageServices();
+BigVec<Outage> outages();                 // problems now, worst first
+String outageUnknown();                   // ids DownStatus doesn't know ("" if none)
+int outageChecked();                      // services answered in the last check
+bool showOutageDesk();
+void setShowOutageDesk(bool on);
+void refreshOutages();
+void outageKeepAlive();
+uint32_t outageVersion();
+String outageStatus();
+
 // ---- Email (IMAP over TLS) ----
 // Signs in to your IMAP server every 5 minutes, read-only (EXAMINE), and
 // counts unread mail received today plus the total unread in the inbox, with

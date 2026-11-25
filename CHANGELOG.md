@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.11.1] - 2026-11-24
+
+### Fixed
+- Outages: "Check failed: HTTP 429". DownStatus rate-limits bursts, and 1.11.0 asked about
+  every service back to back. Now the board asks about one service at a time, spread over
+  5 minutes (35 services means one every ~8.5 s, never faster than one every 8 s).
+  Results fill in as they arrive.
+  - On HTTP 429 it pauses 3 minutes, then goes at half the pace (one every 60 s at the
+    slowest), easing back to normal while answers keep coming.
+  - The page shows progress ("First pass: 12 of 35 checked"), the current pace, and any
+    rate-limit pause.
+- Downloads no longer retry over HTTPS after an HTTP 429, which doubled the requests.
+
 ## [1.11.0] - 2026-11-24
 
 ### Added

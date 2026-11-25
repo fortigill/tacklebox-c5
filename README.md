@@ -2,175 +2,210 @@
 
 *Lots of handy tools in one small box.*
 
-A stylus-driven LVGL 8.3 touch UI for the ESP32-2432S028R "Cheap Yellow Display" (2.8"). It packs
-weather with NWS alerts, NOAA buoy data, stocks, NFL scores, a drone Remote ID watcher, Bluetooth
-and Wi-Fi tools, and over-the-air updates into one small box. Current version: see `src/version.h`
-and [CHANGELOG.md](CHANGELOG.md).
+A touch-screen dashboard and pocket toolkit for the **RockBase NM-CYD-C5** (ESP32-C5, 2.8"
+240×320 touch display). It puts weather and NWS alerts, buoy wave heights, stocks, NFL scores,
+earthquakes, volcanoes, aircraft near your airport, breaking news, unread email, service outages,
+a drone Remote ID watcher, Bluetooth and Wi-Fi tools on one small screen. Everything updates on
+its own over Wi-Fi, and you can pick which widgets show on the desktop.
 
-## Supported boards
+**Current release: v1.13.0.** See [CHANGELOG.md](CHANGELOG.md) for every change.
 
-| Board | Build | Notes |
+- **Flash it:** [FLASHING.md](FLASHING.md) has step-by-step instructions for Windows, macOS and
+  Linux, including a browser flasher that needs nothing installed.
+- **Print a case:** a snap-together case with a built-in stylus holder is included. See
+  [3D-printed case](#3d-printed-case).
+
+---
+
+## Features
+
+### Desktop
+
+- **Status bar:** clock, Wi-Fi icon (a small green **5G** badge when connected on 5 GHz), weather
+  icon and temperature, plus optional live items: buoy wave height, stock ticker, NFL score,
+  aircraft near your airport (plane with a count badge) and unread email (envelope with a count
+  badge).
+- **Widgets:** tappable bubbles for each feature, each with its own on/off switch. When more are
+  on than fit the screen, they scroll by, either continuously or pausing on each widget
+  (adjustable in 0.5 s steps; 2.5 s by default). Long lines inside a widget scroll sideways so
+  nothing gets cut off.
+- **Themes:** Dark, Light, Miami Vice and Cyber Hacker. Landscape or portrait, adjustable
+  brightness.
+- **Screen off/on:** press the lower button on the back (BOOT) to turn the screen off or back on.
+  Everything keeps running in the dark. While it's off, a tap also wakes it, and that tap doesn't
+  press anything.
+- **Status LED:** the LED on the back shows boot and alert status. You can switch it off under
+  **Display & touch > Screen & LED**.
+
+### Information
+
+| Feature | What it shows | Source |
 |---|---|---|
-| Classic CYD, ESP32-2432S028R | `pio run -e cyd -t upload` (USB), `-e cyd-ota` (Wi-Fi, `tacklebox.local`) | ESP32, ILI9341, 4 MB flash |
-| RockBase NM-CYD-C5 | `pio run -e cyd-c5 -t upload` (USB), `-e cyd-c5-ota` (Wi-Fi, `tacklebox-c5.local`) | ESP32-C5 (single core, dual-band Wi-Fi 6), ST7789, 16 MB flash + 8 MB PSRAM |
+| **Weather** | Forecast icon and temperature for your ZIP code, refreshed every 15 min | Open-Meteo (no key) |
+| **NWS alerts** | Active National Weather Service alerts, with a pop-up for new ones | api.weather.gov |
+| **Buoy data** | Wave height, period and direction, wind, water temperature. Gulf, Panhandle and Atlantic buoys that report waves are built in, and you can add your own | NOAA NDBC |
+| **Stocks** | Up to 8 tickers (stocks, ETFs, indexes, futures), rotating in the status bar | Yahoo Finance (unofficial) |
+| **NFL scores** | Your team's game live, plus the whole week | ESPN (unofficial) |
+| **Earthquakes** | Every quake in the past 24 hours, with counts for today and yesterday | USGS |
+| **Volcanoes** | Elevated volcano alerts and new eruptions | USGS, Smithsonian GVP |
+| **Aircraft near airport** | Airliners within 10 NM of any airport code you choose. Shows the airline and flight number, altitude, speed and climbing or descending, and where each flight is coming from and going to. Flights to or from your airport get their own widget | adsb.fi, adsbdb |
+| **Breaking news** | Top headlines with summaries. Choose AP News, Fox News or CNN | Public RSS feeds |
+| **Email** | Unread messages that arrived today on your own IMAP server (IMAP over TLS), with sender and subject | Your mail server |
+| **Outages** | Incidents happening now at about 180 online services (Discord, Reddit, Zoom, Slack, OpenAI, GitHub, AWS, Cloudflare...), worst first, filterable by severity and provider | OutageDeck (official status pages) |
 
-Both boards share one codebase. The hardware differences (pins, display/touch driver, status LED)
-live in `src/board.h`, `src/display.cpp` (classic: TFT_eSPI) and `src/display_c5.cpp` (C5:
-ESP-IDF esp_lcd with the XPT2046 on the same SPI bus). On first boot the C5 asks for a touch
-calibration, like a new classic board. If the colors look wrong, use **Display & touch > Invert
-colors** or **Swap red/blue**.
+### Tools
 
-On the C5, Wi-Fi uses both bands. It joins a network's 5 GHz access point when the signal is
-good, drops to 2.4 GHz when 5 GHz gets weak or disappears, and moves back when 5 GHz recovers.
-The Wi-Fi analyzer has a 2.4G / 5G switch to view each band separately.
+- **Drone Remote ID:** detects drones broadcasting Remote ID over Wi-Fi beacons, Wi-Fi NaN and
+  Bluetooth (DJI's built-in Remote ID included). Shows ID, position, altitude, speed, operator
+  location and distance, with a signal "hunt" mode. **Watch** mode keeps a log and pops up an
+  alert when a drone comes near.
+- **Tracker detector:** watches for AirTag/Find My, Tile, SmartTag and Google Find My trackers and
+  warns you if one stays with you for 10+ minutes.
+- **Bluetooth scanner:** nearby BLE devices, with an ignore list and a hunt mode.
+- **Wi-Fi analyzer:** networks per channel with a best-channel hint, viewing 2.4 GHz and 5 GHz
+  separately.
+- **Dual-band Wi-Fi:** joins 5 GHz when the signal is good and falls back to 2.4 GHz when it
+  weakens.
+- **Over-the-air updates:** new firmware can be pushed over Wi-Fi, but only after you tap
+  **Accept** on the device.
 
-- **Desktop**: status bar with firmware version and a Wi-Fi icon (blue = connected, amber =
-  connecting, dim grey = offline). Tap the icon for Wi-Fi settings, or tap **Menu**.
-- **Menu**: Network settings, Drone Remote ID, Bluetooth scanner, Tracker detector, Wi-Fi analyzer,
-  Weather, Stocks, NFL scores, Date & time, Display & touch, About this device.
-- **Drone Remote ID**: listens for standard Remote ID (including DJI's built-in Remote ID) on Wi-Fi
-  beacons, Wi-Fi NaN and Bluetooth 4.
-  - **Scan** runs nonstop until you tap **Stop**, with live ID, position, altitude, speed, operator
-    location/distance and a signal hunt. Wi-Fi is paused while it runs.
-  - **Watch** scans 5 s every 30 s (longer while a drone is in range), with Wi-Fi back in between, and keeps a **log** of every drone
-    seen (saved until you delete it). While it runs, a drone icon sits in the status bar and flashes
-    blue/red when a drone is near. Each drone triggers a pop-up with **Close** or **View**.
-- **Tracker detector**: **Watch** scans every 30 s for AirTag/Find My, Tile, SmartTag and Google
-  Find My trackers. One that stays with you for 10+ min turns red and triggers a warning. Tap it to
-  hunt it.
-- **Wi-Fi analyzer**: networks-per-channel graph, best-channel hint, and every AP with its channel
-  and RSSI. Tap one to hunt it.
-- **Weather**: set a ZIP code under **Menu > Weather**. The status bar then shows today's forecast
-  icon and the current temperature (F or C). Data comes from Open-Meteo (no API key) and refreshes
-  every 15 min. Regenerate the icons with `python3 tools/gen_wx_icons.py`.
-- **NWS alerts**: active National Weather Service alerts for the weather ZIP, checked every 5 min.
-  New alerts pop up and make the desktop weather icon flash until snoozed. **Weather > Active
-  alerts** lists them with full details until they expire.
-- **Buoy data**: the wave height from one NOAA NDBC buoy (feet and inches, or meters in Celsius
-  mode), shown with a wave icon in the status bar (left of the weather) and as a larger tappable bubble on the
-  desktop. Each has its own switch on the buoy page, so you can have both, either or neither. With
-  both off the buoy isn't polled. The default buoy is 41009, 20 NM east of Cape Canaveral. Tap
-  either reading, or **Weather > Buoy data**, for the full observation: wave direction and periods,
-  wind and gusts in knots, water and air temperature, pressure and observation time. **Choose buoy**
-  lists 41112, 41117, 41070, 41009, 41012, 41113, 41114, 41122 and 42095. A station typed in under
-  **Other station ID** is saved as a favorite at the top of the list (hold a favorite to remove it). Data refreshes every 30 min.
-- **Alert count**: a desktop readout next to the wave height shows how many NWS alerts are
-  active (red while any are unsnoozed). Tap it for the alert list. Switch it off under **Weather >
-  Alert count on desktop**.
-- **Stocks**: track up to 8 tickers (any NYSE/NASDAQ stock, ETF, index or future Yahoo Finance
-  knows, e.g. AAPL, BRK-B, ^GSPC, GC=F for gold). The status bar and a desktop bubble show the price
-  and the day's change (green up, red down), rotating through your tickers every 5 s. Each has its
-  own switch under **Menu > Stocks**. That page lists every ticker with its price and change. Tap
-  one for details (change in $ and %, previous close, day range, exchange, last trade) or to
-  remove it, and use **Add ticker** for more. Quotes refresh every 5 min while the US market is open
-  and every 30 min otherwise, all over one HTTPS connection. Like the weather and buoy, updates
-  pause while Drone Scan, Drone Watch or a Bluetooth tool is in use. Data comes from Yahoo Finance's
-  free chart endpoint (unofficial, may be delayed).
-- **NFL scores**: pick your team under **Menu > NFL scores**. Its game this week shows in the
-  status bar ("SEA 21-17 SF", accent color while live) and in a desktop bubble with the game clock
-  or kickoff time, each with its own switch. The NFL page adds down and distance and who has the
-  ball, plus every game of the week. Scores refresh every minute while your team plays, every
-  2 min in the half hour before kickoff, and every 30 min otherwise. Like the other downloads,
-  updates pause while Drone Scan, Drone Watch or a Bluetooth tool is in use. Data comes from ESPN's
-  public scoreboard (unofficial). It's fetched over plain HTTP when possible and parsed as it
-  streams in, keeping only teams, scores and the clock.
-- **Desktop space**: with many widgets on, the Menu button shrinks, then the Wi-Fi line at the
-  bottom hides, and finally the Menu button gives way to a small menu icon at the left of the
-  status bar.
-- **Clock**: synced from `pool.ntp.org` in the background once Wi-Fi is up. It shows in the status
-  bar, 12-hour by default. **Date & time** sets the time zone and 12/24-hour format, or forces a sync.
-- **Wi-Fi**: async scan, networks sorted by signal, on-screen keyboard for the password, DHCP connect,
-  credentials saved in NVS with auto-reconnect on boot, **Forget** to clear them. Note: the password
-  is stored unencrypted in flash.
-- **Bluetooth scanner**: tap **Start** for an 8-second scan of nearby BLE devices. Tap a device for
-  details, **Ignore** it (hidden from future scans, saved), or **Hunt** it. Hunt shows a live signal
-  readout, a closer/farther arrow and a history graph to help you find it. Phones that use rotating
-  random addresses can't be ignored permanently, and a hunt loses them when the address changes.
-- **Display & touch**: theme (Dark, Light, Miami Vice, Cyber Hacker), brightness, landscape/portrait (plus flipped variants), red/blue swap for panels that show
-  blue as orange, and touch calibration.
+---
 
-## Board
+## Getting started
 
-Confirmed: ESP32-D0WD-V3 rev 3.1, 4 MB flash (Boya), CH340 USB-serial on `/dev/cu.usbserial-3110`.
+1. **Flash the firmware.** Follow [FLASHING.md](FLASHING.md). The quickest way is the browser
+   flasher with the `.bin` file from the
+   [Releases page](https://github.com/fortigill/tacklebox-c5/releases).
+2. **Calibrate the touch screen.** On first boot, tap the center of each of the 4 crosses with the
+   stylus. You can redo this later under **Menu > Display & touch > Calibrate touch screen**.
+3. **Join Wi-Fi.** Tap the Wi-Fi icon in the status bar (or **Menu > Network settings**), pick
+   your network and type the password.
+4. **Set things up.** Open **Menu** and visit the features you want:
+   - **Weather:** your ZIP code.
+   - **Date & time:** your time zone.
+   - **Aircraft near airport:** your airport code.
+   - **Email:** your IMAP server, email address and password.
+   - Each feature page has its own **Show on desktop** and status-bar switches.
+
+> **Touch way off?** If you can't reach the menu, hold the stylus on the screen while pressing the
+> reset button (the upper button on the back). Calibration then starts again.
+
+---
+
+## 3D-printed case
+
+The repository includes **STL files for a case that fits the RockBase NM-CYD-C5**, in the
+[`case/`](case/) folder.
+
+- **Snap-together fit:** no screws or glue. The halves click together around the board.
+- **Built-in stylus holder:** the stylus clips into the case, so it doesn't get lost.
+
+**Printing:** _add your recommended material, layer height, infill and support settings here._
+
+---
+
+## Privacy and security notes
+
+- **Saved passwords:** your Wi-Fi password and email password are stored in the board's flash
+  memory, so anyone with physical access to the board could read them. For email, use an app
+  password if your server supports them.
+- **Email is read-only:** the board opens your inbox in read-only mode. It never marks messages
+  read, moves or deletes them, and never sends anything. On the first connection it remembers
+  your mail server's certificate, and if that ever changes it won't send your password until you
+  confirm on screen.
+- **Over-the-air updates:** these need the OTA password set in `platformio.ini` *and* a tap on
+  **Accept** on the device. Release binaries use the default password `cyd_ota_change_me`. If
+  you build from source, change it (see below).
+
+---
+
+## Building from source
+
+The firmware is built with [PlatformIO](https://platformio.org/), as the VS Code extension or the
+`pio` command line.
+
+The ESP32-C5 needs **Arduino-ESP32 3.3.x**, which PlatformIO gets through the
+[pioarduino](https://github.com/pioarduino/platform-espressif32) platform. If a build fails
+because the board `esp32-c5-devkitc-1` is unknown, set the platform in the `[env:cyd-c5]`
+section of `platformio.ini`:
+
+```ini
+platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip
+```
+
+```bash
+git clone https://github.com/fortigill/tacklebox-c5.git
+cd tacklebox-c5
+
+# First time: flash over USB
+pio run -e cyd-c5 -t upload
+pio device monitor              # serial log at 115200
+
+# After that: update over Wi-Fi (approve the pop-up on the device)
+pio run -e cyd-c5-ota -t upload
+```
+
+**OTA password:** change `password` in the `[ota]` section of `platformio.ini` (letters, digits
+and `_` only), then flash once over USB so the board learns the new one. OTA uploads go to
+`tacklebox-c5.local`. If your network doesn't resolve `.local` names, set `hostname_c5` to the
+board's IP address, which is shown on **Menu > About this device**.
+
+### Also runs on the classic CYD
+
+The same code builds for the original "Cheap Yellow Display" (ESP32-2432S028R, ESP32-WROOM-32,
+ILI9341) with `pio run -e cyd -t upload`. That board has 2.4 GHz Wi-Fi only and less memory, so
+some lists are shorter. The bundled case is for the NM-CYD-C5 only.
+
+---
+
+## Hardware
+
+**RockBase NM-CYD-C5:** ESP32-C5 (single-core RISC-V, dual-band Wi-Fi 6, Bluetooth LE), 16 MB
+flash, 8 MB PSRAM, ST7789 2.8" 240×320 display, XPT2046 resistive touch.
 
 | Function | Pins |
 |---|---|
-| TFT ILI9341 (HSPI) | MOSI 13, MISO 12, SCLK 14, CS 15, DC 2, BL 21 |
-| Touch XPT2046 (VSPI) | CLK 25, MOSI 32, MISO 39, CS 33, IRQ 36 |
-| SD card | CS 5, MOSI 23, MISO 19, SCK 18 |
-| RGB LED (active low) | R 4, G 16, B 17 |
-| LDR / Speaker | 34 / 26 |
+| Display ST7789 (SPI) | SCK 6, MOSI 7, MISO 2, CS 23, DC 24, backlight 25 |
+| Touch XPT2046 (same SPI bus) | CS 1 |
+| SD card (unused, held deselected) | CS 10 |
+| Status LED (WS2812) | 27 |
+| BOOT button (screen on/off) | 28 |
 
-## Build and flash
+The flash layout (`partitions_c5_16mb.csv`) has two 6 MB app slots for over-the-air updates,
+1 MB of SPIFFS and a core-dump area.
 
-PlatformIO must run on Python 3.10–3.14. Install it with `pipx install --python python3.13 platformio`.
+---
 
-```bash
-# USB
-pio run -t upload --upload-port /dev/cu.usbserial-3110
-pio device monitor -p /dev/cu.usbserial-3110
-
-# Over Wi-Fi (OTA): the device must be on the network
-pio run -e cyd-ota -t upload
-```
-
-OTA uploads go to `tacklebox.local` with the password in the `[ota]` section of `platformio.ini`. Change
-the password, then flash once over USB so the device knows it. If mDNS doesn't resolve, set
-`hostname` in `[ota]` to the device's IP (it's shown on the About screen). A change to the partition
-table (as in 0.1.0) always needs a USB flash.
-
-Every OTA push has to be approved on the device. A "Firmware update" pop-up offers **Accept**
-or **Decline**, with a 30-second countdown. If nobody taps Accept, the update is blocked, the
-upload fails on the computer, and the current firmware keeps running. USB flashing isn't affected.
-Stock espota.py gives up after 10 s, so `pio run -e cyd-ota` uses a copy with a 45 s wait.
-`tools/espota_patch.py` generates it in `.pio/` at build time.
-
-## Touch calibration
-
-- Runs automatically the first time the firmware boots.
-- Rerun it from **Menu > Display & touch > Calibrate touch screen**.
-- If touch is so far off you can't reach the menu, **hold the stylus on the screen and press reset**.
-- Tap the center of each of the 4 crosses. If the taps don't line up within 20 px, it asks you to
-  try again.
-- The result is saved in panel-native coordinates, so it stays valid when you rotate the screen.
-
-## Versioning
-
-The project is a git repository.
-
-1. Bump `FW_VERSION` in `src/version.h`.
-2. Add a `CHANGELOG.md` entry.
-3. Commit, then tag the release: `git tag -a v0.0.2 -m "v0.0.2"`.
-
-`git log --oneline --decorate` shows the history.
-
-## Troubleshooting
-
-- **Upload fails after "Changing baud rate"**: lower `upload_speed` in `platformio.ini` to 115200.
-- **Colors look inverted** (dark looks light, blue looks orange): toggle **Display & touch > Invert
-  colors**. It is on by default because this board's panel needs it.
-- **Red and blue swapped** (but light/dark correct): toggle **Swap red/blue**.
-- **Colors still wrong**: some CYDs, including the two-USB-port version, use an ST7789 panel and need
-  a different driver flag.
-
-## Layout
+## Project layout
 
 ```
-platformio.ini      board, libraries, TFT_eSPI pin config
-include/lv_conf.h   LVGL config
-src/version.h       firmware version
-src/main.cpp        setup/loop
-src/display.cpp     TFT + touch drivers, rotation, calibration
-src/theme.cpp       color themes (child theme over LVGL default)
-src/drone.cpp       drone Remote ID: Wi-Fi sniffer, ODID decoder
-src/ble.cpp         BLE scanner, trackers, hunt, Remote ID adverts (NimBLE)
-src/hunt.h          shared RSSI averaging for hunt modes
-src/ota.cpp         over-the-air updates (ArduinoOTA)
-src/sysmon.cpp      CPU load per core (idle hooks)
-src/led.cpp         rear RGB LED (boot status: red, blinking red, green)
-src/weather.cpp     weather fetch (Open-Meteo), ZIP lookup, icon mapping
-src/wx_icons.c      generated weather icons (tools/gen_wx_icons.py)
-src/timesvc.cpp     NTP sync, time zone, 12/24 h formatting
-src/net.cpp         Wi-Fi scan/connect/save (non-blocking state machine)
-src/ui.cpp          screens
+platformio.ini          build environments (cyd, cyd-ota, cyd-c5, cyd-c5-ota)
+partitions_c5_16mb.csv  C5 flash layout
+case/                   STL files for the NM-CYD-C5 case
+include/                LVGL config (PSRAM allocator on the C5)
+src/board.h             per-board pins and features
+src/main.cpp            setup/loop, back button
+src/display_c5.cpp      C5 display + touch (ESP-IDF esp_lcd), brightness, screen on/off
+src/display.cpp         classic CYD display + touch (TFT_eSPI)
+src/ui.cpp              all screens and desktop widgets (LVGL 8.3)
+src/weather.cpp         background downloads: weather, alerts, buoys, stocks, NFL,
+                        quakes, volcanoes, flights, news, email (IMAP), outages
+src/net.cpp             Wi-Fi scan/connect, dual-band steering
+src/drone.cpp           drone Remote ID (Wi-Fi sniffer, ODID decoder)
+src/ble.cpp             BLE scanner, tracker detector, hunt modes
+src/ota.cpp             over-the-air updates with on-device approval
+src/led.cpp             status LED
+tools/                  icon generators, build-size check, OTA helper
 ```
+
+---
+
+## Credits
+
+Built with [LVGL](https://lvgl.io/), [ArduinoJson](https://arduinojson.org/),
+[NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino) and Espressif's
+[Arduino-ESP32](https://github.com/espressif/arduino-esp32). Data comes from Open-Meteo, the
+National Weather Service, NOAA NDBC, USGS, the Smithsonian Global Volcanism Program, adsb.fi,
+adsbdb, AviationWeather.gov, Yahoo Finance, ESPN, AP News (via Flipboard), Fox News, CNN (via
+Google News) and OutageDeck. The
+unofficial sources can change or stop working without notice.

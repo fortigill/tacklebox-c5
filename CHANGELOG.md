@@ -3,6 +3,14 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.8.3] - 2026-11-24
+
+### Changed
+- Flights-to/from widget: lines that are too long for the bubble scroll back and forth
+  slowly (25 px/s) instead of ending in "...", the same as the near-the-airport widget. This
+  covers the title line ("To DAB: DL 3154"), the route / airline line and the numbers line.
+  Short lines stay put.
+
 ## [1.8.2] - 2026-11-24
 
 ### Added

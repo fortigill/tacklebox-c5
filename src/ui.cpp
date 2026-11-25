@@ -1709,13 +1709,18 @@ void showDesktop() {
   lv_obj_clear_flag(deskOursImg, LV_OBJ_FLAG_CLICKABLE);
   deskOursTop = lv_label_create(oline);
   lv_obj_set_style_text_color(deskOursTop, theme::accent(), 0);
+  lv_label_set_long_mode(deskOursTop, LV_LABEL_LONG_SCROLL);
+  lv_obj_set_style_anim_speed(deskOursTop, 25, 0);
+  lv_obj_set_style_max_width(deskOursTop, W() - 90, 0);  // room for the icon and ">"
   lv_label_set_text(deskOursTop, "");
   chevron(oline);
   auto oursLine = [&]() {
     lv_obj_t *l = lv_label_create(deskOurs);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_opa(l, LV_OPA_90, 0);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    // Too long for the bubble: scroll back and forth instead of cutting off
+    lv_label_set_long_mode(l, LV_LABEL_LONG_SCROLL);
+    lv_obj_set_style_anim_speed(l, 25, 0);  // px/s, slow enough to read
     lv_obj_set_style_max_width(l, W() - 40, 0);
     lv_obj_set_height(l, lv_font_get_line_height(&lv_font_montserrat_14));
     lv_label_set_text(l, "");

@@ -3,6 +3,19 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.8.2] - 2026-11-24
+
+### Added
+- **Scroll and pause** for desktop widgets that don't all fit. Each widget stops at the top
+  of the window for a moment, then the column scrolls on to the next one. The loop is still
+  seamless.
+- New settings under **Display & touch > Desktop widgets (when they don't all fit)**:
+  - "Scroll continuously" (the 1.8.1 behavior) or "Scroll and pause at each widget" (the
+    default).
+  - "Pause: 2.5 s" with - / + buttons in 0.5 s steps, from 0.5 to 10 s. The number updates in
+    place, and the page stays at these rows when you switch modes.
+  - Saved in flash (NVS namespace "ui").
+
 ## [1.8.1] - 2026-11-24
 
 ### Changed

@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_timer.h>
 #include <lvgl.h>
@@ -81,6 +82,12 @@ bool deskTicker = false;           // scrolling (widgets don't all fit)
 int deskTickH = 0;                 // height of the window while scrolling
 int deskTickOfs = 0;               // how far the column has scrolled up (px)
 const uint32_t DESK_TICK_MS = 50;  // 1 px per tick = 20 px/s
+// Scroll style (Display & touch > Desktop widgets), saved in NVS "ui"
+bool tickPause = true;             // stop with each widget at the top...
+uint8_t tickPauseTenths = 25;      // ...for this long (0.5 s steps, default 2.5 s)
+uint32_t deskTickHoldUntil = 0;    // paused until (millis)
+lv_obj_t *dispPauseLbl = nullptr;  // Display page: "Pause: 2.5 s" (updated in place)
+bool dispShowTicker = false;       // after rebuilding the Display page, scroll back to these rows
 int deskLayoutKey = -1;  // bar + widget-row heights the layout was last done for
 int deskWaveKey = -1;    // buoy data version the wave texts were built from
 lv_obj_t *aboutUptime = nullptr;  // live uptime line on the About screen
@@ -435,6 +442,7 @@ void resetPtrs() {
   nfVer = 0;
   deskBar = deskRow = deskMenu = nullptr;
   deskSlotN = 0;
+  dispPauseLbl = nullptr;
   deskView = nullptr;
   if (deskTickTimer) lv_timer_del(deskTickTimer);  // the desktop is going away
   deskTickTimer = nullptr;
@@ -703,6 +711,7 @@ void applyWidgets() {
   if (want != deskTicker) {
     deskTicker = want;
     deskTickOfs = 0;
+    deskTickHoldUntil = millis() + (tickPause ? tickPauseTenths * 100UL : 0);
     lv_obj_set_style_translate_y(deskRow, 0, 0);
     lv_obj_set_flex_flow(deskRow, (want || portrait) ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW_WRAP);
   }
@@ -713,6 +722,7 @@ void applyWidgets() {
 // of the window, move it to the end so the loop never runs dry
 void deskTick(lv_timer_t *) {
   if (!deskTicker || !deskRow || weather::tlsActive()) return;
+  if (tickPause && (int32_t)(millis() - deskTickHoldUntil) < 0) return;  // holding a widget at the top
   deskTickOfs++;
   lv_obj_t *first = nullptr;
   for (uint32_t i = 0; i < lv_obj_get_child_cnt(deskRow); i++) {
@@ -727,6 +737,8 @@ void deskTick(lv_timer_t *) {
     if (deskTickOfs >= step) {
       lv_obj_move_to_index(first, (int32_t)lv_obj_get_child_cnt(deskRow) - 1);
       deskTickOfs -= step;
+      // The next widget's top is now at the top of the window: hold it there
+      if (tickPause) deskTickHoldUntil = millis() + tickPauseTenths * 100UL;
     }
   }
   lv_obj_set_style_translate_y(deskRow, -deskTickOfs, 0);
@@ -1833,6 +1845,14 @@ void onRotationClicked(lv_event_t *e) {
   showDisplay();  // rebuild for the new dimensions
 }
 
+void saveTickPrefs() {
+  Preferences p;
+  p.begin("ui", false);
+  p.putBool("tkPause", tickPause);
+  p.putUChar("tkSec", tickPauseTenths);
+  p.end();
+}
+
 void showDisplay() {
   lv_obj_t *scr = newScreen();
   makeHeader(scr, "Display & touch", [](lv_event_t *) { showMenu(); });
@@ -1925,6 +1945,61 @@ void showDisplay() {
         showDisplay();
       },
       LV_EVENT_CLICKED, nullptr);
+
+  // How desktop widgets scroll when they don't all fit on the screen
+  lv_list_add_text(list, "Desktop widgets (when they don't all fit)");
+  lv_obj_t *mb1 = lv_list_add_btn(list, !tickPause ? LV_SYMBOL_OK : nullptr, "Scroll continuously");
+  lv_obj_add_event_cb(
+      mb1,
+      [](lv_event_t *) {
+        tickPause = false;
+        saveTickPrefs();
+        dispShowTicker = true;
+        showDisplay();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *mb2 = lv_list_add_btn(list, tickPause ? LV_SYMBOL_OK : nullptr, "Scroll and pause at each widget");
+  lv_obj_add_event_cb(
+      mb2,
+      [](lv_event_t *) {
+        tickPause = true;
+        saveTickPrefs();
+        dispShowTicker = true;
+        showDisplay();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  {
+    char pt[32];
+    snprintf(pt, sizeof(pt), "Pause: %u.%u s", tickPauseTenths / 10, tickPauseTenths % 10);
+    lv_obj_t *pr = lv_list_add_btn(list, LV_SYMBOL_PAUSE, pt);
+    dispPauseLbl = lv_obj_get_child(pr, 1);  // icon, then the text label
+    if (!tickPause) lv_obj_set_style_text_opa(pr, LV_OPA_50, 0);  // only used in pause mode
+    // - / + in 0.5 s steps, 0.5 to 10 s
+    auto stepBtn = [&](const char *txt, int delta) {
+      lv_obj_t *sb = flatBtn(pr, txt, 40, 32);
+      lv_obj_add_event_cb(
+          sb,
+          [](lv_event_t *e) {
+            int d = (int)(intptr_t)lv_event_get_user_data(e);
+            int v = (int)tickPauseTenths + d;
+            if (v < 5) v = 5;
+            if (v > 100) v = 100;
+            tickPauseTenths = (uint8_t)v;
+            saveTickPrefs();
+            char t[32];
+            snprintf(t, sizeof(t), "Pause: %u.%u s", tickPauseTenths / 10, tickPauseTenths % 10);
+            if (dispPauseLbl) lv_label_set_text(dispPauseLbl, t);
+          },
+          LV_EVENT_CLICKED, (void *)(intptr_t)delta);
+    };
+    stepBtn(LV_SYMBOL_MINUS, -5);
+    stepBtn(LV_SYMBOL_PLUS, 5);
+    if (dispShowTicker) {  // came back from a mode change: stay at these rows
+      dispShowTicker = false;
+      lv_obj_update_layout(list);
+      lv_obj_scroll_to_view(pr, LV_ANIM_OFF);
+    }
+  }
 
   lv_list_add_text(list, "Touch");
   lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_EDIT, "Calibrate touch screen");
@@ -5510,6 +5585,14 @@ bool touchHeldAtBoot() {
 }  // namespace
 
 void ui::begin() {
+  {
+    Preferences p;
+    p.begin("ui", false);  // read-write: creates the namespace on first boot
+    tickPause = p.getBool("tkPause", true);
+    tickPauseTenths = p.getUChar("tkSec", 25);
+    if (tickPauseTenths < 5 || tickPauseTenths > 100) tickPauseTenths = 25;
+    p.end();
+  }
   lv_timer_create(poll, 300, nullptr);
   bool force = touchHeldAtBoot();
   if (!display::hasCalibration() || force) {

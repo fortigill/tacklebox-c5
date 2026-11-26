@@ -5,9 +5,10 @@ macOS or Linux**. Choose one method:
 
 | Method | Best for | Needs |
 |---|---|---|
-| [A. Browser flasher](#method-a-browser-flasher-easiest) | Most people | Chrome or Edge. Nothing to install |
-| [B. esptool command line](#method-b-esptool-command-line) | Comfortable in a terminal, or a browser that can't see the board | Python 3 |
-| [C. Build from source](#method-c-build-from-source-platformio) | Changing code or your OTA password | PlatformIO |
+| [A. FortiGill Web Flasher](#method-a-fortigill-web-flasher-recommended) **(recommended)** | Everyone. Easiest, always offers the latest release | Google Chrome. Nothing to download or install |
+| [B. Espressif browser flasher](#method-b-espressif-browser-flasher) | Flashing a `.bin` you downloaded yourself | Chrome or Edge |
+| [C. esptool command line](#method-c-esptool-command-line) | Comfortable in a terminal, or a browser that can't see the board | Python 3 |
+| [D. Build from source](#method-d-build-from-source-platformio) | Changing code or your OTA password | PlatformIO |
 
 After the first flash, later updates can also go [over Wi-Fi](#updating-later-over-wi-fi).
 
@@ -18,13 +19,14 @@ After the first flash, later updates can also go [over Wi-Fi](#updating-later-ov
 - The **RockBase NM-CYD-C5** board.
 - A **USB-C data cable.** Some cables only carry power. If your computer never sees the board,
   try another cable first.
-- The firmware file from the
-  [Releases page](https://github.com/fortigill/tacklebox-c5/releases): download
-  **`tacklebox-c5-v1.13.0.bin`**. It's a single combined image that is written at address
-  **`0x0`**.
+- **For Method A:** nothing else. The web flasher downloads the firmware for you.
+- **For Methods B and C:** the firmware file from the
+  [Releases page](https://github.com/fortigill/tacklebox-c5/releases). Download
+  **`tacklebox-c5-v1.13.1.bin`**, a single combined image that is written at address **`0x0`**.
 
 > **Your settings:** flashing over an existing install keeps your Wi-Fi, ZIP code and other
-> settings. Only **Erase flash** (or `erase-flash`) wipes them.
+> settings. Only an erase wipes them ("Erase everything first" in Method A, **Erase Flash** in
+> Method B, `erase-flash` in Method C).
 
 ### The two buttons on the back
 
@@ -39,18 +41,41 @@ start normally.
 
 ---
 
-## Method A: Browser flasher (easiest)
+## Method A: FortiGill Web Flasher (recommended)
 
-This works the same on Windows, macOS and Linux. It needs **Google Chrome** or **Microsoft Edge**
-on a computer; Safari and Firefox can't talk to USB serial devices.
+The easiest way to install or update Tackle Box. It runs in **Google Chrome** on Windows, macOS,
+Linux or ChromeOS, picks the latest release for you, and needs nothing downloaded or installed.
+
+**<https://www.fortigill.net/flasher.html>**
+
+1. Plug the board into your computer with a USB-C data cable.
+2. Open the flasher in **Google Chrome** (Safari and Firefox can't talk to USB devices).
+3. **Step 1:** the device is already set to **RockBase NM-CYD-C5**, and the newest firmware is
+   selected and marked **(latest)**. Pick an older version from the list if you need one.
+4. **Step 2:** click **Choose USB port** and pick the board in the pop-up. It usually shows as
+   "USB JTAG/serial debug unit", "USB Serial" or "CH340". The page checks that it's an
+   ESP32-C5.
+5. **Step 3:** click **Flash firmware** and wait for the progress bar to reach 100% (about a
+   minute). Tick **Erase everything first** only for a clean start; it wipes your settings.
+6. The board restarts by itself. If the screen stays blank, press **RST** once.
+
+The flasher is in beta. If something goes wrong, copy the log from its **Console** panel and
+[open a support ticket](https://www.fortigill.net/ticket.html).
+
+---
+
+## Method B: Espressif browser flasher
+
+Use this for a `.bin` file you downloaded from the
+[Releases page](https://github.com/fortigill/tacklebox-c5/releases). It needs **Google Chrome**
+or **Microsoft Edge**.
 
 1. Plug the board into your computer.
 2. Open **<https://espressif.github.io/esptool-js/>**.
 3. Set **Baudrate** to `460800`, then click **Connect**.
-4. Pick the board's port in the pop-up, then click **Connect**. It's usually named
-   "USB JTAG/serial debug unit", "USB Serial" or "CH340". The page should then report an
+4. Pick the board's port in the pop-up, then click **Connect**. The page should report an
    **ESP32-C5**. If nothing shows up, see [Troubleshooting](#troubleshooting).
-5. Under **Flash Address**, enter `0x0`, and choose `tacklebox-c5-v1.13.0.bin` as the file.
+5. Under **Flash Address**, enter `0x0`, and choose `tacklebox-c5-v1.13.1.bin` as the file.
 6. Click **Program** and wait for it to finish (about a minute).
 7. Click **Disconnect**, then press **RST** on the board.
 
@@ -58,7 +83,7 @@ For a completely fresh start that wipes all settings, click **Erase Flash** befo
 
 ---
 
-## Method B: esptool command line
+## Method C: esptool command line
 
 ### 1. Install esptool (version 4.8 or newer)
 
@@ -113,31 +138,31 @@ the example.
 **Windows:**
 
 ```powershell
-py -m esptool --chip esp32c5 --port COM5 --baud 460800 write-flash 0x0 tacklebox-c5-v1.13.0.bin
+py -m esptool --chip esp32c5 --port COM5 --baud 460800 write-flash 0x0 tacklebox-c5-v1.13.1.bin
 ```
 
 **macOS:**
 
 ```bash
-esptool --chip esp32c5 --port /dev/cu.usbmodem1101 --baud 460800 write-flash 0x0 tacklebox-c5-v1.13.0.bin
+esptool --chip esp32c5 --port /dev/cu.usbmodem1101 --baud 460800 write-flash 0x0 tacklebox-c5-v1.13.1.bin
 ```
 
 **Linux:**
 
 ```bash
-esptool --chip esp32c5 --port /dev/ttyACM0 --baud 460800 write-flash 0x0 tacklebox-c5-v1.13.0.bin
+esptool --chip esp32c5 --port /dev/ttyACM0 --baud 460800 write-flash 0x0 tacklebox-c5-v1.13.1.bin
 ```
 
 - **Using esptool 4.x?** The command is `esptool.py` and the subcommand is `write_flash`, with an
   underscore.
 - **Clean slate:** to wipe all settings first, run the same command with `erase-flash` in place of
-  `write-flash 0x0 tacklebox-c5-v1.13.0.bin`, then flash.
+  `write-flash 0x0 tacklebox-c5-v1.13.1.bin`, then flash.
 
 When it finishes, press **RST** if the board doesn't restart by itself.
 
 ---
 
-## Method C: Build from source (PlatformIO)
+## Method D: Build from source (PlatformIO)
 
 Use this if you want to change code, or set your own OTA password, which is recommended.
 
@@ -185,8 +210,8 @@ pio run -e cyd-c5-ota -t upload
   board's IP address (shown on **Menu > About this device**) in `hostname_c5` in
   `platformio.ini`.
 
-You can also update with Method A or B. Flashing a newer release `.bin` over USB keeps your
-settings.
+The simplest way for most people is the [FortiGill Web Flasher](https://www.fortigill.net/flasher.html)
+(Method A). Flashing a newer release over USB keeps your settings.
 
 ---
 
@@ -217,7 +242,7 @@ settings.
 - Close anything else using the port: PlatformIO's serial monitor, Arduino IDE, a terminal, or
   another browser tab.
 - Use download mode (above), then retry.
-- Lower the speed: `--baud 115200`, or 115200 in the browser flasher.
+- Lower the speed: `--baud 115200`, or 115200 in the Espressif browser flasher.
 
 **"This chip is ESP32-xx, not ESP32-C5" or "Wrong chip"**
 - You've picked the wrong port, or this isn't an NM-CYD-C5. The classic CYD needs a different
@@ -225,10 +250,15 @@ settings.
 
 **Flashing succeeded but the screen stays blank**
 - Press **RST** once without holding **BOOT**. A board started in download mode stays blank.
-- If it still won't start, erase and flash again (Method A: **Erase Flash**, then **Program**;
-  Method B: `erase-flash`, then `write-flash`). This wipes your settings.
+- If it still won't start, erase and flash again: in Method A, tick **Erase everything first**;
+  in Method B, **Erase Flash**, then **Program**; in Method C, `erase-flash`, then
+  `write-flash`. This wipes your settings.
 - Watch the serial log (`pio device monitor`, or **Serial Monitor** at 115200 baud in the
-  browser flasher). The first lines show the version and the reason for the last restart.
+  Espressif browser flasher). The first lines show the version and the reason for the last restart.
+
+**Still stuck?**
+- [Open a support ticket](https://www.fortigill.net/ticket.html) and include the log from the web
+  flasher's Console panel, or from `pio device monitor`.
 
 **Touch is way off after flashing**
 - Hold the stylus on the screen while pressing **RST**, and calibration starts again.
@@ -247,7 +277,7 @@ ESP32-C5 bootloader sits at `0x2000`.
 pio run -e cyd-c5
 
 B=.pio/build/cyd-c5
-esptool --chip esp32c5 merge-bin -o tacklebox-c5-v1.13.0.bin \
+esptool --chip esp32c5 merge-bin -o tacklebox-c5-v1.13.1.bin \
   --flash-mode keep --flash-freq keep --flash-size 16MB \
   0x2000  $B/bootloader.bin \
   0x8000  $B/partitions.bin \
@@ -255,5 +285,6 @@ esptool --chip esp32c5 merge-bin -o tacklebox-c5-v1.13.0.bin \
   0x10000 $B/firmware.bin
 ```
 
-Attach `tacklebox-c5-v1.13.0.bin` to the GitHub release. If `boot_app0.bin` isn't at that path,
+Attach `tacklebox-c5-v1.13.1.bin` to the GitHub release, and copy it to the web flasher's
+`firmware/nm-cyd-c5/` folder with a new entry at the top of `firmware/manifest.json`. If `boot_app0.bin` isn't at that path,
 find it with `find ~/.platformio -name boot_app0.bin`.

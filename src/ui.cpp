@@ -1201,8 +1201,8 @@ void refreshDesktop() {
         bool fresh = it.time && (long)time(nullptr) - (long)it.time < 1800;  // under 30 min old
         String top = String(weather::newsSourceName(weather::newsSource()));
         String age = it.time ? agoText(it.time) : String("");
-        if (age.length()) top += "  " + age;
-        if (n > 1) top += "  (" + String(deskNewsIdx + 1) + "/" + String(n) + ")";
+        if (age.length()) top += " - " + age;
+        if (n > 1) top += " - " + String(deskNewsIdx + 1) + "/" + String(n);
         setText(deskNewsTop, top.c_str());
         lv_obj_set_style_text_color(deskNewsTop, fresh ? theme::accent() : theme::text(), 0);
         setText(deskNewsHead, it.title);
@@ -1941,7 +1941,8 @@ void showDesktop() {
   deskOursL2 = oursLine();
   deskOursL3 = oursLine();
 
-  // News bubble: newspaper icon + source / age, then the headline (up to 3 lines)
+  // News bubble: newspaper icon + source / age, then the headline in the small
+  // font (up to 4 lines). Both are held to the bubble's width.
   deskNews = widget([](lv_event_t *) {
     newsBack = Screen::Desktop;
     showNews();
@@ -1951,7 +1952,7 @@ void showDesktop() {
   lv_obj_set_style_pad_row(deskNews, 2, 0);
   lv_obj_t *nwline = lv_obj_create(deskNews);
   lv_obj_remove_style_all(nwline);
-  lv_obj_set_size(nwline, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_size(nwline, W() - 44, LV_SIZE_CONTENT);  // fixed: a long source line can't widen the bubble
   lv_obj_set_flex_flow(nwline, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(nwline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_column(nwline, 6, 0);
@@ -1964,13 +1965,17 @@ void showDesktop() {
   lv_obj_clear_flag(nimg, LV_OBJ_FLAG_CLICKABLE);
   deskNewsTop = lv_label_create(nwline);
   lv_obj_set_style_text_font(deskNewsTop, &lv_font_montserrat_14, 0);
+  lv_obj_set_flex_grow(deskNewsTop, 1);                                   // takes what's left of the row
+  lv_label_set_long_mode(deskNewsTop, LV_LABEL_LONG_SCROLL_CIRCULAR);     // scrolls only if it doesn't fit
+  lv_obj_set_style_anim_speed(deskNewsTop, 25, 0);
   lv_label_set_text(deskNewsTop, "");
   chevron(nwline);
   deskNewsHead = lv_label_create(deskNews);
-  lv_label_set_long_mode(deskNewsHead, LV_LABEL_LONG_DOT);  // wraps, "..." after 3 lines
+  lv_obj_set_style_text_font(deskNewsHead, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(deskNewsHead, LV_LABEL_LONG_DOT);  // wraps, "..." after 4 lines
   lv_obj_set_width(deskNewsHead, W() - 44);
   lv_obj_set_height(deskNewsHead, LV_SIZE_CONTENT);  // short headlines take 1-2 lines...
-  lv_obj_set_style_max_height(deskNewsHead, 3 * lv_font_get_line_height(&lv_font_montserrat_20), 0);  // ...at most 3
+  lv_obj_set_style_max_height(deskNewsHead, 4 * lv_font_get_line_height(&lv_font_montserrat_14), 0);  // ...at most 4
   lv_label_set_text(deskNewsHead, "");
 
   // Outages bubble: warning + count, then service: status (scrolls)

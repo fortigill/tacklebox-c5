@@ -8,10 +8,12 @@ earthquakes, volcanoes, aircraft near your airport, breaking news, unread email,
 a drone Remote ID watcher, Bluetooth and Wi-Fi tools on one small screen. Everything updates on
 its own over Wi-Fi, and you can pick which widgets show on the desktop.
 
-**Current release: v1.13.0.** See [CHANGELOG.md](CHANGELOG.md) for every change.
+**Current release: v1.13.1.** See [CHANGELOG.md](CHANGELOG.md) for every change.
 
-- **Flash it:** [FLASHING.md](FLASHING.md) has step-by-step instructions for Windows, macOS and
-  Linux, including a browser flasher that needs nothing installed.
+- **Flash it:** the easiest way is the **[FortiGill Web Flasher](https://www.fortigill.net/flasher.html)**.
+  Open it in Google Chrome, plug in the board, and click through three steps; it always offers
+  the latest release. [FLASHING.md](FLASHING.md) covers that and the other ways (esptool,
+  building from source) for Windows, macOS and Linux.
 - **Print a case:** a snap-together case with a built-in stylus holder is included. See
   [3D-printed case](#3d-printed-case).
 
@@ -73,9 +75,9 @@ its own over Wi-Fi, and you can pick which widgets show on the desktop.
 
 ## Getting started
 
-1. **Flash the firmware.** Follow [FLASHING.md](FLASHING.md). The quickest way is the browser
-   flasher with the `.bin` file from the
-   [Releases page](https://github.com/fortigill/tacklebox-c5/releases).
+1. **Flash the firmware.** Open the **[FortiGill Web Flasher](https://www.fortigill.net/flasher.html)**
+   in Google Chrome, plug the board in with a USB-C data cable, and follow the three steps on the
+   page. The latest release is selected for you. For other methods, see [FLASHING.md](FLASHING.md).
 2. **Calibrate the touch screen.** On first boot, tap the center of each of the 4 crosses with the
    stylus. You can redo this later under **Menu > Display & touch > Calibrate touch screen**.
 3. **Join Wi-Fi.** Tap the Wi-Fi icon in the status bar (or **Menu > Network settings**), pick
@@ -94,10 +96,11 @@ its own over Wi-Fi, and you can pick which widgets show on the desktop.
 
 ## 3D-printed case
 
-The repository includes **STL files for a case that fits the RockBase NM-CYD-C5**, in the
-[`case/`](case/) folder.
+The repository includes an **STL for a case that fits the RockBase NM-CYD-C5**:
+[`case/nm-cyd-c5-tacklebox.stl`](case/nm-cyd-c5-tacklebox.stl). It's also attached to each
+release.
 
-- **Snap-together fit:** no screws or glue. The halves click together around the board.
+- **Snap-together fit:** no screws or glue. The case clicks together around the board.
 - **Built-in stylus holder:** the stylus clips into the case, so it doesn't get lost.
 
 **Printing:** _add your recommended material, layer height, infill and support settings here._
@@ -181,7 +184,7 @@ The flash layout (`partitions_c5_16mb.csv`) has two 6 MB app slots for over-the-
 ```
 platformio.ini          build environments (cyd, cyd-ota, cyd-c5, cyd-c5-ota)
 partitions_c5_16mb.csv  C5 flash layout
-case/                   STL files for the NM-CYD-C5 case
+case/                   STL for the NM-CYD-C5 case (nm-cyd-c5-tacklebox.stl)
 include/                LVGL config (PSRAM allocator on the C5)
 src/board.h             per-board pins and features
 src/main.cpp            setup/loop, back button

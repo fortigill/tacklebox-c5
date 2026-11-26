@@ -3,6 +3,15 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.13.1] - 2026-11-26
+
+### Fixed
+- **Breaking news widget running off the screen.** The headline now uses the small font
+  (up to 4 lines, then "...") instead of the large one, and the line above it (source, age,
+  position) is held to the bubble's width: shortened to "AP News - 12 min ago - 3/12" and
+  scrolling sideways if it still doesn't fit. The bubble no longer grows past the screen
+  edge in portrait.
+
 ## [1.13.0] - 2026-11-24
 
 ### Added

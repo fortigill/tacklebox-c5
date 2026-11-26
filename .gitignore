@@ -2,3 +2,7 @@
 .vscode/
 *.zip
 .DS_Store
+
+# local helper scripts (may contain keys)
+yo-link
+*.local.sh

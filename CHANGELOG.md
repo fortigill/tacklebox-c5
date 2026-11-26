@@ -22,7 +22,7 @@ the version string lives in `src/version.h`.
   non-browser), so no device can use it at any pace.
   - One list of the incidents active right now across the ~180 services OutageDeck follows,
     read from each company's own status page (Discord, Reddit, Twitch, Zoom, Slack, Dropbox,
-    OpenAI, Anthropic, GitHub, AWS, Cloudflare, Google Workspace, Coinbase, Proton...).
+    OpenAI, GitHub, AWS, Cloudflare, Google Workspace, Coinbase, Proton...).
     One or two small requests every 5 minutes (`/api/v1/incidents?state=active`, 50 per
     page, read with a filter), no key, no per-service polling.
   - Worst first: critical (red), major (orange), minor; newest first within each.

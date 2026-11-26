@@ -8,7 +8,7 @@ earthquakes, volcanoes, aircraft near your airport, breaking news, unread email,
 a drone Remote ID watcher, Bluetooth and Wi-Fi tools on one small screen. Everything updates on
 its own over Wi-Fi, and you can pick which widgets show on the desktop.
 
-**Current release: v1.13.1.** See [CHANGELOG.md](CHANGELOG.md) for every change.
+**Current release: v1.13.2.** See [CHANGELOG.md](CHANGELOG.md) for every change.
 
 - **Flash it:** the easiest way is the **[FortiGill Web Flasher](https://www.fortigill.net/flasher.html)**.
   Open it in Google Chrome, plug in the board, and click through three steps; it always offers

@@ -66,7 +66,6 @@
 #define LV_USE_CHECKBOX  0
 #define LV_USE_DROPDOWN  0
 #define LV_USE_ROLLER    0
-#define LV_USE_CANVAS    0
 #define LV_USE_ANIMIMG   0
 #define LV_USE_CALENDAR  0
 #define LV_USE_COLORWHEEL 0
@@ -83,6 +82,16 @@
 #define LV_USE_THEME_MONO  0
 #define LV_USE_GRID      0
 #define LV_USE_SNAPSHOT  0
+
+// QR code on the Web setup screen (needs the canvas): C5 only, where flash is
+// plentiful. The classic CYD shows the address and code as text instead.
+#if defined(BOARD_NM_CYD_C5)
+#define LV_USE_CANVAS    1
+#define LV_USE_QRCODE    1
+#else
+#define LV_USE_CANVAS    0
+#define LV_USE_QRCODE    0
+#endif
 
 #endif // LV_CONF_H
 #endif

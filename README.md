@@ -5,10 +5,25 @@
 A touch-screen dashboard and pocket toolkit for the **RockBase NM-CYD-C5** (ESP32-C5, 2.8"
 240×320 touch display). It puts weather and NWS alerts, buoy wave heights, stocks, NFL scores,
 earthquakes, volcanoes, aircraft near your airport, breaking news, unread email, service outages,
-a drone Remote ID watcher, Bluetooth and Wi-Fi tools on one small screen. Everything updates on
+your YoLink smart-home devices, a drone Remote ID watcher, Bluetooth and Wi-Fi tools on one small
+screen. Everything updates on
 its own over Wi-Fi, and you can pick which widgets show on the desktop.
 
-**Current release: v1.13.2.** See [CHANGELOG.md](CHANGELOG.md) for every change.
+**Current release: v1.16.1.** See [CHANGELOG.md](CHANGELOG.md) for every change.
+
+### What's new in v1.16.1 (since v1.13.2)
+
+- **YoLink smart home:** see and control your YoLink devices from the Tackle Box. Switch outlets,
+  power-strip sockets and dimmers, sound or stop the siren, and watch door, motion, leak and
+  power-failure sensors. Leaks, power outages and open doors appear on the desktop. Turning
+  something off always asks first, and devices you mark as protected (servers, firewalls) ask
+  twice.
+- **Web setup with a QR code:** open **Menu > Web setup**, scan the QR code with your phone, and
+  paste your YoLink keys straight from the YoLink app, with no typing on the touch keyboard. A
+  6-digit pairing code shown on the board keeps anyone else on your network from changing
+  settings. The page also shows the device's About information.
+- **Email actions:** tap an unread message to **mark it as read** or **delete** it (moved to your
+  Trash folder, so a mis-tap can be undone). The regular checks still only look.
 
 - **Flash it:** the easiest way is the **[FortiGill Web Flasher](https://www.fortigill.net/flasher.html)**.
   Open it in Google Chrome, plug in the board, and click through three steps; it always offers
@@ -32,7 +47,7 @@ its own over Wi-Fi, and you can pick which widgets show on the desktop.
   (adjustable in 0.5 s steps; 2.5 s by default). Long lines inside a widget scroll sideways so
   nothing gets cut off.
 - **Themes:** Dark, Light, Miami Vice and Cyber Hacker. Landscape or portrait, adjustable
-  brightness.
+  brightness. Out of the box the NM-CYD-C5 starts in Miami Vice, portrait, at full brightness.
 - **Screen off/on:** press the lower button on the back (BOOT) to turn the screen off or back on.
   Everything keeps running in the dark. While it's off, a tap also wakes it, and that tap doesn't
   press anything.
@@ -52,7 +67,8 @@ its own over Wi-Fi, and you can pick which widgets show on the desktop.
 | **Volcanoes** | Elevated volcano alerts and new eruptions | USGS, Smithsonian GVP |
 | **Aircraft near airport** | Airliners within 10 NM of any airport code you choose. Shows the airline and flight number, altitude, speed and climbing or descending, and where each flight is coming from and going to. Flights to or from your airport get their own widget | adsb.fi, adsbdb |
 | **Breaking news** | Top headlines with summaries. Choose AP News, Fox News or CNN | Public RSS feeds |
-| **Email** | Unread messages that arrived today on your own IMAP server (IMAP over TLS), with sender and subject | Your mail server |
+| **Email** | Unread messages that arrived today on your own IMAP server (IMAP over TLS), with sender and subject. Tap a message to mark it read or delete it (moved to Trash) | Your mail server |
+| **YoLink** | Your YoLink smart-home devices: switch outlets, power strips and dimmers, sound or stop the siren, and see door, motion, leak and power-failure sensors. Leaks and power outages show on the desktop | YoLink cloud API (your own keys) |
 | **Outages** | Incidents happening now at about 180 online services (Discord, Reddit, Zoom, Slack, OpenAI, GitHub, AWS, Cloudflare...), worst first, filterable by severity and provider | OutageDeck (official status pages) |
 
 ### Tools
@@ -68,6 +84,9 @@ its own over Wi-Fi, and you can pick which widgets show on the desktop.
   separately.
 - **Dual-band Wi-Fi:** joins 5 GHz when the signal is good and falls back to 2.4 GHz when it
   weakens.
+- **Web setup:** open **Menu > Web setup** and scan the QR code with your phone (or browse to
+  `http://tacklebox-c5.local`) to see the device information and paste your YoLink keys.
+  Saving needs the 6-digit pairing code shown on the board.
 - **Over-the-air updates:** new firmware can be pushed over Wi-Fi, but only after you tap
   **Accept** on the device.
 
@@ -87,6 +106,9 @@ its own over Wi-Fi, and you can pick which widgets show on the desktop.
    - **Date & time:** your time zone.
    - **Aircraft near airport:** your airport code.
    - **Email:** your IMAP server, email address and password.
+   - **YoLink:** in the YoLink app, create keys under **Account > Advanced Settings > Personal
+     Access Credentials**. Then on the Tackle Box open **Menu > Web setup**, scan the QR code
+     with your phone, and paste the **UAID** and **Secret Key**.
    - Each feature page has its own **Show on desktop** and status-bar switches.
 
 > **Touch way off?** If you can't reach the menu, hold the stylus on the screen while pressing the
@@ -112,10 +134,15 @@ release.
 - **Saved passwords:** your Wi-Fi password and email password are stored in the board's flash
   memory, so anyone with physical access to the board could read them. For email, use an app
   password if your server supports them.
-- **Email is read-only:** the board opens your inbox in read-only mode. It never marks messages
-  read, moves or deletes them, and never sends anything. On the first connection it remembers
+- **Email changes only what you tap:** the regular checks open your inbox read-only. A message is
+  marked read, or moved to Trash, only when you tap **Read** or **Delete** on it on the board,
+  and nothing is ever sent. On the first connection it remembers
   your mail server's certificate, and if that ever changes it won't send your password until you
   confirm on screen.
+- **YoLink keys:** the UAID and Secret Key from the YoLink app give full control of your
+  devices and are stored on the board. The connection to YoLink's servers is encrypted and
+  their certificate is checked. Turning devices off always asks first, and devices you mark
+  as protected ask twice.
 - **Over-the-air updates:** these need the OTA password set in `platformio.ini` *and* a tap on
   **Accept** on the device. Release binaries use the default password `cyd_ota_change_me`. If
   you build from source, change it (see below).
@@ -192,11 +219,14 @@ src/display_c5.cpp      C5 display + touch (ESP-IDF esp_lcd), brightness, screen
 src/display.cpp         classic CYD display + touch (TFT_eSPI)
 src/ui.cpp              all screens and desktop widgets (LVGL 8.3)
 src/weather.cpp         background downloads: weather, alerts, buoys, stocks, NFL,
-                        quakes, volcanoes, flights, news, email (IMAP), outages
+                        quakes, volcanoes, flights, news, email (IMAP), outages,
+                        YoLink (device list, state, switching)
 src/net.cpp             Wi-Fi scan/connect, dual-band steering
 src/drone.cpp           drone Remote ID (Wi-Fi sniffer, ODID decoder)
 src/ble.cpp             BLE scanner, tracker detector, hunt modes
 src/ota.cpp             over-the-air updates with on-device approval
+src/portal.cpp          web setup page (About, YoLink keys) with pairing code
+src/yolink_roots.h      root certificates for verifying YoLink's servers
 src/led.cpp             status LED
 tools/                  icon generators, build-size check, OTA helper
 ```

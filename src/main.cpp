@@ -8,6 +8,7 @@
 #include "led.h"
 #include "net.h"
 #include "ota.h"
+#include "portal.h"
 #include "sysmon.h"
 #include "theme.h"
 #include "timesvc.h"
@@ -83,6 +84,7 @@ void loop() {
   timesvc::loop();
   weather::loop();
   ota::loop();
+  portal::loop();
   drone::loop();
   sysmon::loop();
 

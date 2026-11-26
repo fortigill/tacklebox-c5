@@ -3,6 +3,84 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.16.1] - 2026-11-26
+
+### Fixed
+- **YoLink: "sign-in failed: can't reach YoLink securely (connection refused)".** YoLink's
+  server uses a ZeroSSL certificate, which chains to Sectigo Public Server Authentication
+  Root E46 (cross-signed by USERTrust ECC Certification Authority); neither was in the
+  built-in list, so the board rightly refused the connection. Added both, plus their RSA
+  counterparts (Sectigo R46, USERTrust RSA), so a change of certificate on YoLink's side
+  doesn't break sign-in again.
+
+## [1.16.0] - 2026-11-26
+
+### Added
+- **Web setup**: a small web page on the board, so the YoLink keys can be pasted from the
+  YoLink app instead of typed on the touch keyboard.
+  - `http://<board IP>/` (or `tacklebox-c5.local`) shows the same information as About this
+    device, plus uptime, and a **YoLink configuration** button.
+  - `/yolink` takes the **UAID** and **Secret Key** (with a Show button), and never displays
+    saved keys back (only "saved"). Leave a box empty to keep what's saved.
+  - **Pairing code:** saving needs the 6-digit code shown on the board's **Web setup** screen
+    (Menu > Web setup, or YoLink > Set up from phone). The code works for 10 minutes at most,
+    stops when you leave that screen, is used up by a successful save, and is withdrawn after
+    5 wrong tries.
+  - **QR code** on that screen (NM-CYD-C5): scan it with a phone camera to open the page with
+    the code already filled in. The board confirms "Keys received!" and offers Open YoLink.
+    The classic CYD shows the address and code as text.
+  - Plain http on the home network (like router and printer setup pages); the page says so.
+
+## [1.15.0] - 2026-11-26
+
+### Added
+- **YoLink** (menu, desktop widget): your YoLink devices through YoLink's cloud API, signed in
+  with the User Access Credentials (UAID + Secret Key) from the YoLink app.
+  - **Switches & outlets:** Outlet, MultiOutlet (each socket, plus USB on the YS6802),
+    Dimmer (on/off and a brightness slider). Tap to switch. Turning something **off** always
+    asks first; hold a device to mark it **protected**, and turning it off then asks twice
+    (for servers, firewalls and the like).
+  - **Siren:** sound it (with confirmation) or stop it.
+  - **Sensors:** door (open/closed), motion, leak (LEAK!), power-failure alarm (POWER OUT!),
+    with when it last changed and the battery level. Tap one for details.
+  - **Needs attention** at the top of the page: leaks, power failures, a sounding siren, open
+    doors.
+  - **Desktop widget:** appears only while something needs attention ("2 YoLink alerts",
+    red) or a door is open (amber), with each device taking turns; hidden otherwise.
+  - Requests go out one at a time, at least 3.5 s apart (about 17 a minute, under YoLink's
+    limit of about 20), reading each device in turn: a full pass every 5 minutes, or every
+    2 minutes while the YoLink page is open. A tapped action jumps the queue. On YoLink's
+    "limits reached" reply it pauses for 2 minutes.
+  - The connection to api.yosmart.com is verified against built-in root certificates
+    (Amazon, Starfield, DigiCert, ISRG, Google, GoDaddy), since requests carry your keys.
+    The keys are stored in the board's flash.
+
+### Changed
+- Room for up to 16 desktop widgets (was 12).
+
+## [1.14.0] - 2026-11-26
+
+### Added
+- **Email: mark as read or delete from the board.** Tap a message on the Email page for a panel
+  with **Read**, **Delete** and **Close**.
+  - **Read** flags the message as read on the server, so it's read on your phone and in webmail too.
+  - **Delete** asks for confirmation, then moves the message to your **Trash** folder, so a
+    mis-tap can be undone from any mail app. The Trash folder is found automatically (the
+    server's special-use \Trash flag, or a common name: Trash, Deleted Items, INBOX.Trash...).
+    If the server has no Trash folder, the confirmation says the message will be deleted
+    permanently.
+  - Uses UID MOVE when the server supports it, otherwise UID COPY + \Deleted (+ UID EXPUNGE
+    of just that message when the server has UIDPLUS).
+  - Counts, the list, the desktop widget and the status-bar badge update right after.
+
+### Changed
+- Messages are now tracked by their permanent IMAP UID (UID SEARCH / UID FETCH) instead of
+  their position in the inbox, so an action can never hit the wrong message when new mail
+  arrives. Messages already flagged \Deleted no longer count as unread.
+- The regular 5-minute check is still read-only (EXAMINE); the inbox is opened read-write
+  (SELECT) only for an action you tap. Nothing is ever sent. The Email page and README now
+  say so instead of "read-only".
+
 ## [1.13.2] - 2026-11-26
 
 ### Changed

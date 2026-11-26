@@ -24,6 +24,7 @@
 #include "net.h"
 #include "version.h"
 #include "wx_icons.h"
+#include "yolink_roots.h"
 
 namespace weather {
 namespace {
@@ -105,6 +106,17 @@ const char *ROUTE_HOST = "api.adsbdb.com/v0/callsign/";
 // Email (IMAP)
 // Outages (OutageDeck)
 const char *OD_PATH = "outagedeck.com/api/v1/incidents?state=active&page=";
+// YoLink (cloud API). YoLink limits callers to about 20 requests a minute (6
+// per device), so requests go out one at a time, at least YO_GAP_MS apart.
+const char *YO_HOST = "https://api.yosmart.com";
+const uint32_t YO_GAP_MS = 3500;                    // ~17 requests a minute at most
+const uint32_t YO_ACT_GAP_MS = 1200;                // an action you tapped goes sooner
+const uint32_t YO_PASS_MS = 5UL * 60 * 1000;        // new pass of state reads every 5 min
+const uint32_t YO_PASS_OPEN_MS = 2UL * 60 * 1000;   // ...every 2 min while the YoLink page is open
+const uint32_t YO_LIST_MS = 6UL * 3600 * 1000;      // reload the device list every 6 h
+const uint32_t YO_LIMIT_PAUSE_MS = 2UL * 60 * 1000; // after "limits reached"
+const uint32_t YO_FAIL_PAUSE_MS = 60UL * 1000;      // after a network failure
+const uint32_t YO_BOOT_DELAY_MS = 40000;
 const uint32_t OUT_REFRESH_MS = 5UL * 60 * 1000;
 const uint32_t OUT_RETRY_MS = 5UL * 60 * 1000;
 const uint32_t OUT_BOOT_DELAY_MS = 75000;
@@ -264,6 +276,31 @@ uint32_t newsVer = 0;
 uint32_t newsWantedMs = 0;
 bool newsTls[3] = {false, false, false};
 
+// YoLink (guarded by mtx). The Secret Key lives in NVS ("yolink") and RAM.
+String yoId, yoSecret;
+bool yoDesk = true;
+String yoProt = ",";            // protected device ids: ",id1,id2,"
+BigVec<YoDevice> yoDevs;
+size_t yoCount = 0;             // yoDevs.size(), readable without the lock
+String yoErr;
+uint32_t yoVer = 0, yoWantedMs = 0;
+String yoToken;
+uint32_t yoTokenUntil = 0;      // millis()
+bool yoListOk = false, yoListForce = false;
+uint32_t yoListMs = 0;
+size_t yoNext = 0;              // next device to read in this pass (== yoCount: pass done)
+uint32_t yoPassStart = 0, yoPassDoneMs = 0;
+uint32_t yoPauseUntil = 0;
+bool yoForce = false, yoAttempted = false;
+uint32_t yoLastAttempt = 0;
+char yoActId[24] = "";
+YoOp yoActOp = YoOp::None;
+int yoActA = 0, yoActB = 0;
+bool yoActRunning = false;
+String yoActMsg;
+uint32_t yoActMs = 0;
+Preferences yoPrefs;
+
 // Outages (guarded by mtx)
 String outProv;            // provider filter, "" = all
 int outMin = 2;            // minimum severity shown
@@ -287,6 +324,14 @@ bool mlHaveFp = false;
 uint8_t mlNewFp[32];
 bool mlFpChanged = false;      // the server showed a different certificate
 MailStatus mlStat;
+// Pending action and what we know about the server (guarded by mtx)
+uint32_t mlActUid = 0;
+MailOp mlActOp = MailOp::None;
+bool mlActRunning = false;
+String mlActMsg;
+uint32_t mlActMs = 0;
+String mlTrash;            // Trash folder name ("" = none)
+bool mlTrashKnown = false; // LIST has been checked for this account
 String mlErr;
 uint32_t mlVer = 0;
 uint32_t mlWantedMs = 0;
@@ -340,7 +385,7 @@ struct TlsGuard {               // marks the scope of a TLS session for the UI
   TlsGuard() { tlsBusy = true; }
   ~TlsGuard() { tlsBusy = false; }
 };
-enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256, DO_MAIL = 512, DO_OUTAGE = 1024 };
+enum : uint16_t { DO_FORECAST = 1, DO_ALERTS = 2, DO_BUOY = 4, DO_STOCK = 8, DO_NFL = 16, DO_QUAKE = 32, DO_VOLCANO = 64, DO_FLIGHTS = 128, DO_NEWS = 256, DO_MAIL = 512, DO_OUTAGE = 1024, DO_YOLINK = 2048 };
 
 bool bluetoothBusy() { return drone::running() || ble::stackActive(); }
 const char *PAUSED_MSG = "Paused while the drone scanner or a Bluetooth tool is in use. Resumes 1 min after it stops.";
@@ -2592,7 +2637,7 @@ String imapQuote(const String &s) {
 // (it can list thousands of messages) and keeps the highest few (the newest)
 bool imapSearch(Imap &im, const char *tag, const String &criteria, int &count, std::vector<uint32_t> &newest,
                 size_t keep, String &why) {
-  im.send(tag, "SEARCH " + criteria);
+  im.send(tag, criteria);  // e.g. "UID SEARCH UNSEEN"; the reply is still "* SEARCH ..."
   count = 0;
   newest.clear();
   size_t tl = strlen(tag);
@@ -2683,8 +2728,56 @@ String fromName(const String &from) {
   return f;
 }
 
+// One check, plus an optional action, in a single sign-in
+struct MailSession {
+  uint32_t actUid = 0;
+  MailOp actOp = MailOp::None;
+  bool actOk = false;
+  String actResult;
+  String trash;            // in: known Trash name; out: found name
+  bool trashKnown = false; // in/out
+};
+
+// Mailbox name from a "* LIST (\attrs) "/" name" line ("" if it can't be read)
+String listName(const char *line, bool &isTrash) {
+  isTrash = false;
+  const char *op = strchr(line, '(');
+  const char *cp = op ? strchr(op, ')') : nullptr;
+  if (!cp) return "";
+  String attrs(op + 1);
+  attrs = attrs.substring(0, cp - op - 1);
+  attrs.toLowerCase();
+  if (attrs.indexOf("\\trash") >= 0) isTrash = true;
+  if (attrs.indexOf("\\noselect") >= 0 || attrs.indexOf("\\nonexistent") >= 0) return "";
+  const char *p = cp + 1;
+  while (*p == ' ') p++;
+  // delimiter: "x" or NIL
+  if (*p == '"') {
+    p++;
+    if (*p == '\\') p++;
+    if (*p) p++;
+    if (*p == '"') p++;
+  } else if (!strncasecmp(p, "NIL", 3)) {
+    p += 3;
+  }
+  while (*p == ' ') p++;
+  String name;
+  if (*p == '"') {  // quoted, with \" and \\ escapes
+    for (p++; *p && *p != '"'; p++) {
+      if (*p == '\\' && p[1]) p++;
+      name += *p;
+    }
+  } else if (*p == '{') {
+    return "";  // literal (rare): skip
+  } else {
+    while (*p && *p != ' ' && *p != '\r') name += *p++;
+  }
+  return name;
+}
+
 bool fetchMail(const String &host, uint16_t port, const String &user, const String &pass, MailStatus &st,
-               bool haveFp, const uint8_t *pinned, uint8_t *seenFp, bool &fpMismatch, String &why) {
+               bool haveFp, const uint8_t *pinned, uint8_t *seenFp, bool &fpMismatch, String &why,
+               MailSession &ses) {
   fpMismatch = false;
   if (time(nullptr) < 1700000000) {
     why = "waiting for the clock to set";
@@ -2726,8 +2819,86 @@ bool fetchMail(const String &host, uint16_t port, const String &user, const Stri
     c.stop();
     return false;
   }
-  im.send("a2", "EXAMINE INBOX");  // read-only: nothing gets marked as read
+  // What the server can do (MOVE, UIDPLUS)
+  bool canMove = false, uidPlus = false;
+  im.send("c1", "CAPABILITY");
+  im.finish("c1", [&](char *l) {
+    if (strncmp(l, "* CAPABILITY", 12)) return;
+    String caps = String(l + 12) + " ";
+    caps.toUpperCase();
+    if (caps.indexOf(" MOVE ") >= 0) canMove = true;
+    if (caps.indexOf(" UIDPLUS ") >= 0) uidPlus = true;
+  }, why);
+  why = "";
+
+  // Find the Trash folder once per account: the \Trash special-use flag, else a common name
+  if (!ses.trashKnown) {
+    String flagged, named;
+    static const char *const NAMES[] = {"Trash", "Deleted Items", "Deleted Messages", "INBOX.Trash", "INBOX/Trash",
+                                        "Deleted", "Bin", "[Gmail]/Trash"};
+    im.send("l1", "LIST \"\" \"*\"");
+    bool lok = im.finish("l1", [&](char *l) {
+      if (strncmp(l, "* LIST ", 7)) return;
+      bool isTrash;
+      String n = listName(l, isTrash);
+      if (n.isEmpty()) return;
+      if (isTrash && flagged.isEmpty()) flagged = n;
+      if (named.isEmpty())
+        for (const char *t : NAMES)
+          if (n.equalsIgnoreCase(t)) named = n;
+    }, why);
+    why = "";
+    if (lok) {
+      ses.trash = flagged.length() ? flagged : named;
+      ses.trashKnown = true;
+      Serial.printf("[mail] trash folder: %s\n", ses.trash.length() ? ses.trash.c_str() : "(none)");
+    }
+  }
+
+  // Read-only unless there's an action to do
+  bool act = ses.actOp != MailOp::None && ses.actUid;
+  im.send("a2", act ? "SELECT INBOX" : "EXAMINE INBOX");
   ok = im.finish("a2", [](char *) {}, why);
+
+  if (ok && act) {
+    String u = String(ses.actUid);
+    String w;
+    bool aok = false;
+    if (ses.actOp == MailOp::MarkRead) {
+      im.send("s1", "UID STORE " + u + " +FLAGS.SILENT (\\Seen)");
+      aok = im.finish("s1", [](char *) {}, w);
+      ses.actResult = aok ? "Marked as read" : "Couldn't mark it as read: " + w;
+    } else if (ses.trash.length() && !ses.trash.equalsIgnoreCase("INBOX")) {
+      String box = imapQuote(ses.trash);
+      if (canMove) {
+        im.send("m1", "UID MOVE " + u + " " + box);
+        aok = im.finish("m1", [](char *) {}, w);
+      } else {
+        im.send("m1", "UID COPY " + u + " " + box);
+        aok = im.finish("m1", [](char *) {}, w);
+        if (aok) {
+          im.send("m2", "UID STORE " + u + " +FLAGS.SILENT (\\Deleted)");
+          aok = im.finish("m2", [](char *) {}, w);
+        }
+        if (aok && uidPlus) {  // only this message; without UIDPLUS it stays flagged and hidden
+          im.send("m3", "UID EXPUNGE " + u);
+          im.finish("m3", [](char *) {}, w);
+        }
+      }
+      ses.actResult = aok ? "Moved to " + ses.trash : "Couldn't delete it: " + w;
+    } else {
+      im.send("d1", "UID STORE " + u + " +FLAGS.SILENT (\\Deleted)");
+      aok = im.finish("d1", [](char *) {}, w);
+      if (aok && uidPlus) {
+        im.send("d2", "UID EXPUNGE " + u);
+        im.finish("d2", [](char *) {}, w);
+      }
+      ses.actResult = aok ? String("Deleted") : "Couldn't delete it: " + w;
+    }
+    ses.actOk = aok;
+    Serial.printf("[mail] action on UID %s: %s\n", u.c_str(), ses.actResult.c_str());
+  }
+
   if (ok) {
     // Today's date (local) as IMAP wants it: 24-Nov-2026
     time_t now = time(nullptr);
@@ -2736,21 +2907,28 @@ bool fetchMail(const String &host, uint16_t port, const String &user, const Stri
     char since[16];
     strftime(since, sizeof(since), "%d-%b-%Y", &lt);
     std::vector<uint32_t> newest, dummy;
-    ok = imapSearch(im, "a3", String("UNSEEN SINCE ") + since, st.unreadToday, newest, MAIL_SHOW, why);
-    if (ok) ok = imapSearch(im, "a4", "UNSEEN", st.unreadTotal, dummy, 0, why);
+    // UIDs grow with each new message, so the highest are the newest. Messages
+    // flagged \Deleted (waiting to be expunged) don't count.
+    ok = imapSearch(im, "a3", String("UID SEARCH UNSEEN UNDELETED SINCE ") + since, st.unreadToday, newest, MAIL_SHOW,
+                    why);
+    if (ok) ok = imapSearch(im, "a4", "UID SEARCH UNSEEN UNDELETED", st.unreadTotal, dummy, 0, why);
     // Sender / subject / date of the newest unread from today, without marking them read
     st.shown = 0;
     if (ok && !newest.empty()) {
       String set;
       for (size_t i = 0; i < newest.size(); i++) set += (i ? "," : "") + String(newest[i]);
-      im.send("a5", "FETCH " + set + " (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])");
+      im.send("a5", "UID FETCH " + set + " (UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])");
       size_t tl = 2;
+      bool filled[5] = {false, false, false, false, false};
       while (im.readLine()) {
         if (!strncmp(im.line, "a5", tl) && im.line[tl] == ' ') break;
-        // "* 12 FETCH (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {123}" + literal
+        // "* 12 FETCH (UID 345 BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {123}" + literal,
+        // the UID may also come after the literal: " UID 345)"
         char *br = strrchr(im.line, '{');
         if (im.line[0] != '*' || !br) continue;
-        uint32_t seq = strtoul(im.line + 2, nullptr, 10);
+        uint32_t uid = 0;
+        const char *up = strstr(im.line, "UID ");
+        if (up) uid = strtoul(up + 4, nullptr, 10);
         long len = atol(br + 1);
         String hdr;
         for (long i = 0; i < len; i++) {
@@ -2758,19 +2936,31 @@ bool fetchMail(const String &host, uint16_t port, const String &user, const Stri
           if (v < 0) break;
           if (hdr.length() < 1500) hdr += (char)v;
         }
-        if (st.shown >= MAIL_SHOW) continue;
-        // Keep them in newest-first order
-        int slot = 0;
-        for (size_t i = 0; i < newest.size(); i++)
-          if (newest[i] == seq) slot = (int)i;
+        if (!uid && im.readLine()) {  // rest of the FETCH line
+          const char *u2 = strstr(im.line, "UID ");
+          if (u2) uid = strtoul(u2 + 4, nullptr, 10);
+        }
+        // Keep them in newest-first order (newest[] is sorted by UID, highest first)
+        int slot = -1;
+        for (size_t i = 0; i < newest.size() && i < 5; i++)
+          if (newest[i] == uid) slot = (int)i;
+        if (slot < 0 || filled[slot]) continue;
+        filled[slot] = true;
         MailMsg &m = st.msgs[slot];
+        m.uid = uid;
         toAscii(decodeHeader(fromName(headerField(hdr, "From")).c_str()).c_str(), m.from, sizeof(m.from));
         toAscii(decodeHeader(headerField(hdr, "Subject").c_str()).c_str(), m.subject, sizeof(m.subject));
         if (!m.subject[0]) strcpy(m.subject, "(no subject)");
         m.time = parseRfc822(headerField(hdr, "Date").c_str());
-        st.shown++;
       }
-      st.shown = (int)newest.size() < st.shown ? (int)newest.size() : st.shown;
+      // Close any gaps (a message that vanished between SEARCH and FETCH)
+      int k = 0;
+      for (int i = 0; i < (int)newest.size() && i < 5; i++)
+        if (filled[i]) {
+          if (k != i) st.msgs[k] = st.msgs[i];
+          k++;
+        }
+      st.shown = k;
     }
   }
   im.send("a6", "LOGOUT");
@@ -3108,6 +3298,413 @@ void newsWork() {
   nwLastOk = ok;
 }
 
+// ---------- YoLink ----------
+
+YoKind yoKindOf(const char *t) {
+  if (!strcmp(t, "Outlet")) return YoKind::Outlet;
+  if (!strcmp(t, "MultiOutlet")) return YoKind::MultiOutlet;
+  if (!strcmp(t, "Dimmer")) return YoKind::Dimmer;
+  if (!strcmp(t, "Siren")) return YoKind::Siren;
+  if (!strcmp(t, "DoorSensor")) return YoKind::Door;
+  if (!strcmp(t, "MotionSensor")) return YoKind::Motion;
+  if (!strcmp(t, "LeakSensor")) return YoKind::Leak;
+  if (!strcmp(t, "PowerFailureAlarm")) return YoKind::PowerFail;
+  if (!strcmp(t, "Hub") || !strcmp(t, "SpeakerHub") || !strcmp(t, "LocalHub")) return YoKind::Hub;
+  return YoKind::Other;
+}
+
+String yoUrlEnc(const String &v) {
+  String o;
+  char b[4];
+  for (size_t i = 0; i < v.length(); i++) {
+    char c = v[i];
+    if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      o += c;
+    } else {
+      snprintf(b, sizeof(b), "%%%02X", (unsigned char)c);
+      o += b;
+    }
+  }
+  return o;
+}
+
+// POST to api.yosmart.com. Unlike the public feeds, the server's certificate is
+// verified (YO_ROOT_CAS), since these requests carry your keys.
+template <typename F>
+int yoPost(const char *path, const String &body, const char *ctype, const String &bearer, F onBody, String &why) {
+  if (!tlsFits(why)) return -1;
+  TlsGuard guard;
+  WiFiClientSecure tls;
+  HTTPClient http;  // after the client, so it is destroyed first
+  tls.setCACert(YO_ROOT_CAS);
+  http.setTimeout(15000);
+  http.setConnectTimeout(15000);
+  http.setReuse(false);
+  if (!http.begin(tls, String(YO_HOST) + path)) {
+    why = "bad URL";
+    return -1;
+  }
+  http.setUserAgent(PRODUCT_UA " (ESP32 touch display)");
+  http.addHeader("Content-Type", ctype);
+  if (bearer.length()) http.addHeader("Authorization", "Bearer " + bearer);
+  const char *hdrs[] = {"Transfer-Encoding"};
+  http.collectHeaders(hdrs, 1);
+  int code = http.POST(body);
+  if (code == 200) {
+    why = "";
+    BodyStream bs(http.getStreamPtr(), http.header("Transfer-Encoding").equalsIgnoreCase("chunked"), http.getSize());
+    onBody(bs);
+    if (bs.failed()) why = "connection stalled";
+    http.end();
+    return 200;
+  }
+  why = code < 0 ? String("can't reach YoLink securely (") + http.errorToString(code) + ")" : String("HTTP ") + code;
+  http.end();
+  return code;
+}
+
+bool yoGetToken(const String &id, const String &secret, String &tok, uint32_t &ttlSec, String &why) {
+  String body = "grant_type=client_credentials&client_id=" + yoUrlEnc(id) + "&client_secret=" + yoUrlEnc(secret);
+  String err;
+  int code = yoPost("/open/yolink/token", body, "application/x-www-form-urlencoded", "", [&](Stream &st) {
+    JsonDocument doc;
+    if (deserializeJson(doc, st)) {
+      err = "unreadable reply";
+      return;
+    }
+    tok = doc["access_token"] | "";
+    ttlSec = doc["expires_in"] | 7200;
+    if (tok.isEmpty()) err = doc["msg"] | (doc["desc"] | "the keys were refused");
+  }, why);
+  if (code != 200) return false;
+  if (tok.isEmpty()) {
+    why = err.length() ? err : String("the keys were refused");
+    return false;
+  }
+  if (ttlSec < 300) ttlSec = 300;
+  return true;
+}
+
+// One Open API v2 call. True for code "000000"; otherwise apiCode/why say why.
+template <typename F>
+bool yoCall(const String &tok, JsonDocument &req, F onData, String &apiCode, String &why) {
+  req["time"] = (int64_t)time(nullptr) * 1000;
+  String body;
+  serializeJson(req, body);
+  apiCode = "";
+  bool ok = false;
+  int code = yoPost("/open/yolink/v2/api", body, "application/json", tok, [&](Stream &st) {
+    JsonDocument doc;
+    if (deserializeJson(doc, st)) {
+      why = "unreadable reply";
+      return;
+    }
+    apiCode = doc["code"] | "";
+    if (apiCode == "000000") {
+      ok = true;
+      onData(doc["data"]);
+    } else {
+      why = doc["desc"] | "request refused";
+      if (apiCode.length()) why += " (" + apiCode + ")";
+    }
+  }, why);
+  return code == 200 && ok;
+}
+
+// YoLink's state change time: epoch ms (number or digits) or an ISO date
+uint32_t yoTime(JsonVariant v) {
+  if (v.is<long long>()) return (uint32_t)(v.as<long long>() / 1000);
+  const char *s = v | "";
+  if (!*s) return 0;
+  if (isdigit((unsigned char)s[0]) && strlen(s) >= 12 && !strchr(s, '-')) return (uint32_t)(atoll(s) / 1000);
+  return parseIso(s);
+}
+
+// Applies a getState / setState reply (data object) to a device
+void yoApply(YoDevice &d, JsonVariant data) {
+  d.known = true;
+  d.online = true;
+  d.readMs = millis();
+  JsonVariant st = data["state"];
+  switch (d.kind) {
+    case YoKind::Outlet:
+    case YoKind::Dimmer: {
+      const char *s = st.is<const char *>() ? st.as<const char *>() : (st["state"] | "");
+      if (*s) d.on = !strcmp(s, "open");
+      if (d.kind == YoKind::Dimmer) {
+        if (data["brightness"].is<int>()) d.brightness = data["brightness"].as<int>();
+        else if (st["brightness"].is<int>()) d.brightness = st["brightness"].as<int>();
+      }
+      break;
+    }
+    case YoKind::MultiOutlet: {
+      if (!st.is<JsonArray>()) break;
+      uint8_t n = 0, m = 0;
+      for (JsonVariant v : st.as<JsonArray>()) {
+        if (n < 8 && !strcmp(v | "", "open")) m |= (uint8_t)(1 << n);
+        n++;
+      }
+      d.chCount = n > 8 ? 8 : n;
+      d.chOn = m;
+      d.on = m != 0;
+      break;
+    }
+    case YoKind::Siren: {
+      const char *s = st.is<const char *>() ? st.as<const char *>() : (st["state"] | "");
+      asciiCopy(d.state, sizeof(d.state), s);
+      d.on = !strcmp(s, "alert");
+      d.alarm = d.on;
+      break;
+    }
+    default: {  // sensors: data.state is an object
+      const char *s = st["state"] | "";
+      if (*s) asciiCopy(d.state, sizeof(d.state), s);
+      if (data["online"].is<bool>()) d.online = data["online"].as<bool>();
+      else if (st["online"].is<bool>()) d.online = st["online"].as<bool>();
+      JsonVariant b = st["battery"];
+      if (b.is<int>()) d.battery = (int8_t)b.as<int>();
+      else if (b.is<const char *>()) d.battery = (int8_t)atoi(b.as<const char *>());
+      uint32_t ch = yoTime(st["stateChangedAt"]);
+      if (!ch) ch = yoTime(data["reportAt"]);
+      if (ch) d.changedAt = ch;
+      d.open = (d.kind == YoKind::Door && !strcmp(d.state, "open")) ||
+               (d.kind == YoKind::Motion && !strcmp(d.state, "alert"));
+      if (d.kind == YoKind::Leak) d.alarm = !strcmp(d.state, "alert") || !strcmp(d.state, "full");
+      if (d.kind == YoKind::PowerFail) {
+        d.power = st["powerSupply"] | true;
+        d.alarm = !d.power || !strcmp(d.state, "alert");
+      }
+      break;
+    }
+  }
+}
+
+YoDevice *yoFind(const char *id) {  // caller holds mtx
+  for (auto &d : yoDevs)
+    if (!strcmp(d.id, id)) return &d;
+  return nullptr;
+}
+
+void yoWork() {
+  String id, secret, tok;
+  bool act = false;
+  char actId[24] = "";
+  YoOp op = YoOp::None;
+  int a1 = 0, a2 = 0;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    id = yoId;
+    secret = yoSecret;
+    if (yoToken.length() && (long)(yoTokenUntil - millis()) > 60000) tok = yoToken;
+    if (yoActOp != YoOp::None) {
+      act = true;
+      op = yoActOp;
+      a1 = yoActA;
+      a2 = yoActB;
+      memcpy(actId, yoActId, sizeof(actId));
+      yoActOp = YoOp::None;
+      yoActRunning = true;
+    }
+  }
+  String why, apiCode;
+
+  // Sign in (the access token lasts about 2 h)
+  if (tok.isEmpty()) {
+    uint32_t ttl = 7200;
+    bool ok = yoGetToken(id, secret, tok, ttl, why);
+    std::lock_guard<std::mutex> lock(mtx);
+    if (!ok) {
+      yoErr = "sign-in failed: " + why;
+      yoPauseUntil = millis() + YO_FAIL_PAUSE_MS;
+      if (act) {
+        yoActMsg = "Couldn't reach YoLink: " + why;
+        yoActMs = millis();
+      }
+      yoActRunning = false;
+      yoVer++;
+      Serial.printf("[yolink] sign-in failed: %s\n", why.c_str());
+      return;
+    }
+    yoToken = tok;
+    yoTokenUntil = millis() + ttl * 1000;
+    Serial.printf("[yolink] signed in (token for %lu s)\n", (unsigned long)ttl);
+  }
+
+  // 1) An action you tapped comes first
+  if (act) {
+    YoDevice d;
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      YoDevice *p = yoFind(actId);
+      if (p) d = *p;
+    }
+    bool ok = false;
+    String result;
+    if (d.id[0]) {
+      JsonDocument req;
+      req["method"] = String(d.type) + ".setState";
+      req["targetDevice"] = d.id;
+      req["token"] = d.token;
+      JsonObject params = req["params"].to<JsonObject>();
+      switch (op) {
+        case YoOp::SetOn: params["state"] = a1 ? "open" : "close"; break;
+        case YoOp::SetSocket:
+          params["chs"] = 1 << a1;
+          params["state"] = a2 ? "open" : "close";
+          break;
+        case YoOp::SetBrightness:
+          params["state"] = "open";
+          params["brightness"] = a1;
+          break;
+        case YoOp::Siren: params["state"]["alarm"] = (bool)a1; break;
+        default: break;
+      }
+      YoDevice after = d;
+      ok = yoCall(tok, req, [&](JsonVariant data) { yoApply(after, data); }, apiCode, why);
+      if (ok) {
+        // If the reply had no state, show what was asked for
+        if (op == YoOp::SetOn) after.on = a1;
+        if (op == YoOp::SetSocket && !(after.chOn & (1 << a1)) == (bool)a2) {
+          if (a2) after.chOn |= (uint8_t)(1 << a1);
+          else after.chOn &= (uint8_t) ~(1 << a1);
+          after.on = after.chOn != 0;
+        }
+        if (op == YoOp::SetBrightness) {
+          after.on = true;
+          after.brightness = (uint8_t)a1;
+        }
+        if (op == YoOp::Siren) {
+          after.on = a1;
+          after.alarm = a1;
+        }
+        std::lock_guard<std::mutex> lock(mtx);
+        YoDevice *p = yoFind(actId);
+        if (p) *p = after;
+      }
+      const char *what = op == YoOp::SetBrightness ? "set" : op == YoOp::Siren ? (a1 ? "sounding" : "stopped")
+                         : ((op == YoOp::SetOn ? a1 : a2) ? "on" : "off");
+      result = ok ? String(d.name) + ": " + what : String("Couldn't switch ") + d.name + ": " + why;
+    } else {
+      result = "That device isn't in the list any more";
+    }
+    std::lock_guard<std::mutex> lock(mtx);
+    if (apiCode.startsWith("0103")) yoPauseUntil = millis() + YO_LIMIT_PAUSE_MS;
+    if (apiCode == "000103" || apiCode == "010104") yoToken = "";
+    yoActMsg = result;
+    yoActMs = millis();
+    yoActRunning = false;
+    yoVer++;
+    Serial.printf("[yolink] %s\n", result.c_str());
+    return;
+  }
+
+  // 2) The device list (first time, every 6 h, or when asked)
+  bool needList;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    needList = !yoListOk || yoListForce || millis() - yoListMs > YO_LIST_MS;
+  }
+  if (needList) {
+    BigVec<YoDevice> list;
+    JsonDocument req;
+    req["method"] = "Home.getDeviceList";
+    bool ok = yoCall(tok, req, [&](JsonVariant data) {
+      for (JsonObject x : data["devices"].as<JsonArray>()) {
+        YoDevice d;
+        asciiCopy(d.id, sizeof(d.id), x["deviceId"] | "");
+        asciiCopy(d.token, sizeof(d.token), x["token"] | "");
+        asciiCopy(d.name, sizeof(d.name), x["name"] | "");
+        asciiCopy(d.type, sizeof(d.type), x["type"] | "");
+        asciiCopy(d.model, sizeof(d.model), x["modelName"] | "");
+        d.kind = yoKindOf(d.type);
+        if (d.id[0] && d.kind != YoKind::Hub) list.push_back(d);
+      }
+    }, apiCode, why);
+    std::lock_guard<std::mutex> lock(mtx);
+    if (ok) {
+      for (auto &d : list) {  // keep what we already know about each device
+        YoDevice *old = yoFind(d.id);
+        if (old) {
+          YoDevice keep = *old;
+          memcpy(keep.token, d.token, sizeof(keep.token));
+          memcpy(keep.name, d.name, sizeof(keep.name));
+          d = keep;
+        }
+      }
+      yoDevs = list;
+      yoCount = yoDevs.size();
+      yoListOk = true;
+      yoListForce = false;
+      yoListMs = millis();
+      yoNext = 0;
+      yoPassStart = millis();
+      yoErr = "";
+      Serial.printf("[yolink] %u devices\n", (unsigned)yoCount);
+    } else {
+      yoErr = "device list: " + why;
+      if (apiCode.startsWith("0103")) yoPauseUntil = millis() + YO_LIMIT_PAUSE_MS;
+      else yoPauseUntil = millis() + YO_FAIL_PAUSE_MS;
+      if (apiCode == "000103" || apiCode == "010104") yoToken = "";
+      Serial.printf("[yolink] device list failed: %s\n", why.c_str());
+    }
+    yoActRunning = false;
+    yoVer++;
+    return;
+  }
+
+  // 3) The next device's state
+  YoDevice d;
+  size_t idx;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (yoNext >= yoDevs.size()) {  // start a new pass
+      yoNext = 0;
+      yoPassStart = millis();
+    }
+    if (yoDevs.empty()) {
+      yoActRunning = false;
+      return;
+    }
+    idx = yoNext;
+    d = yoDevs[idx];
+  }
+  JsonDocument req;
+  req["method"] = String(d.type) + ".getState";
+  req["targetDevice"] = d.id;
+  req["token"] = d.token;
+  YoDevice after = d;
+  bool ok = yoCall(tok, req, [&](JsonVariant data) { yoApply(after, data); }, apiCode, why);
+  std::lock_guard<std::mutex> lock(mtx);
+  if (apiCode.startsWith("0103")) {  // rate limited: try the same device again after a pause
+    yoPauseUntil = millis() + YO_LIMIT_PAUSE_MS;
+    yoErr = "YoLink asked us to slow down; pausing 2 min";
+  } else if (apiCode == "000103" || apiCode == "010104") {  // token expired: sign in again, same device
+    yoToken = "";
+  } else {
+    if (idx < yoDevs.size() && !strcmp(yoDevs[idx].id, d.id)) {
+      if (ok) {
+        yoDevs[idx] = after;
+      } else if (apiCode.startsWith("0002")) {  // the device or its hub can't be reached
+        yoDevs[idx].online = false;
+        yoDevs[idx].known = true;
+      }
+    }
+    if (!ok && !apiCode.startsWith("0002")) {
+      yoErr = String(d.name) + ": " + why;
+      if (apiCode.isEmpty()) yoPauseUntil = millis() + YO_FAIL_PAUSE_MS;  // network trouble
+    } else {
+      yoErr = "";
+    }
+    if (++yoNext >= yoDevs.size()) yoPassDoneMs = millis();
+  }
+  yoActRunning = false;
+  yoVer++;
+  if (ok) Serial.printf("[yolink] %s: %s\n", d.name, after.kind == YoKind::Outlet || after.kind == YoKind::Dimmer
+                                                         ? (after.on ? "on" : "off")
+                                                         : after.state[0] ? after.state : "ok");
+  else Serial.printf("[yolink] %s: %s\n", d.name, why.c_str());
+}
+
 // ---------- Outages (OutageDeck) ----------
 
 uint8_t severityLevel(const char *sv) {
@@ -3223,10 +3820,21 @@ void mailWork() {
     haveFp = mlHaveFp;
     memcpy(pinned, mlFp, 32);
   }
+  MailSession ses;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    ses.actUid = mlActUid;
+    ses.actOp = mlActOp;
+    ses.trash = mlTrash;
+    ses.trashKnown = mlTrashKnown;
+    mlActOp = MailOp::None;  // taken: a new request can queue behind it
+    mlActUid = 0;
+    mlActRunning = ses.actOp != MailOp::None;
+  }
   MailStatus st;
   String why;
   bool mismatch = false;
-  bool ok = fetchMail(host, port, user, pass, st, haveFp, pinned, seen, mismatch, why);
+  bool ok = fetchMail(host, port, user, pass, st, haveFp, pinned, seen, mismatch, why, ses);
   pass = "";
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -3250,8 +3858,17 @@ void mailWork() {
       } else {
         mlErr = why;
       }
+      if (ses.trashKnown) {
+        mlTrash = ses.trash;
+        mlTrashKnown = true;
+      }
+      if (ses.actOp != MailOp::None) {
+        mlActMsg = ses.actResult.length() ? ses.actResult : "Couldn't reach the mail server: " + why;
+        mlActMs = millis();
+      }
       mlVer++;
     }
+    mlActRunning = false;
   }
   if (ok) Serial.printf("[mail] %d unread today, %d unread in the inbox\n", st.unreadToday, st.unreadTotal);
   else Serial.printf("[mail] failed: %s\n", why.c_str());
@@ -3261,6 +3878,7 @@ void mailWork() {
 void fetchWork() {
   if (taskFlags & DO_MAIL) mailWork();
   if (taskFlags & DO_OUTAGE) outageWork();
+  if (taskFlags & DO_YOLINK) yoWork();
   if (taskFlags & DO_NEWS) newsWork();
   if (taskFlags & DO_FLIGHTS) flightsWork();
   if (taskFlags & DO_VOLCANO) volcanoWork();
@@ -3397,6 +4015,10 @@ void startFetch(uint16_t flags) {
     otAttempted = true;
     otLastAttempt = millis();
   }
+  if (flags & DO_YOLINK) {
+    yoAttempted = true;
+    yoLastAttempt = millis();
+  }
   if (xTaskCreatePinnedToCore(fetchTask, "weather", TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
     std::lock_guard<std::mutex> lock(mtx);
     taskRunning = false;
@@ -3445,6 +4067,7 @@ void startFetch(uint16_t flags) {
       outErr = "not enough memory";
       otLastOk = false;
     }
+    if (flags & DO_YOLINK) yoErr = "not enough memory";
   }
 }
 
@@ -3519,6 +4142,12 @@ void begin() {
     outMin = prefs.getInt("otMin", 2);
     if (outMin < 1 || outMin > 3) outMin = 2;
     outDesk = prefs.getBool("otDesk", true);
+    yoPrefs.begin("yolink", false);  // read-write: creates the namespace on first boot
+    yoId = yoPrefs.isKey("uaid") ? yoPrefs.getString("uaid") : String();
+    yoSecret = yoPrefs.isKey("secret") ? yoPrefs.getString("secret") : String();
+    yoDesk = yoPrefs.getBool("desk", true);
+    yoProt = yoPrefs.isKey("prot") ? yoPrefs.getString("prot") : String(",");
+    yoPrefs.end();
     mlPrefs.begin("mail", false);  // read-write: creates the namespace on first boot
     mlHost = mlPrefs.isKey("host") ? mlPrefs.getString("host") : String();
     mlPort = mlPrefs.getUShort("port", 993);
@@ -3653,6 +4282,20 @@ void loop() {
   if (!flags && mailWanted && (millis() >= MAIL_BOOT_DELAY_MS || mlForce) &&
       (mlForce || !mlAttempted || millis() - mlLastAttempt >= (mlLastOk ? MAIL_REFRESH_MS : MAIL_RETRY_MS)))
     flags |= DO_MAIL;
+  // YoLink: one request at a time, paced under YoLink's rate limit. A tapped
+  // action, the device list, an unfinished pass, or a new pass when due.
+  {
+    bool configured = yoId.length() && yoSecret.length();
+    bool pageOpen = yoWantedMs && millis() - yoWantedMs < QUAKE_WANTED_MS;
+    bool actPending = yoActOp != YoOp::None;
+    bool wanted = configured && (yoDesk || pageOpen || actPending);
+    bool due = actPending || !yoListOk || yoListForce || millis() - yoListMs > YO_LIST_MS || yoNext < yoCount ||
+               millis() - yoPassStart >= (pageOpen ? YO_PASS_OPEN_MS : YO_PASS_MS) || yoForce;
+    uint32_t gap = actPending ? YO_ACT_GAP_MS : YO_GAP_MS;
+    if (!flags && wanted && due && (millis() >= YO_BOOT_DELAY_MS || yoForce || actPending) &&
+        (long)(millis() - yoPauseUntil) >= 0 && (!yoAttempted || millis() - yoLastAttempt >= gap))
+      flags |= DO_YOLINK;
+  }
   // Outages: on their own, once nothing else is due
   bool outWanted = outDesk || (outWantedMs && millis() - outWantedMs < QUAKE_WANTED_MS);
   if (!flags && outWanted && (millis() >= OUT_BOOT_DELAY_MS || otForce) &&
@@ -3675,6 +4318,7 @@ void loop() {
     if (flags & DO_NEWS) nwForce = false;
     if (flags & DO_MAIL) mlForce = false;
     if (flags & DO_OUTAGE) otForce = false;
+    if (flags & DO_YOLINK) yoForce = false;
     if (flags & DO_VOLCANO) vcForce = false;
     if (flags & DO_BUOY) byForce = false;
     if (flags & DO_STOCK) stForce = false;
@@ -4628,6 +5272,166 @@ String newsStatus() {
   return b;
 }
 
+// ---------- YoLink ----------
+
+static void yoSave(const char *key, const String &v) {  // caller holds mtx
+  yoPrefs.begin("yolink", false);
+  yoPrefs.putString(key, v);
+  yoPrefs.end();
+}
+
+static void yoChanged() {  // caller holds mtx: new keys, start over
+  yoToken = "";
+  yoDevs.clear();
+  yoCount = 0;
+  yoListOk = false;
+  yoNext = 0;
+  yoErr = "";
+  yoActMsg = "";
+  yoPauseUntil = 0;
+  yoForce = true;
+  yoVer++;
+}
+
+String yoUaid() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return yoId;
+}
+bool yoHasSecret() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return yoSecret.length() > 0;
+}
+bool yoConfigured() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return yoId.length() && yoSecret.length();
+}
+void setYoUaid(const String &uaid) {
+  String v = uaid;
+  v.trim();
+  std::lock_guard<std::mutex> lock(mtx);
+  yoId = v;
+  yoSave("uaid", yoId);
+  yoChanged();
+}
+void setYoSecret(const String &secret) {
+  String v = secret;
+  v.trim();
+  std::lock_guard<std::mutex> lock(mtx);
+  yoSecret = v;
+  yoSave("secret", yoSecret);
+  yoChanged();
+}
+
+BigVec<YoDevice> yoDevices() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return yoDevs;
+}
+int yoAlarmCount() {
+  std::lock_guard<std::mutex> lock(mtx);
+  int n = 0;
+  for (const auto &d : yoDevs)
+    if (d.known && d.alarm) n++;
+  return n;
+}
+int yoOpenCount() {
+  std::lock_guard<std::mutex> lock(mtx);
+  int n = 0;
+  for (const auto &d : yoDevs)
+    if (d.known && d.kind == YoKind::Door && d.open) n++;
+  return n;
+}
+
+String yoStatusText() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!(yoId.length() && yoSecret.length()))
+    return "Enter the UAID and Secret Key from the YoLink app (Account > Advanced Settings > Personal Access "
+           "Credentials).";
+  if (bluetoothBusy()) return PAUSED_MSG;
+  if (net::state() != net::State::Connected && !yoListOk) return "Waiting for Wi-Fi...";
+  String s;
+  if (!yoListOk) {
+    s = yoErr.length() ? "Check failed: " + yoErr : String("Signing in to YoLink...");
+    return s;
+  }
+  size_t known = 0;
+  for (const auto &d : yoDevs)
+    if (d.known) known++;
+  char b[96];
+  if (yoNext < yoDevs.size() && !yoPassDoneMs)
+    snprintf(b, sizeof(b), "%u devices, reading %u of %u...", (unsigned)yoDevs.size(), (unsigned)known,
+             (unsigned)yoDevs.size());
+  else
+    snprintf(b, sizeof(b), "%u devices. Updated %lu min ago; refreshes every few minutes.", (unsigned)yoDevs.size(),
+             (unsigned long)((millis() - (yoPassDoneMs ? yoPassDoneMs : yoListMs)) / 60000));
+  s = b;
+  if ((long)(millis() - yoPauseUntil) < 0) s += " (paused briefly: YoLink rate limit)";
+  if (yoErr.length()) s += "\nLast problem: " + yoErr;
+  return s;
+}
+
+bool yoRequest(const char *deviceId, YoOp op, int arg1, int arg2) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (op == YoOp::None || yoActRunning || yoActOp != YoOp::None) return false;
+  YoDevice *d = yoFind(deviceId);
+  if (!d) return false;
+  bool fits = (op == YoOp::SetOn && (d->kind == YoKind::Outlet || d->kind == YoKind::Dimmer)) ||
+              (op == YoOp::SetSocket && d->kind == YoKind::MultiOutlet && arg1 >= 0 && arg1 < 8) ||
+              (op == YoOp::SetBrightness && d->kind == YoKind::Dimmer && arg1 >= 1 && arg1 <= 100) ||
+              (op == YoOp::Siren && d->kind == YoKind::Siren);
+  if (!fits) return false;
+  snprintf(yoActId, sizeof(yoActId), "%s", deviceId);
+  yoActOp = op;
+  yoActA = arg1;
+  yoActB = arg2;
+  yoActMsg = "";
+  yoWantedMs = millis();
+  yoVer++;
+  return true;
+}
+bool yoActionBusy() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return yoActRunning || yoActOp != YoOp::None;
+}
+String yoActionResult() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (yoActMsg.isEmpty() || millis() - yoActMs > 60000) return "";
+  return yoActMsg;
+}
+
+bool yoIsProtected(const char *deviceId) {
+  std::lock_guard<std::mutex> lock(mtx);
+  return yoProt.indexOf(String(",") + deviceId + ",") >= 0;
+}
+void setYoProtected(const char *deviceId, bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  String key = String(",") + deviceId + ",";
+  bool is = yoProt.indexOf(key) >= 0;
+  if (on && !is) yoProt += String(deviceId) + ",";
+  if (!on && is) yoProt.replace(key, ",");
+  yoSave("prot", yoProt);
+  yoVer++;
+}
+
+bool showYoDesk() { return yoDesk; }
+void setShowYoDesk(bool on) {
+  std::lock_guard<std::mutex> lock(mtx);
+  yoDesk = on;
+  yoPrefs.begin("yolink", false);
+  yoPrefs.putBool("desk", on);
+  yoPrefs.end();
+  if (on && !yoListOk) yoForce = true;
+  yoVer++;
+}
+void refreshYo() {
+  std::lock_guard<std::mutex> lock(mtx);
+  yoWantedMs = millis();
+  yoListForce = true;
+  yoForce = true;
+  yoPassStart = 0;
+}
+void yoKeepAlive() { yoWantedMs = millis(); }
+uint32_t yoVersion() { return yoVer; }
+
 // ---------- Outages ----------
 
 BigVec<Outage> outages() {
@@ -4719,6 +5523,11 @@ String outageStatus() {
 
 static void mailChanged() {  // caller holds mtx: settings changed, start over
   mlStat = MailStatus();
+  mlTrash = "";
+  mlTrashKnown = false;
+  mlActOp = MailOp::None;
+  mlActUid = 0;
+  mlActMsg = "";
   mlErr = "";
   mlVer++;
   mlForce = true;
@@ -4792,7 +5601,7 @@ String mailStatusText() {
   if (mlErr.length()) return "Check failed: " + mlErr;
   if (!mlStat.valid) return "Checking mail...";
   char b[80];
-  snprintf(b, sizeof(b), "Checked %lu min ago, every 5 min (read-only)",
+  snprintf(b, sizeof(b), "Checked %lu min ago, every 5 min",
            (unsigned long)((millis() - mlStat.fetchedMs) / 60000));
   return b;
 }
@@ -4860,5 +5669,34 @@ void refreshMail() {
 }
 void mailKeepAlive() { mlWantedMs = millis(); }
 uint32_t mailVersion() { return mlVer; }
+
+bool mailRequest(uint32_t uid, MailOp op) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!uid || op == MailOp::None || mlActRunning || mlActOp != MailOp::None) return false;
+  mlActUid = uid;
+  mlActOp = op;
+  mlActMsg = "";
+  mlWantedMs = millis();
+  mlForce = true;  // runs on the next pass of the download task
+  mlVer++;
+  return true;
+}
+
+bool mailActionBusy() {
+  std::lock_guard<std::mutex> lock(mtx);
+  return mlActRunning || mlActOp != MailOp::None;
+}
+
+String mailActionResult() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (mlActMsg.isEmpty() || millis() - mlActMs > 60000) return "";
+  return mlActMsg;
+}
+
+int mailTrashKnown() {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!mlTrashKnown) return -1;
+  return mlTrash.length() ? 1 : 0;
+}
 
 }  // namespace weather

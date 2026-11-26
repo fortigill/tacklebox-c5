@@ -315,6 +315,54 @@ void newsKeepAlive();                    // the news page is open: keep polling 
 uint32_t newsVersion();
 String newsStatus();
 
+// ---- YoLink (cloud API with User Access Credentials) ----
+// Signs in with the UAID + Secret Key from the YoLink app, lists the devices on
+// the account, and reads each one's state in turn, paced to stay well under
+// YoLink's rate limit (about one request every 3.5 s, a full pass every few
+// minutes). Outlets, multi-outlets, dimmers and sirens can be switched.
+enum class YoKind : uint8_t { Other, Outlet, MultiOutlet, Dimmer, Siren, Door, Motion, Leak, PowerFail, Hub };
+struct YoDevice {
+  char id[24] = "";        // deviceId
+  char token[64] = "";     // device net token (needed for every call)
+  char name[32] = "";
+  char type[20] = "";      // API type: "Outlet", "DoorSensor"...
+  char model[12] = "";     // "YS6602-UC"
+  YoKind kind = YoKind::Other;
+  bool known = false;      // state read at least once
+  bool online = true;
+  bool on = false;         // outlet / dimmer / siren sounding
+  uint8_t brightness = 0;  // dimmer, 1-100
+  uint8_t chCount = 0;     // multi-outlet: sockets reported (index 0 is USB on YS6802/YS6801)
+  uint8_t chOn = 0;        // multi-outlet: bit per socket
+  char state[12] = "";     // sensor state as reported: open/closed/alert/normal/off
+  bool alarm = false;      // needs attention: leak, power out, siren sounding
+  bool open = false;       // door open / motion detected right now
+  bool power = true;       // power-failure alarm: mains present
+  int8_t battery = -1;     // 0 (empty) to 4 (full), -1 unknown
+  uint32_t changedAt = 0;  // epoch UTC of the last state change (0 unknown)
+  uint32_t readMs = 0;     // millis() of the last successful read
+};
+enum class YoOp : uint8_t { None, SetOn, SetSocket, SetBrightness, Siren };
+String yoUaid();
+bool yoHasSecret();
+void setYoUaid(const String &uaid);
+void setYoSecret(const String &secret);
+bool yoConfigured();
+BigVec<YoDevice> yoDevices();           // in YoLink's order (Hub left out)
+int yoAlarmCount();                     // leaks, power failures, sounding sirens
+int yoOpenCount();                      // doors open
+String yoStatusText();
+bool yoRequest(const char *deviceId, YoOp op, int arg1 = 0, int arg2 = 0);  // false if busy / unknown device
+bool yoActionBusy();
+String yoActionResult();                // result of the last action, "" when none/old
+bool yoIsProtected(const char *deviceId);
+void setYoProtected(const char *deviceId, bool on);
+bool showYoDesk();
+void setShowYoDesk(bool on);
+void refreshYo();                       // reload the device list and start a new pass now
+void yoKeepAlive();
+uint32_t yoVersion();
+
 // ---- Outages (OutageDeck, outagedeck.com) ----
 // Every 5 minutes, one list of the incidents active right now across the
 // ~180 services OutageDeck follows (from each company's own status page),
@@ -341,12 +389,13 @@ uint32_t outageVersion();
 String outageStatus();
 
 // ---- Email (IMAP over TLS) ----
-// Signs in to your IMAP server every 5 minutes, read-only (EXAMINE), and
+// Signs in to your IMAP server every 5 minutes (checks are read-only: EXAMINE), and
 // counts unread mail received today plus the total unread in the inbox, with
 // sender and subject of the newest few unread from today. The server's
 // certificate is pinned on first use (SHA-256 fingerprint): if it ever
 // changes, the board won't send your password until you confirm.
 struct MailMsg {
+  uint32_t uid = 0;       // the message's permanent IMAP UID (what Mark as read / Delete act on)
   uint32_t time = 0;      // Date header, epoch UTC (0 = unknown)
   char from[40] = "";     // display name, or the address
   char subject[120] = "";
@@ -379,6 +428,14 @@ void setShowMailBar(bool on);
 void refreshMail();
 void mailKeepAlive();
 uint32_t mailVersion();
+// Actions on one message (by UID). Checks stay read-only; these open the inbox
+// read-write just for the action. Delete moves the message to the Trash folder
+// when the server has one, otherwise deletes it permanently.
+enum class MailOp : uint8_t { None, MarkRead, Delete };
+bool mailRequest(uint32_t uid, MailOp op);  // false if another action is still running
+bool mailActionBusy();
+String mailActionResult();                  // result of the last action, "" when none/old
+int mailTrashKnown();                       // 1 Trash folder found, 0 none, -1 not checked yet
 
 // Presentation helpers
 const lv_img_dsc_t *icon(const Data &d, bool large);

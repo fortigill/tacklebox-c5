@@ -17,6 +17,7 @@
 #include "drone.h"
 #include "net.h"
 #include "ota.h"
+#include "portal.h"
 #include "sysmon.h"
 #include "theme.h"
 #include "timesvc.h"
@@ -34,7 +35,7 @@ enum class Screen {
   Desktop, Menu, Wifi, Password, Connecting, About, Display, Calibrate,
   Ble, BleDetail, BleIgnored, Hunt, DateTime, TimeZone, Weather, WeatherZip,
   WifiAnalyzer, Trackers, Ota, Drones, DroneDetail, DroneLog, DroneLogDetail,
-  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail, Mail, MailField, Outages, OutageList
+  WxAlerts, WxAlertDetail, Buoy, BuoyPick, BuoyId, Stock, StockSym, StockDetail, Nfl, NflTeam, Quakes, QuakeDetail, Volcanoes, VolcanoDetail, Flights, AirportCode, News, NewsDetail, Mail, MailField, Outages, OutageList, YoLink, YoField, WebSetup
 };
 
 const int HEADER_H = 40;
@@ -75,7 +76,7 @@ struct DeskSlot {
   lv_obj_t *o;
   bool want;  // the widget wants to be shown (switch on and has something to show)
 };
-DeskSlot deskSlots[12];
+DeskSlot deskSlots[16];
 int deskSlotN = 0;
 lv_obj_t *deskView = nullptr;      // clipping window the widget column scrolls in
 lv_timer_t *deskTickTimer = nullptr;
@@ -159,6 +160,27 @@ uint32_t deskOutRotMs = 0;
 lv_obj_t *otStatus = nullptr, *otBox = nullptr, *otTa = nullptr;
 int otKey = -1;
 Screen outBack = Screen::Menu;
+// YoLink: desktop bubble, page, key entry
+lv_obj_t *deskYo = nullptr, *deskYoTop = nullptr, *deskYoLine = nullptr;
+int deskYoKey = -1;
+size_t deskYoIdx = 0;
+uint32_t deskYoRotMs = 0;
+lv_obj_t *yoStatusLbl = nullptr, *yoBox = nullptr, *yoTa = nullptr;
+int yoKey = -1;
+int yoField = 0;  // YoField: 0 UAID, 1 Secret Key
+Screen yoBack = Screen::Menu;
+struct YoRow {
+  char id[24];
+  int ch;  // multi-outlet socket, -1 otherwise
+};
+std::vector<YoRow> yoRows;
+char yoPendId[24] = "";  // the device a confirmation is open for
+int yoPendCh = -1;
+bool yoPendOn = false;
+// Web setup screen
+lv_obj_t *wsCode = nullptr, *wsTimer = nullptr, *wsStatus = nullptr, *wsBtn = nullptr, *wsBtnLbl = nullptr;
+uint32_t wsSavedSeen = 0;
+Screen wsBack = Screen::Menu;
 int nwKey = -1;
 BigVec<weather::NewsItem> nwRows;
 weather::NewsItem nwDetail;
@@ -340,6 +362,9 @@ void showMail();
 void showMailField(int field);
 void showOutages();
 void showOutageList();
+void showYoLink();
+void showYoField(int field);
+void showWebSetup();
 void showAirportCode();
 
 // "SEA 21-17 SF" (away first, like ESPN), or "SEA @ SF" before kickoff
@@ -481,6 +506,12 @@ void resetPtrs() {
   deskOutKey = -1;
   otStatus = otBox = otTa = nullptr;
   otKey = -1;
+  deskYo = deskYoTop = deskYoLine = nullptr;
+  deskYoKey = -1;
+  yoStatusLbl = yoBox = yoTa = nullptr;
+  yoKey = -1;
+  if (wsCode) portal::stopPairing();  // leaving the Web setup screen withdraws its code
+  wsCode = wsTimer = wsStatus = wsBtn = wsBtnLbl = nullptr;
   deskNear = deskNearTop = deskNearL2 = deskNearL3 = deskNearL4 = deskNearImg = deskNearCnt = nullptr;
   deskOurs = deskOursTop = deskOursL2 = deskOursL3 = deskOursImg = nullptr;
   deskOursKey = -1;
@@ -800,7 +831,7 @@ void deskTick(lv_timer_t *) {
 // button under the widgets, keeping the Menu at its usual spot when there's room
 void layoutDesktop() {
   if (!deskBar || !deskRow || !deskView || !deskMenu || !deskWave || !deskAlerts || !deskStock || !deskNfl || !deskQuake ||
-      !deskVolc || !deskNear || !deskOurs || !deskNews || !deskMail || !deskOut)
+      !deskVolc || !deskNear || !deskOurs || !deskNews || !deskMail || !deskOut || !deskYo)
     return;
   lv_obj_update_layout(deskBar);
   int barH = lv_obj_get_height(deskBar);
@@ -809,7 +840,7 @@ void layoutDesktop() {
               lv_obj_has_flag(deskQuake, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskVolc, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskNear, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskOurs, LV_OBJ_FLAG_HIDDEN) &&
               lv_obj_has_flag(deskNews, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskMail, LV_OBJ_FLAG_HIDDEN) &&
-              lv_obj_has_flag(deskOut, LV_OBJ_FLAG_HIDDEN);
+              lv_obj_has_flag(deskOut, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(deskYo, LV_OBJ_FLAG_HIDDEN);
   int rowH = none ? 0 : lv_obj_get_height(deskRow);
   if (deskTicker) rowH = deskTickH;  // the scrolling window fills the space
   int key = barH * 1000 + rowH + (deskTicker ? 500000 : 0);
@@ -1249,6 +1280,51 @@ void refreshDesktop() {
         lv_obj_set_style_text_color(deskMailTop, col, 0);
         lv_obj_set_style_img_recolor(deskMailImg, col, 0);
         setText(deskMailSubj, line.c_str());
+      }
+    }
+  }
+
+  // YoLink bubble: shown while something needs attention (leak, power out,
+  // siren) or a door is open; the devices involved take turns on line 2
+  if (deskYo) {
+    std::vector<weather::YoDevice> hot;
+    if (weather::showYoDesk() && weather::yoConfigured()) {
+      auto devs = weather::yoDevices();
+      for (const auto &d : devs)
+        if (d.known && d.alarm) hot.push_back(d);
+      for (const auto &d : devs)
+        if (d.known && !d.alarm && d.kind == weather::YoKind::Door && d.open) hot.push_back(d);
+    }
+    bool on = !hot.empty();
+    wantWidget(deskYo, on);
+    if (on) {
+      size_t n = hot.size();
+      if (n > 1 && millis() - deskYoRotMs >= NEWS_ROTATE_MS) {
+        deskYoRotMs = millis();
+        deskYoIdx++;
+      }
+      if (deskYoIdx >= n) deskYoIdx = 0;
+      int alarms = 0;
+      for (const auto &d : hot)
+        if (d.alarm) alarms++;
+      int k = (int)(weather::yoVersion() * 64 + deskYoIdx);
+      if (k != deskYoKey) {
+        deskYoKey = k;
+        char top[48];
+        if (alarms) snprintf(top, sizeof(top), LV_SYMBOL_WARNING " %d YoLink alert%s", alarms, alarms == 1 ? "" : "s");
+        else snprintf(top, sizeof(top), LV_SYMBOL_HOME " %u door%s open", (unsigned)n, n == 1 ? "" : "s");
+        setText(deskYoTop, top);
+        lv_obj_set_style_text_color(deskYoTop, lv_palette_main(alarms ? LV_PALETTE_RED : LV_PALETTE_AMBER), 0);
+        const auto &d = hot[deskYoIdx];
+        const char *what = d.kind == weather::YoKind::Leak        ? "LEAK"
+                           : d.kind == weather::YoKind::PowerFail ? "POWER OUT"
+                           : d.kind == weather::YoKind::Siren     ? "siren sounding"
+                                                                  : "open";
+        String line = String(d.name) + ": " + what;
+        String age = d.changedAt ? agoText(d.changedAt) : String("");
+        if (age.length()) line += " (" + age + ")";
+        if (n > 1) line = "(" + String(deskYoIdx + 1) + "/" + String(n) + ") " + line;
+        setText(deskYoLine, line.c_str());
       }
     }
   }
@@ -1978,6 +2054,34 @@ void showDesktop() {
   lv_obj_set_style_max_height(deskNewsHead, 4 * lv_font_get_line_height(&lv_font_montserrat_14), 0);  // ...at most 4
   lv_label_set_text(deskNewsHead, "");
 
+  // YoLink bubble: alerts / open doors, then device: state (scrolls)
+  deskYo = widget([](lv_event_t *) {
+    yoBack = Screen::Desktop;
+    showYoLink();
+  });
+  lv_obj_set_flex_flow(deskYo, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(deskYo, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(deskYo, 2, 0);
+  lv_obj_t *yoline = lv_obj_create(deskYo);
+  lv_obj_remove_style_all(yoline);
+  lv_obj_set_size(yoline, W() - 44, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(yoline, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(yoline, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(yoline, 6, 0);
+  lv_obj_clear_flag(yoline, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(yoline, LV_OBJ_FLAG_EVENT_BUBBLE);
+  deskYoTop = lv_label_create(yoline);
+  lv_obj_set_flex_grow(deskYoTop, 1);
+  lv_label_set_long_mode(deskYoTop, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_label_set_text(deskYoTop, "");
+  chevron(yoline);
+  deskYoLine = lv_label_create(deskYo);
+  lv_obj_set_style_text_font(deskYoLine, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(deskYoLine, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_anim_speed(deskYoLine, 25, 0);
+  lv_obj_set_width(deskYoLine, W() - 44);
+  lv_label_set_text(deskYoLine, "");
+
   // Outages bubble: warning + count, then service: status (scrolls)
   deskOut = widget([](lv_event_t *) {
     outBack = Screen::Desktop;
@@ -2123,6 +2227,24 @@ void addMenuItems(lv_obj_t *list) {
       [](lv_event_t *) {
         newsBack = Screen::Menu;
         showNews();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_UPLOAD, "Web setup (phone / computer)");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        wsBack = Screen::Menu;
+        showWebSetup();
+      },
+      LV_EVENT_CLICKED, nullptr);
+
+  b = lv_list_add_btn(list, LV_SYMBOL_HOME, "YoLink");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        yoBack = Screen::Menu;
+        showYoLink();
       },
       LV_EVENT_CLICKED, nullptr);
 
@@ -5454,6 +5576,54 @@ void showAirportCode() {
 
 void mailNoop(lv_event_t *) {}
 
+// The message the action panel is open for
+uint32_t mlSelUid = 0;
+
+void mailDoAction(weather::MailOp op) {
+  if (!weather::mailRequest(mlSelUid, op)) {
+    errorBox("Email", "The last action is still running. Try again in a moment.");
+    return;
+  }
+  mlKey = -1;  // show "Working..." right away
+}
+
+// Tap a message: Mark as read / Delete / Close
+void mailRowCb(lv_event_t *e) {
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  weather::MailStatus ms = weather::mailStatus();
+  if (idx < 0 || idx >= ms.shown || !ms.msgs[idx].uid) return;
+  const auto &m = ms.msgs[idx];
+  mlSelUid = m.uid;
+  static String body;  // the message box keeps a pointer to its text
+  body = String(m.subject);
+  String age = m.time ? agoText(m.time) : String("");
+  if (age.length()) body += "\n\nReceived " + age + ".";
+  static char title[44];
+  snprintf(title, sizeof(title), "%s", m.from[0] ? m.from : "Message");
+  static const char *btns[] = {"Read", "Delete", "Close", ""};
+  lv_obj_t *box = lv_msgbox_create(nullptr, title, body.c_str(), btns, false);
+  lv_obj_set_width(box, W() - 30);
+  lv_obj_center(box);
+  lv_obj_add_event_cb(
+      box,
+      [](lv_event_t *ev) {
+        lv_obj_t *b = lv_event_get_current_target(ev);
+        uint16_t btn = lv_msgbox_get_active_btn(b);
+        lv_msgbox_close_async(b);  // deleting inside its own event is unsafe
+        if (btn == 0) {
+          mailDoAction(weather::MailOp::MarkRead);
+        } else if (btn == 1) {
+          int t = weather::mailTrashKnown();
+          const char *msg = t == 1   ? "It moves to the Trash folder on your mail server, where you can still recover it."
+                            : t == 0 ? "Your mail server has no Trash folder, so this deletes it permanently."
+                                     : "It moves to Trash if your server has one; otherwise it's deleted permanently.";
+          confirmBox("Delete message?", msg, "Delete",
+                     [](lv_event_t *) { mailDoAction(weather::MailOp::Delete); });
+        }
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
 String shortFp(const String &fp) {  // first 8 bytes is plenty to compare by eye
   return fp.length() > 23 ? fp.substring(0, 23) + "..." : fp;
 }
@@ -5461,7 +5631,10 @@ String shortFp(const String &fp) {  // first 8 bytes is plenty to compare by eye
 void refreshMailScreen() {
   if (!mlStatusLbl) return;
   weather::mailKeepAlive();
-  setText(mlStatusLbl, weather::mailStatusText().c_str());
+  String st = weather::mailStatusText();
+  String act = weather::mailActionBusy() ? String("Working on it...") : weather::mailActionResult();
+  if (act.length()) st = act + "\n" + st;
+  setText(mlStatusLbl, st.c_str());
   int key = (int)(weather::mailVersion() * 4096 + (millis() / 60000) % 4096);
   if (key == mlKey) return;
   mlKey = key;
@@ -5485,7 +5658,7 @@ void refreshMailScreen() {
     String l2 = m.from;
     String age = m.time ? agoText(m.time) : String("");
     if (age.length()) l2 += "  -  " + age;
-    twoLineRow(mlBox, m.subject, theme::text(), l2, mailNoop, i);
+    twoLineRow(mlBox, m.subject, theme::text(), l2, mailRowCb, i);  // tap: Mark as read / Delete
   }
 }
 
@@ -5585,7 +5758,7 @@ void showMail() {
       },
       LV_EVENT_CLICKED, nullptr);
 
-  lv_list_add_text(list, "Unread today (newest first)");
+  lv_list_add_text(list, "Unread today (tap one to read or delete)");
   mlBox = lv_obj_create(list);
   lv_obj_remove_style_all(mlBox);
   lv_obj_set_size(mlBox, LV_PCT(100), LV_SIZE_CONTENT);
@@ -5604,7 +5777,8 @@ void showMail() {
   String sec = fp.length() ? "Server certificate pinned:\n" + shortFp(fp) +
                                  "\nThe password is only sent to a server showing this certificate."
                            : String("The server's certificate will be pinned at the first connection.");
-  sec += "\nRead-only: messages are never marked read, moved or deleted. The password is stored on this device.";
+  sec += "\nChecks only look: a message is marked read or deleted only when you tap Read or Delete on it here. "
+         "Nothing is ever sent. The password is stored on this device.";
   lv_label_set_text(l, sec.c_str());
   if (fp.length()) {
     b = lv_list_add_btn(list, LV_SYMBOL_TRASH, "Forget pinned certificate");
@@ -5857,6 +6031,504 @@ void showOutageList() {
       },
       LV_EVENT_ALL, nullptr);
   load(scr, Screen::OutageList);
+}
+
+// ---------- YoLink ----------
+
+using weather::YoDevice;
+using weather::YoKind;
+using weather::YoOp;
+
+bool yoGet(const char *id, YoDevice &out) {
+  for (const auto &d : weather::yoDevices())
+    if (!strcmp(d.id, id)) {
+      out = d;
+      return true;
+    }
+  return false;
+}
+
+// Socket names on multi-outlets: index 0 is the USB ports on the YS6801/YS6802
+String yoSocketName(const YoDevice &d, int ch) {
+  bool usb0 = !strncmp(d.model, "YS6801", 6) || !strncmp(d.model, "YS6802", 6);
+  if (usb0) return ch == 0 ? String("USB") : String("Outlet ") + ch;
+  return String("Outlet ") + (ch + 1);
+}
+
+void yoSend(const char *id, YoOp op, int a1, int a2) {
+  if (!weather::yoRequest(id, op, a1, a2)) {
+    errorBox("YoLink", "The last command is still running. Try again in a moment.");
+    return;
+  }
+  yoKey = -1;  // show "Working..." right away
+}
+
+// Switch the pending device (yoPendId / yoPendCh) to yoPendOn
+void yoDoPending(lv_event_t *) {
+  YoDevice d;
+  if (!yoGet(yoPendId, d)) return;
+  if (d.kind == YoKind::MultiOutlet) yoSend(d.id, YoOp::SetSocket, yoPendCh, yoPendOn);
+  else yoSend(d.id, YoOp::SetOn, yoPendOn, 0);
+}
+
+// Second confirmation for a protected device
+void yoProtSecond(lv_event_t *) {
+  static String msg2;
+  YoDevice dd;
+  msg2 = yoGet(yoPendId, dd) ? String(dd.name) + " is marked protected. Really turn it off?" : String("Really?");
+  confirmBox("Are you sure?", msg2.c_str(), "Yes, off", yoDoPending);
+}
+
+// Turning something OFF asks first; protected devices ask twice
+void yoAskSwitch(const YoDevice &d, int ch, bool turnOn) {
+  snprintf(yoPendId, sizeof(yoPendId), "%s", d.id);
+  yoPendCh = ch;
+  yoPendOn = turnOn;
+  if (turnOn) {
+    yoDoPending(nullptr);
+    return;
+  }
+  static String msg;
+  String what = ch >= 0 ? String(d.name) + " (" + yoSocketName(d, ch) + ")" : String(d.name);
+  msg = "Turn off " + what + "?";
+  bool prot = weather::yoIsProtected(d.id);
+  lv_event_cb_t next = prot ? yoProtSecond : yoDoPending;
+  confirmBox(prot ? "Protected device" : "Turn off?", msg.c_str(), "Turn off", next);
+}
+
+String yoStateText(const YoDevice &d, int ch, lv_color_t &col) {
+  col = theme::text();
+  if (!d.known) return "...";
+  if (!d.online) {
+    col = lv_palette_main(LV_PALETTE_GREY);
+    return "Offline";
+  }
+  String t;
+  switch (d.kind) {
+    case YoKind::Outlet:
+      t = d.on ? "ON" : "OFF";
+      if (d.on) col = theme::accent();
+      break;
+    case YoKind::MultiOutlet: {
+      bool on = ch >= 0 && (d.chOn & (1 << ch));
+      t = on ? "ON" : "OFF";
+      if (on) col = theme::accent();
+      break;
+    }
+    case YoKind::Dimmer:
+      t = d.on ? String("ON ") + String((int)d.brightness) + "%" : String("OFF");
+      if (d.on) col = theme::accent();
+      break;
+    case YoKind::Siren:
+      t = d.on ? "SOUNDING" : "Quiet";
+      if (d.on) col = lv_palette_main(LV_PALETTE_RED);
+      break;
+    case YoKind::Door:
+      t = d.open ? "Open" : "Closed";
+      if (d.open) col = lv_palette_main(LV_PALETTE_AMBER);
+      break;
+    case YoKind::Motion:
+      t = d.open ? "Motion" : "No motion";
+      if (d.open) col = lv_palette_main(LV_PALETTE_AMBER);
+      break;
+    case YoKind::Leak:
+      t = d.alarm ? "LEAK!" : "Dry";
+      if (d.alarm) col = lv_palette_main(LV_PALETTE_RED);
+      break;
+    case YoKind::PowerFail:
+      t = d.alarm ? (d.power ? "ALERT" : "POWER OUT!") : String("Power OK");
+      if (d.alarm) col = lv_palette_main(LV_PALETTE_RED);
+      break;
+    default: t = d.state[0] ? d.state : "OK"; break;
+  }
+  bool sensor = d.kind == YoKind::Door || d.kind == YoKind::Motion || d.kind == YoKind::Leak ||
+                d.kind == YoKind::PowerFail;
+  if (sensor && d.changedAt) {
+    String age = agoText(d.changedAt);
+    if (age.length()) t += ", " + age;
+  }
+  if (d.battery >= 0 && d.battery <= 4) t += String("  -  battery ") + String((int)d.battery) + "/4";
+  if (weather::yoIsProtected(d.id)) t += "  [protected]";
+  return t;
+}
+
+// Dimmer: On / Off / Close with a brightness slider
+void yoDimmerPanel(const YoDevice &d) {
+  snprintf(yoPendId, sizeof(yoPendId), "%s", d.id);
+  yoPendCh = -1;
+  static char title[36];
+  snprintf(title, sizeof(title), "%s", d.name);
+  static const char *btns[] = {"On", "Off", "Close", ""};
+  lv_obj_t *box = lv_msgbox_create(nullptr, title, "Brightness", btns, false);
+  lv_obj_set_width(box, W() - 30);
+  lv_obj_t *sl = lv_slider_create(lv_msgbox_get_content(box));
+  lv_slider_set_range(sl, 1, 100);
+  lv_slider_set_value(sl, d.brightness ? d.brightness : 50, LV_ANIM_OFF);
+  lv_obj_set_width(sl, LV_PCT(90));
+  lv_obj_set_style_pad_ver(lv_msgbox_get_content(box), 12, 0);
+  lv_obj_add_event_cb(
+      sl,
+      [](lv_event_t *e) {
+        int v = lv_slider_get_value(lv_event_get_target(e));
+        yoSend(yoPendId, YoOp::SetBrightness, v, 0);
+      },
+      LV_EVENT_RELEASED, nullptr);
+  lv_obj_center(box);
+  lv_obj_add_event_cb(
+      box,
+      [](lv_event_t *e) {
+        lv_obj_t *b = lv_event_get_current_target(e);
+        uint16_t btn = lv_msgbox_get_active_btn(b);
+        lv_msgbox_close_async(b);
+        YoDevice dd;
+        if (btn > 1 || !yoGet(yoPendId, dd)) return;
+        yoAskSwitch(dd, -1, btn == 0);
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+void yoInfoBox(const YoDevice &d) {
+  static String body;
+  lv_color_t c;
+  body = String(d.model) + "\n" + yoStateText(d, -1, c);
+  if (d.readMs) body += "\nRead " + String((millis() - d.readMs) / 60000) + " min ago";
+  static char title[36];
+  snprintf(title, sizeof(title), "%s", d.name);
+  static const char *btns[] = {"Close", ""};
+  lv_obj_t *box = lv_msgbox_create(nullptr, title, body.c_str(), btns, false);
+  lv_obj_set_width(box, W() - 30);
+  lv_obj_center(box);
+  lv_obj_add_event_cb(
+      box, [](lv_event_t *e) { lv_msgbox_close_async(lv_event_get_current_target(e)); }, LV_EVENT_VALUE_CHANGED,
+      nullptr);
+}
+
+void yoRowCb(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= yoRows.size()) return;
+  YoDevice d;
+  if (!yoGet(yoRows[i].id, d)) return;
+  int ch = yoRows[i].ch;
+  switch (d.kind) {
+    case YoKind::Outlet: yoAskSwitch(d, -1, !d.on); break;
+    case YoKind::MultiOutlet: yoAskSwitch(d, ch, !(d.chOn & (1 << ch))); break;
+    case YoKind::Dimmer: yoDimmerPanel(d); break;
+    case YoKind::Siren:
+      snprintf(yoPendId, sizeof(yoPendId), "%s", d.id);
+      if (d.on) yoSend(d.id, YoOp::Siren, 0, 0);
+      else
+        confirmBox("Sound the siren?", "It will sound until you stop it here or in the YoLink app.", "Sound it",
+                   [](lv_event_t *) { yoSend(yoPendId, YoOp::Siren, 1, 0); });
+      break;
+    default: yoInfoBox(d); break;
+  }
+}
+
+// Hold a switchable device to mark it protected (off needs two confirmations)
+void yoRowHoldCb(lv_event_t *e) {
+  size_t i = (size_t)(intptr_t)lv_event_get_user_data(e);
+  if (i >= yoRows.size()) return;
+  YoDevice d;
+  if (!yoGet(yoRows[i].id, d)) return;
+  if (d.kind != YoKind::Outlet && d.kind != YoKind::MultiOutlet && d.kind != YoKind::Dimmer) return;
+  snprintf(yoPendId, sizeof(yoPendId), "%s", d.id);
+  static String msg;
+  bool prot = weather::yoIsProtected(d.id);
+  msg = prot ? String("Stop protecting ") + d.name + "? Turning it off will ask once."
+             : String("Protect ") + d.name + "? Turning it off will ask twice.";
+  confirmBox(prot ? "Unprotect?" : "Protect device?", msg.c_str(), prot ? "Unprotect" : "Protect",
+             [](lv_event_t *) {
+               weather::setYoProtected(yoPendId, !weather::yoIsProtected(yoPendId));
+               yoKey = -1;
+             });
+}
+
+void yoHeading(const char *text) {
+  lv_obj_t *l = lv_label_create(yoBox);
+  lv_label_set_text(l, text);
+  lv_obj_set_style_text_opa(l, LV_OPA_70, 0);
+  lv_obj_set_style_pad_top(l, 6, 0);
+}
+
+void yoAddRow(const YoDevice &d, int ch, bool actuator) {
+  lv_color_t col;
+  String state = yoStateText(d, ch, col);
+  String name = ch >= 0 ? String(d.name) + " - " + yoSocketName(d, ch) : String(d.name);
+  YoRow r;
+  snprintf(r.id, sizeof(r.id), "%s", d.id);
+  r.ch = ch;
+  yoRows.push_back(r);
+  size_t idx = yoRows.size() - 1;
+  lv_obj_t *row = twoLineRow(yoBox, name, col, state, yoRowCb, idx);
+  if (actuator) lv_obj_add_event_cb(row, yoRowHoldCb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)idx);
+}
+
+void refreshYoScreen() {
+  if (!yoStatusLbl) return;
+  weather::yoKeepAlive();
+  String st = weather::yoStatusText();
+  String act = weather::yoActionBusy() ? String("Working on it...") : weather::yoActionResult();
+  if (act.length()) st = act + "\n" + st;
+  setText(yoStatusLbl, st.c_str());
+  int key = (int)(weather::yoVersion() * 4096 + (millis() / 60000) % 4096);
+  if (key == yoKey) return;
+  yoKey = key;
+  auto devs = weather::yoDevices();
+  lv_obj_clean(yoBox);
+  yoRows.clear();
+  if (devs.empty()) return;
+
+  bool any = false;
+  for (const auto &d : devs)
+    if (d.known && (d.alarm || (d.kind == YoKind::Door && d.open))) any = true;
+  if (any) {
+    yoHeading("Needs attention");
+    for (const auto &d : devs)
+      if (d.known && d.alarm) yoAddRow(d, -1, false);
+    for (const auto &d : devs)
+      if (d.known && !d.alarm && d.kind == YoKind::Door && d.open) yoAddRow(d, -1, false);
+  }
+  yoHeading("Switches & outlets (tap to switch, hold to protect)");
+  for (const auto &d : devs) {
+    if (d.kind == YoKind::Outlet || d.kind == YoKind::Dimmer) yoAddRow(d, -1, true);
+    if (d.kind == YoKind::MultiOutlet) {
+      int n = d.chCount ? d.chCount : 5;
+      for (int ch = 0; ch < n; ch++) yoAddRow(d, ch, true);
+    }
+  }
+  yoHeading("Sensors & siren");
+  for (const auto &d : devs)
+    if (d.kind != YoKind::Outlet && d.kind != YoKind::Dimmer && d.kind != YoKind::MultiOutlet) yoAddRow(d, -1, false);
+}
+
+void showYoLink() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "YoLink", [](lv_event_t *) {
+    if (yoBack == Screen::Desktop) showDesktop();
+    else showMenu();
+  });
+  lv_obj_t *list = lv_list_create(scr);
+  lv_obj_set_size(list, W(), H() - HEADER_H);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  yoStatusLbl = lv_label_create(list);
+  lv_label_set_long_mode(yoStatusLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(yoStatusLbl, LV_PCT(100));
+  lv_obj_set_style_pad_all(yoStatusLbl, 8, 0);
+  lv_obj_set_style_text_opa(yoStatusLbl, LV_OPA_70, 0);
+  lv_label_set_text(yoStatusLbl, "");
+
+  yoBox = lv_obj_create(list);
+  lv_obj_remove_style_all(yoBox);
+  lv_obj_set_size(yoBox, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(yoBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(yoBox, 8, 0);
+  lv_obj_set_style_pad_row(yoBox, 4, 0);
+  lv_obj_clear_flag(yoBox, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_list_add_text(list, "Settings");
+  lv_obj_t *row = lv_list_add_btn(list, LV_SYMBOL_IMAGE, "Alerts on desktop");
+  lv_obj_t *sw = lv_switch_create(row);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  if (weather::showYoDesk()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      row,
+      [](lv_event_t *e) {
+        lv_obj_t *s = (lv_obj_t *)lv_event_get_user_data(e);
+        bool on = !weather::showYoDesk();
+        weather::setShowYoDesk(on);
+        if (on) lv_obj_add_state(s, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s, LV_STATE_CHECKED);
+      },
+      LV_EVENT_CLICKED, sw);
+  lv_obj_t *b = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Refresh now");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        if (!weather::yoConfigured()) {
+          errorBox("YoLink", "Enter your UAID and Secret Key first.");
+          return;
+        }
+        if (net::state() != net::State::Connected) {
+          errorBox("No Wi-Fi", "Connect to Wi-Fi to reach YoLink.");
+          return;
+        }
+        weather::refreshYo();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  b = lv_list_add_btn(list, LV_SYMBOL_UPLOAD, "Set up from phone (QR code)");
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *) {
+        wsBack = Screen::YoLink;
+        showWebSetup();
+      },
+      LV_EVENT_CLICKED, nullptr);
+  String id = weather::yoUaid();
+  String l1 = "UAID: " + (id.length() ? id.substring(0, 12) + (id.length() > 12 ? "..." : "") : String("(not set)"));
+  b = lv_list_add_btn(list, LV_SYMBOL_SETTINGS, l1.c_str());
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showYoField(0); }, LV_EVENT_CLICKED, nullptr);
+  String l2 = String("Secret Key: ") + (weather::yoHasSecret() ? "********" : "(not set)");
+  b = lv_list_add_btn(list, LV_SYMBOL_EYE_CLOSE, l2.c_str());
+  lv_obj_add_event_cb(b, [](lv_event_t *) { showYoField(1); }, LV_EVENT_CLICKED, nullptr);
+
+  lv_obj_t *l = lv_label_create(list);
+  lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(l, LV_PCT(100));
+  lv_obj_set_style_pad_all(l, 8, 0);
+  lv_obj_set_style_text_opa(l, LV_OPA_70, 0);
+  lv_label_set_text(l, "Create the keys in the YoLink app: Account > Advanced Settings > Personal Access Credentials. "
+                       "They give full control of your devices and are stored on this board. The connection to "
+                       "YoLink's servers is encrypted and their certificate is verified.");
+
+  load(scr, Screen::YoLink);
+  weather::yoKeepAlive();
+  yoKey = -1;
+  refreshYoScreen();
+}
+
+void showYoField(int f) {
+  yoField = f;
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, f == 0 ? "YoLink UAID" : "YoLink Secret Key", [](lv_event_t *) { showYoLink(); });
+  yoTa = lv_textarea_create(scr);
+  lv_textarea_set_one_line(yoTa, true);
+  lv_textarea_set_max_length(yoTa, 120);
+  if (f == 0) {
+    lv_textarea_set_placeholder_text(yoTa, "UAID from the YoLink app");
+    lv_textarea_set_text(yoTa, weather::yoUaid().c_str());
+  } else {
+    lv_textarea_set_password_mode(yoTa, true);
+    lv_textarea_set_placeholder_text(yoTa, weather::yoHasSecret() ? "(unchanged - type a new one)" : "Secret Key");
+    lv_textarea_set_text(yoTa, "");
+  }
+  lv_obj_set_width(yoTa, W() - 8);
+  lv_obj_align(yoTa, LV_ALIGN_TOP_MID, 0, HEADER_H + 4);
+  lv_obj_add_state(yoTa, LV_STATE_FOCUSED);
+  int kbH = H() - HEADER_H - 50;
+  if (kbH > 170) kbH = 170;
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+  lv_obj_set_size(kb, W(), kbH);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(kb, yoTa);
+  lv_obj_add_event_cb(
+      kb,
+      [](lv_event_t *e) {
+        lv_event_code_t c = lv_event_get_code(e);
+        if (c == LV_EVENT_CANCEL) {
+          showYoLink();
+          return;
+        }
+        if (c != LV_EVENT_READY) return;
+        String v = lv_textarea_get_text(yoTa);
+        v.trim();
+        if (yoField == 0) weather::setYoUaid(v);
+        else if (v.length()) weather::setYoSecret(v);  // blank: keep the current one
+        lv_textarea_set_text(yoTa, "");
+        showYoLink();
+      },
+      LV_EVENT_ALL, nullptr);
+  load(scr, Screen::YoField);
+}
+
+// ---------- Web setup ----------
+
+void refreshWebSetup() {
+  if (!wsCode) return;
+  if (portal::savedAt() != wsSavedSeen) {  // the phone sent the keys
+    setText(wsStatus, LV_SYMBOL_OK " Keys received! Signing in to YoLink...");
+    setHidden(wsStatus, false);
+    setText(wsTimer, "");
+    setText(wsBtnLbl, "Open YoLink");
+    setHidden(wsBtn, false);
+    return;
+  }
+  uint32_t left = portal::pairingSecondsLeft();
+  if (left) {
+    char t[40];
+    snprintf(t, sizeof(t), "Code valid for %lu:%02lu", (unsigned long)(left / 60), (unsigned long)(left % 60));
+    setText(wsTimer, t);
+  } else {
+    setText(wsTimer, "Code expired");
+    setText(wsCode, "Code: ------");
+    setText(wsBtnLbl, LV_SYMBOL_REFRESH " New code");
+    setHidden(wsBtn, false);
+  }
+}
+
+void showWebSetup() {
+  lv_obj_t *scr = newScreen();
+  makeHeader(scr, "Web setup", [](lv_event_t *) {
+    if (wsBack == Screen::YoLink) showYoLink();
+    else showMenu();
+  });
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_set_size(box, W(), H() - HEADER_H);
+  lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_all(box, 8, 0);
+  lv_obj_set_style_pad_row(box, 6, 0);
+  lv_obj_set_style_radius(box, 0, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+  wsSavedSeen = portal::savedAt();
+
+  auto text = [&](const char *t, const lv_font_t *f, bool dim) {
+    lv_obj_t *l = lv_label_create(box);
+    lv_obj_set_style_text_font(l, f, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    if (dim) lv_obj_set_style_text_opa(l, LV_OPA_70, 0);
+    lv_label_set_text(l, t);
+    return l;
+  };
+
+  if (portal::baseUrl().isEmpty()) {
+    text("Connect to Wi-Fi first: tap the Wi-Fi icon in the status bar, then come back here.",
+         &lv_font_montserrat_14, false);
+    load(scr, Screen::WebSetup);
+    return;
+  }
+
+  portal::startPairing();
+  String url = portal::setupUrl();
+#if LV_USE_QRCODE
+  int qs = std::min(W(), H() - HEADER_H) - 100;
+  if (qs > 170) qs = 170;
+  if (qs < 110) qs = 110;
+  lv_obj_t *qr = lv_qrcode_create(box, qs, lv_color_black(), lv_color_white());
+  lv_obj_set_style_border_color(qr, lv_color_white(), 0);  // quiet zone, so phones read it reliably
+  lv_obj_set_style_border_width(qr, 6, 0);
+  lv_qrcode_update(qr, url.c_str(), url.length());
+  text("Scan with your phone's camera", &lv_font_montserrat_14, true);
+#endif
+  String c = portal::pairingCode();
+  String shown = "Code: " + c.substring(0, 3) + " " + c.substring(3);
+  wsCode = text(shown.c_str(), &lv_font_montserrat_20, false);
+  lv_obj_set_style_text_color(wsCode, theme::accent(), 0);
+  wsTimer = text("", &lv_font_montserrat_14, true);
+  String where = "or open " + portal::baseUrl() + "/yolink";
+  if (ota::ready()) where += "\n(" + String(ota::hostname()) + ".local/yolink)";
+  text(where.c_str(), &lv_font_montserrat_14, false);
+  text("Paste the UAID and Secret Key from the YoLink app, enter the code, and tap Save.", &lv_font_montserrat_14,
+       true);
+  wsStatus = text("", &lv_font_montserrat_14, false);
+  lv_obj_set_style_text_color(wsStatus, lv_palette_main(LV_PALETTE_GREEN), 0);
+  setHidden(wsStatus, true);
+  wsBtn = flatBtn(box, "", W() - 40, 36);
+  wsBtnLbl = lv_obj_get_child(wsBtn, 0);
+  setHidden(wsBtn, true);
+  lv_obj_add_event_cb(
+      wsBtn,
+      [](lv_event_t *) {
+        if (portal::savedAt() != wsSavedSeen) showYoLink();
+        else showWebSetup();  // new code
+      },
+      LV_EVENT_CLICKED, nullptr);
+  load(scr, Screen::WebSetup);
+  refreshWebSetup();
 }
 
 // ---------- Date & time ----------
@@ -6477,6 +7149,8 @@ void poll(lv_timer_t *) {
     case Screen::News: refreshNewsScreen(); break;
     case Screen::Mail: refreshMailScreen(); break;
     case Screen::Outages: refreshOutageScreen(); break;
+    case Screen::YoLink: refreshYoScreen(); break;
+    case Screen::WebSetup: refreshWebSetup(); break;
     default: break;
   }
 }

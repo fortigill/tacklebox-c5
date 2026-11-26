@@ -3,6 +3,14 @@
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 the version string lives in `src/version.h`.
 
+## [1.13.2] - 2026-11-26
+
+### Changed
+- **New out-of-the-box display settings on the NM-CYD-C5:** Miami Vice theme, brightness 100,
+  portrait orientation, and Colors > Swap red/blue on. These apply to a new board, or one
+  flashed with "Erase everything first"; a board that already has saved display settings
+  keeps them. The classic CYD's defaults are unchanged (Dark, landscape, no swap).
+
 ## [1.13.1] - 2026-11-26
 
 ### Fixed

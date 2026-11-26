@@ -58,10 +58,10 @@ lv_disp_drv_t dispDrv;
 lv_disp_t *disp = nullptr;
 lv_indev_drv_t indevDrv;
 
-uint8_t rot = display::LANDSCAPE;
-bool swapRB = false;
+uint8_t rot = DEFAULT_ROTATION;
+bool swapRB = DEFAULT_SWAP_RB;
 bool invert = true;  // see display::invertColors()
-uint8_t blPct = 100;
+uint8_t blPct = DEFAULT_BRIGHTNESS;
 Cal cal{};
 bool calValid = false;
 
@@ -170,10 +170,10 @@ bool solve3(const double m[3][3], const double v[3], double out[3]) {
 
 void display::begin() {
   prefs.begin("disp", false);  // read-write: creates the namespace on first boot
-  rot = prefs.getUChar("rot", LANDSCAPE) & 3;
-  swapRB = prefs.getBool("swaprb", false);
+  rot = prefs.getUChar("rot", DEFAULT_ROTATION) & 3;
+  swapRB = prefs.getBool("swaprb", DEFAULT_SWAP_RB);
   invert = prefs.getBool("inv", DEFAULT_INVERT);
-  blPct = clampBrightness(prefs.getUChar("bl", 100));
+  blPct = clampBrightness(prefs.getUChar("bl", DEFAULT_BRIGHTNESS));
   if (prefs.getBytesLength("cal") == sizeof(Cal)) {
     prefs.getBytes("cal", &cal, sizeof(Cal));
     calValid = (cal.magic == CAL_MAGIC);

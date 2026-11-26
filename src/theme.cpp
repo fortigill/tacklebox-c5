@@ -1,4 +1,5 @@
 #include "theme.h"
+#include "board.h"
 
 #include <Preferences.h>
 
@@ -104,7 +105,7 @@ void apply(Id id) {
 
 void begin() {
   prefs.begin("disp", false);
-  uint8_t id = prefs.getUChar("theme", DARK);
+  uint8_t id = prefs.getUChar("theme", DEFAULT_THEME);
   prefs.end();
   cur = id < COUNT ? (Id)id : DARK;
   apply(cur);

@@ -60,10 +60,10 @@ lv_disp_t *disp = nullptr;
 lv_indev_drv_t indevDrv;
 volatile bool flushing = false;  // a pixel transfer is in flight
 
-uint8_t rot = display::LANDSCAPE;
-bool swapRB = false;
+uint8_t rot = DEFAULT_ROTATION;
+bool swapRB = DEFAULT_SWAP_RB;
 bool invert = DEFAULT_INVERT;
-uint8_t blPct = 100;
+uint8_t blPct = DEFAULT_BRIGHTNESS;
 Cal cal{};
 bool calValid = false;
 
@@ -210,10 +210,10 @@ void fail(const char *what, esp_err_t e) {
 
 void display::begin() {
   prefs.begin("disp", false);
-  rot = prefs.getUChar("rot", LANDSCAPE) & 3;
-  swapRB = prefs.getBool("swaprb", false);
+  rot = prefs.getUChar("rot", DEFAULT_ROTATION) & 3;
+  swapRB = prefs.getBool("swaprb", DEFAULT_SWAP_RB);
   invert = prefs.getBool("inv", DEFAULT_INVERT);
-  blPct = clampBrightness(prefs.getUChar("bl", 100));
+  blPct = clampBrightness(prefs.getUChar("bl", DEFAULT_BRIGHTNESS));
   if (prefs.getBytesLength("cal") == sizeof(Cal)) {
     prefs.getBytes("cal", &cal, sizeof(Cal));
     calValid = (cal.magic == CAL_MAGIC);
